@@ -1,0 +1,10 @@
+{
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm ci",
+  "framework": "nextjs",
+  "regions": ["bom1"],
+  "env": {
+    "DATABASE_URL": "@database_url"
+  }
+}

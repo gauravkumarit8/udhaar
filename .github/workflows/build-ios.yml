@@ -1,0 +1,116 @@
+name: Build iOS IPA
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "Deployed web app URL (e.g. https://udhaar.vercel.app)"
+        required: true
+        default: "https://udhaar.vercel.app"
+
+jobs:
+  build-ios:
+    name: Build iOS
+    runs-on: macos-14
+
+    env:
+      APP_URL: ${{ github.event.inputs.app_url || 'https://udhaar.vercel.app' }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 📱 Add iOS platform
+        run: npx cap add ios || true
+
+      - name: 🔧 Update Capacitor config with production URL
+        run: |
+          cat > /tmp/update-config.js << 'SCRIPT'
+          const fs = require('fs');
+          const config = fs.readFileSync('capacitor.config.ts', 'utf8');
+          const updated = config.replace(
+            /\/\/\s*url:.*$/m,
+            `url: '${process.env.APP_URL}',`
+          );
+          fs.writeFileSync('capacitor.config.ts', updated);
+          SCRIPT
+          node /tmp/update-config.js
+
+      - name: 📋 Copy web assets
+        run: npx cap copy ios
+
+      - name: 🔧 Sync native project
+        run: npx cap sync ios
+
+      - name: 🔑 Install Apple Certificate
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.IOS_P12_BASE64 }}
+          p12-password: ${{ secrets.IOS_P12_PASSWORD }}
+
+      - name: 📲 Install Provisioning Profile
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/Udhaar.mobileprovision
+
+      - name: 🏗️ Build iOS Archive
+        working-directory: ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -archivePath build/App.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}"
+
+      - name: 📦 Export IPA
+        working-directory: ios/App
+        run: |
+          mkdir -p build/export
+          cat > build/export/ExportOptions.plist << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>teamID</key>
+            <string>${{ secrets.APPLE_TEAM_ID }}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath build/App.xcarchive \
+            -exportOptionsPlist build/export/ExportOptions.plist \
+            -exportPath build/ipa
+
+      - name: 📤 Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: udhaar.ipa
+          path: ios/App/build/ipa/*.ipa
+          retention-days: 30
+
+      - name: 🚀 Upload to App Store Connect
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          xcrun altool --upload-app \
+            --type ios \
+            --file ios/App/build/ipa/*.ipa \
+            --apiKey "${{ secrets.APP_STORE_API_KEY_ID }}" \
+            --apiIssuer "${{ secrets.APP_STORE_API_ISSUER_ID }}"
+        continue-on-error: true

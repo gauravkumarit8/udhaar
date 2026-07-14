@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // NOTE: Do NOT use `output: "export"` — our API routes require a server.
-  // For Capacitor mobile builds, the app loads from a hosted URL
-  // (set in capacitor.config.ts → server.url).
+  // Standalone output for Docker / containerized deployments.
+  // Also works fine for regular `npm run build` + `npm run start`.
+  output: "standalone",
   images: {
     unoptimized: true,
   },

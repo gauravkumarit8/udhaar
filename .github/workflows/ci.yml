@@ -1,0 +1,61 @@
+name: CI — Lint, Typecheck, Build
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🗄️ Push database schema
+        run: npx drizzle-kit push
+
+      - name: 🔍 Type generation
+        run: npx next typegen
+
+      - name: 🔍 TypeScript check
+        run: npx tsc --noEmit
+
+      - name: 🏗️ Build Next.js
+        run: npm run build
+
+      - name: 🐳 Build Docker image
+        run: docker build -t udhaar:ci .
+
+      - name: ✅ All checks passed
+        run: echo "🎉 CI passed!"

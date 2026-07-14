@@ -1,0 +1,68 @@
+name: 🚀 Release — Build All Platforms
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # ── Job 1: Web ────────────────────────────────────────────
+  release-web:
+    name: Release Web
+    uses: ./.github/workflows/deploy-web.yml
+    secrets: inherit
+
+  # ── Job 2: Android ────────────────────────────────────────
+  release-android:
+    name: Release Android
+    uses: ./.github/workflows/build-android.yml
+    with:
+      build_type: debug
+      app_url: ${{ vars.APP_URL || 'https://udhaar.vercel.app' }}
+    secrets: inherit
+
+  # ── Job 3: iOS ────────────────────────────────────────────
+  release-ios:
+    name: Release iOS
+    uses: ./.github/workflows/build-ios.yml
+    with:
+      app_url: ${{ vars.APP_URL || 'https://udhaar.vercel.app' }}
+    secrets: inherit
+
+  # ── Job 4: Create GitHub Release ──────────────────────────
+  create-release:
+    name: Create GitHub Release
+    needs: [release-web, release-android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📥 Download Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: udhaar-debug.apk
+          path: artifacts/
+
+      - name: 📝 Generate Changelog
+        id: changelog
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "## What's Changed" > CHANGELOG.md
+          git log --oneline $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")..HEAD >> CHANGELOG.md 2>/dev/null || true
+
+      - name: 🎉 Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: "Udhaar ${{ steps.changelog.outputs.tag }}"
+          body_path: CHANGELOG.md
+          files: artifacts/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

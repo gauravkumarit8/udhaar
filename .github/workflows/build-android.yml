@@ -1,0 +1,116 @@
+name: Build Android APK/AAB
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build type: debug or release"
+        required: true
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+      app_url:
+        description: "Deployed web app URL (e.g. https://udhaar.vercel.app)"
+        required: true
+        default: "https://udhaar.vercel.app"
+
+jobs:
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+
+    env:
+      APP_URL: ${{ github.event.inputs.app_url || 'https://udhaar.vercel.app' }}
+      BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 🟢 Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      - name: 🗄️ Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 📱 Add Android platform
+        run: npx cap add android || true
+
+      - name: 🔧 Update Capacitor config with production URL
+        run: |
+          cat > /tmp/update-config.js << 'SCRIPT'
+          const fs = require('fs');
+          const config = fs.readFileSync('capacitor.config.ts', 'utf8');
+          const updated = config.replace(
+            /\/\/\s*url:.*$/m,
+            `url: '${process.env.APP_URL}',`
+          );
+          fs.writeFileSync('capacitor.config.ts', updated);
+          SCRIPT
+          node /tmp/update-config.js
+
+      - name: 📋 Copy web assets
+        run: npx cap copy android
+
+      - name: 🔧 Sync native project
+        run: npx cap sync android
+
+      - name: 🔑 Decode keystore (release only)
+        if: env.BUILD_TYPE == 'release'
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/udhaar.keystore
+          echo "KEYSTORE_FILE=udhaar.keystore" >> android/gradle.properties
+          echo "KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> android/gradle.properties
+          echo "KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> android/gradle.properties
+          echo "KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> android/gradle.properties
+
+      - name: 🏗️ Build Android APK (debug)
+        if: env.BUILD_TYPE == 'debug'
+        working-directory: android
+        run: ./gradlew assembleDebug
+
+      - name: 🏗️ Build Android AAB (release)
+        if: env.BUILD_TYPE == 'release'
+        working-directory: android
+        run: ./gradlew bundleRelease
+
+      - name: 📤 Upload APK artifact
+        if: env.BUILD_TYPE == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: udhaar-debug.apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+
+      - name: 📤 Upload AAB artifact
+        if: env.BUILD_TYPE == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: udhaar-release.aab
+          path: android/app/build/outputs/bundle/release/*.aab
+          retention-days: 30
+
+      - name: 🎉 Create GitHub Release with APK
+        if: startsWith(github.ref, 'refs/tags/v') && env.BUILD_TYPE == 'debug'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: android/app/build/outputs/apk/debug/*.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
