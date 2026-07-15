@@ -3,18 +3,9 @@ import type { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   appId: 'com.udhaar.app',
   appName: 'Udhaar',
-  webDir: 'out',
+  webDir: 'public',
   server: {
-    // ── For Capacitor mobile builds ──
-    // In DEV: point to your local Next.js server
-    // url: 'http://YOUR_LOCAL_IP:3000',
-    //
-    // In PRODUCTION: point to your deployed Next.js app
-    // url: 'https://your-app.vercel.app',
-    //
-    // When `url` is set, Capacitor loads the web app from that URL
-    // instead of bundled static files. This is required because our
-    // Next.js app has server-side API routes that can't be static-exported.
+    url: 'https://udhaar-y94f.onrender.com',
     androidScheme: 'https',
   },
   plugins: {

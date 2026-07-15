@@ -4,7 +4,8 @@ services:
     runtime: node
     plan: free
     buildCommand: npm ci && npm run build
-    startCommand: npm run start
+    startCommand: node .next/standalone/server.js
+    healthCheckPath: /api/health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
