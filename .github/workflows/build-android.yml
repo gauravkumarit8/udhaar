@@ -2,6 +2,7 @@ name: Build Android APK/AAB
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
