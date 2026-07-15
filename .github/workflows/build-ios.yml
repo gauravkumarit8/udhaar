@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       app_url:
-        description: "Deployed web app URL (e.g. https://udhaar.vercel.app)"
+        description: "Deployed web app URL (e.g. https://udhaar-y94f.onrender.com)"
         required: true
-        default: "https://udhaar.vercel.app"
+        default: "https://udhaar-y94f.onrender.com"
 
 jobs:
   build-ios:
@@ -16,7 +16,7 @@ jobs:
     runs-on: macos-14
 
     env:
-      APP_URL: ${{ github.event.inputs.app_url || 'https://udhaar.vercel.app' }}
+      APP_URL: ${{ github.event.inputs.app_url || 'https://udhaar-y94f.onrender.com' }}
 
     steps:
       - name: 📥 Checkout code
@@ -40,8 +40,8 @@ jobs:
           const fs = require('fs');
           const config = fs.readFileSync('capacitor.config.ts', 'utf8');
           const updated = config.replace(
-            /\/\/\s*url:.*$/m,
-            `url: '${process.env.APP_URL}',`
+            /url:\s*['"][^'"]*['"]/g,
+            `url: '${process.env.APP_URL}'`
           );
           fs.writeFileSync('capacitor.config.ts', updated);
           SCRIPT
