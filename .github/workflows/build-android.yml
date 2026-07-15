@@ -51,7 +51,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: 📱 Add Android platform
-        run: npx cap add android || true
+        run: npx cap add android
 
       - name: 🔧 Update Capacitor config with production URL
         run: |

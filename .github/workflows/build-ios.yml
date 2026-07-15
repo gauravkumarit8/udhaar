@@ -33,7 +33,7 @@ jobs:
         run: npm ci
 
       - name: 📱 Add iOS platform
-        run: npx cap add ios || true
+        run: npx cap add ios
 
       - name: 🔧 Update Capacitor config with production URL
         run: |
