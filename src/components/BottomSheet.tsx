@@ -63,7 +63,7 @@ export default function BottomSheet({ open, onClose, title, subtitle, children }
       {/* Sheet */}
       <div
         ref={sheetRef}
-        className="relative w-full max-w-lg bg-white rounded-t-3xl shadow-2xl animate-slide-up safe-area-bottom"
+        className="relative w-full max-w-lg bg-white rounded-t-3xl shadow-2xl animate-slide-up safe-area-bottom max-h-[82vh] flex flex-col"
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -82,7 +82,7 @@ export default function BottomSheet({ open, onClose, title, subtitle, children }
         </div>
 
         {/* Content */}
-        <div className="px-6 pb-8 max-h-[70vh] overflow-y-auto">
+        <div className="px-6 pb-8 overflow-y-auto">
           {children}
         </div>
       </div>

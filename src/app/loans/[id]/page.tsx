@@ -93,6 +93,21 @@ export default function LoanDetailPage() {
   const [reminderSent, setReminderSent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"schedule" | "payments">("schedule");
   const [showUPI, setShowUPI] = useState(false);
+  const [editForm, setEditForm] = useState<{
+    borrowerName: string;
+    borrowerMobile: string;
+    amount: string;
+    interestRate: string;
+    interestRatePeriod: "monthly" | "yearly";
+    tenureMonths: string;
+    startDate: string;
+    upiId: string;
+    accountNumber: string;
+    notes: string;
+    confirmationMode: "1-side" | "2-side";
+  } | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState("");
 
   // Native hooks
   const haptics = useHaptics();
@@ -209,6 +224,69 @@ export default function LoanDetailPage() {
       }
     } catch {
       // ignore
+    }
+  };
+
+  const openEditForm = () => {
+    if (!loan) return;
+    setEditError("");
+    setEditForm({
+      borrowerName: loan.borrowerName,
+      borrowerMobile: loan.borrowerMobile,
+      amount: loan.amount,
+      interestRate: loan.interestRate,
+      interestRatePeriod: loan.interestRatePeriod === "monthly" ? "monthly" : "yearly",
+      tenureMonths: String(loan.tenureMonths),
+      startDate: loan.startDate,
+      upiId: loan.upiId || "",
+      accountNumber: loan.accountNumber || "",
+      notes: loan.notes || "",
+      confirmationMode: loan.confirmationMode === "2-side" ? "2-side" : "1-side",
+    });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editForm) return;
+    setSavingEdit(true);
+    setEditError("");
+
+    try {
+      const res = await fetch(`/api/loans/${loanId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm),
+      });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        setEditError(data.error || "Unable to update loan");
+        return;
+      }
+
+      setEditForm(null);
+      await loadData();
+    } catch {
+      setEditError("Something went wrong while updating the loan");
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleDeleteLoan = async () => {
+    if (!confirm("Delete this loan and all associated records? This action cannot be undone.")) return;
+
+    try {
+      const res = await fetch(`/api/loans/${loanId}`, { method: "DELETE" });
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        alert(data.error || "Unable to delete loan");
+        return;
+      }
+
+      window.location.href = "/dashboard";
+    } catch {
+      alert("Something went wrong while deleting the loan");
     }
   };
 
@@ -365,6 +443,7 @@ export default function LoanDetailPage() {
             </button>
           )}
         </div>
+
 
         {/* Share / Invite */}
         <div className="mt-3">
@@ -685,6 +764,190 @@ export default function LoanDetailPage() {
             </button>
           </div>
         </div>
+      </BottomSheet>
+
+      {/* Edit Loan Bottom Sheet */}
+      <div className="fixed left-0 right-0 z-40 px-3" style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}>
+        <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur-xl">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={openEditForm}
+              className="bg-emerald-600 text-white font-semibold py-3 rounded-xl text-sm tap-highlight"
+            >
+              ✏️ Edit Loan
+            </button>
+            <button
+              onClick={handleDeleteLoan}
+              className="bg-red-50 text-red-600 font-semibold py-3 rounded-xl border border-red-200 text-sm tap-highlight"
+            >
+              🗑️ Delete Loan
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <BottomSheet
+        open={!!editForm}
+        onClose={() => { setEditForm(null); setEditError(""); }}
+        title="Edit Loan"
+        subtitle="Update borrower and repayment details"
+      >
+        {editForm && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Borrower Name</label>
+              <input
+                value={editForm.borrowerName}
+                onChange={(e) => setEditForm({ ...editForm, borrowerName: e.target.value })}
+                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Mobile Number</label>
+              <input
+                value={editForm.borrowerMobile}
+                onChange={(e) => setEditForm({ ...editForm, borrowerMobile: e.target.value.replace(/\D/g, "").slice(0, 10) })}
+                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Amount (₹)</label>
+              <input
+                type="number"
+                value={editForm.amount}
+                onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Interest Rate</label>
+                <input
+                  type="number"
+                  value={editForm.interestRate}
+                  onChange={(e) => setEditForm({ ...editForm, interestRate: e.target.value })}
+                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tenure (months)</label>
+                <input
+                  type="number"
+                  value={editForm.tenureMonths}
+                  onChange={(e) => setEditForm({ ...editForm, tenureMonths: e.target.value })}
+                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setEditForm({ ...editForm, interestRatePeriod: "yearly" })}
+                className={`py-2.5 rounded-xl text-sm font-semibold border ${
+                  editForm.interestRatePeriod === "yearly"
+                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                    : "border-slate-200 text-slate-400"
+                }`}
+              >
+                Yearly
+              </button>
+              <button
+                onClick={() => setEditForm({ ...editForm, interestRatePeriod: "monthly" })}
+                className={`py-2.5 rounded-xl text-sm font-semibold border ${
+                  editForm.interestRatePeriod === "monthly"
+                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                    : "border-slate-200 text-slate-400"
+                }`}
+              >
+                Monthly
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Start Date</label>
+              <input
+                type="date"
+                value={editForm.startDate}
+                onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })}
+                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">UPI ID</label>
+              <input
+                value={editForm.upiId}
+                onChange={(e) => setEditForm({ ...editForm, upiId: e.target.value })}
+                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Account Number</label>
+              <input
+                value={editForm.accountNumber}
+                onChange={(e) => setEditForm({ ...editForm, accountNumber: e.target.value })}
+                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Notes</label>
+              <textarea
+                value={editForm.notes}
+                onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                rows={3}
+                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setEditForm({ ...editForm, confirmationMode: "1-side" })}
+                className={`py-2.5 rounded-xl text-sm font-semibold border ${
+                  editForm.confirmationMode === "1-side"
+                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                    : "border-slate-200 text-slate-400"
+                }`}
+              >
+                1-side
+              </button>
+              <button
+                onClick={() => setEditForm({ ...editForm, confirmationMode: "2-side" })}
+                className={`py-2.5 rounded-xl text-sm font-semibold border ${
+                  editForm.confirmationMode === "2-side"
+                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                    : "border-slate-200 text-slate-400"
+                }`}
+              >
+                2-side
+              </button>
+            </div>
+
+            {editError && (
+              <div className="bg-red-50 text-red-600 text-sm rounded-2xl p-3">{editError}</div>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => { setEditForm(null); setEditError(""); }}
+                className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-600 font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={savingEdit}
+                className="flex-[2] bg-emerald-600 text-white font-bold py-3.5 rounded-2xl"
+              >
+                {savingEdit ? "Saving..." : "Save Changes"}
+              </button>
+            </div>
+          </div>
+        )}
       </BottomSheet>
 
       {/* UPI/Info Bottom Sheet */}

@@ -67,7 +67,7 @@ export default function MobileShell({
       )}
 
       {/* Content */}
-      <main className="flex-1 pb-20">{children}</main>
+      <main className="flex-1 pb-28">{children}</main>
 
       {/* Bottom Nav spacer */}
       {showNav && <div className="h-[env(safe-area-inset-bottom)]" />}

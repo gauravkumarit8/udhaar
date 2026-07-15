@@ -82,39 +82,40 @@ export function generateInstallmentSchedule(
       principalAmount = emi - interestAmount;
     }
 
-    // Rounding to 2 decimal places
-    interestAmount = Math.round(interestAmount * 100) / 100;
-    principalAmount = Math.round(principalAmount * 100) / 100;
-    const totalAmount = Math.round((principalAmount + interestAmount) * 100) / 100;
-
-    // Adjust last installment for rounding
     if (i === tenureMonths) {
-      principalAmount = Math.round(remainingPrincipal * 100) / 100;
-      const finalTotal = Math.round((principalAmount + interestAmount) * 100) / 100;
+      principalAmount = remainingPrincipal;
+      interestAmount = ratePercent === 0 ? 0 : Math.max(0, principalAmount + interestAmount - principalAmount);
+    }
+
+    const roundedPrincipal = roundTo2(principalAmount);
+    const roundedInterest = roundTo2(interestAmount);
+    const totalAmount = roundTo2(roundedPrincipal + roundedInterest);
+
+    if (i === tenureMonths) {
       schedule.push({
         installmentNumber: i,
         dueDate,
-        principalAmount,
-        interestAmount,
-        totalAmount: finalTotal,
+        principalAmount: roundedPrincipal,
+        interestAmount: roundedInterest,
+        totalAmount,
         remainingPrincipal: 0,
       });
     } else {
-      remainingPrincipal -= principalAmount;
-      remainingPrincipal = Math.round(remainingPrincipal * 100) / 100;
+      remainingPrincipal = remainingPrincipal - principalAmount;
       schedule.push({
         installmentNumber: i,
         dueDate,
-        principalAmount,
-        interestAmount,
+        principalAmount: roundedPrincipal,
+        interestAmount: roundedInterest,
         totalAmount,
-        remainingPrincipal,
+        remainingPrincipal: roundTo2(remainingPrincipal),
       });
     }
   }
 
   return schedule;
 }
+
 
 /**
  * Calculate total interest over the loan tenure
@@ -166,6 +167,10 @@ function addMonths(dateStr: string, months: number): string {
   const d = new Date(dateStr + "T00:00:00");
   d.setMonth(d.getMonth() + months);
   return d.toISOString().split("T")[0];
+}
+
+function roundTo2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 /**

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
+import { generateInstallmentSchedule } from "@/lib/calculations";
 
 export default function NewLoanPage() {
   const [form, setForm] = useState({
@@ -38,22 +39,22 @@ export default function NewLoanPage() {
       return;
     }
 
-    let emi: number;
-    let totalInterest: number;
+    const schedule = generateInstallmentSchedule(
+      principal,
+      rate,
+      tenure,
+      form.startDate || new Date().toISOString().split("T")[0],
+      form.interestRatePeriod
+    );
 
-    if (rate === 0) {
-      emi = principal / tenure;
-      totalInterest = 0;
-    } else {
-      const r = form.interestRatePeriod === "yearly" ? rate / 12 / 100 : rate / 100;
-      emi = (principal * r * Math.pow(1 + r, tenure)) / (Math.pow(1 + r, tenure) - 1);
-      totalInterest = emi * tenure - principal;
-    }
+    const emi = rate === 0 ? principal / tenure : schedule[0]?.totalAmount ?? principal / tenure;
+    const totalInterest = rate === 0 ? 0 : schedule.reduce((sum, installment) => sum + installment.interestAmount, 0);
+    const totalAmount = rate === 0 ? principal : schedule.reduce((sum, installment) => sum + installment.totalAmount, 0);
 
     setPreview({
       emi: Math.round(emi * 100) / 100,
       totalInterest: Math.round(totalInterest * 100) / 100,
-      totalAmount: Math.round(emi * tenure * 100) / 100,
+      totalAmount: Math.round(totalAmount * 100) / 100,
     });
   };
 
