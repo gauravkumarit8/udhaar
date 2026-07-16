@@ -4,8 +4,8 @@
  */
 import { cookies } from "next/headers";
 import { db } from "@/db";
-import { users } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { users, loans } from "@/db/schema";
+import { eq, and, isNull } from "drizzle-orm";
 
 const SESSION_COOKIE = "udhaar_session";
 
@@ -53,12 +53,29 @@ export async function getOrCreateUser(
     .where(eq(users.mobile, mobile))
     .limit(1);
 
-  if (existing) return existing;
+  if (existing) {
+    await backfillBorrowerLoans(existing.id, existing.mobile);
+    return existing;
+  }
 
   const [created] = await db
     .insert(users)
     .values({ mobile, name: name || `User ${mobile.slice(-4)}` })
     .returning();
 
+  await backfillBorrowerLoans(created.id, created.mobile);
+
   return created;
+}
+
+/**
+ * Links any loans that were created against this mobile number before the
+ * borrower had an account (or before they'd ever logged in). Safe to call
+ * on every login — it's a no-op once a loan's borrowerId is already set.
+ */
+export async function backfillBorrowerLoans(userId: string, mobile: string): Promise<void> {
+  await db
+    .update(loans)
+    .set({ borrowerId: userId })
+    .where(and(eq(loans.borrowerMobile, mobile), isNull(loans.borrowerId)));
 }

@@ -21,9 +21,12 @@ export async function GET(
     return NextResponse.json({ error: "Loan not found" }, { status: 404 });
   }
 
-  if (loan.lenderId !== session.id) {
+  // Only the lender or the linked borrower may view this loan
+  if (loan.lenderId !== session.id && loan.borrowerId !== session.id) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+
+  const viewerRole = loan.lenderId === session.id ? "lender" : "borrower";
 
   // Get installments with computed status
   const rawInstallments = await db
@@ -50,7 +53,11 @@ export async function GET(
     .where(eq(payments.loanId, id))
     .orderBy(payments.createdAt);
 
-  return NextResponse.json({ loan, installments: enrichedInstallments, payments: loanPayments });
+  return NextResponse.json({
+    loan: { ...loan, viewerRole },
+    installments: enrichedInstallments,
+    payments: loanPayments,
+  });
 }
 
 export async function PATCH(

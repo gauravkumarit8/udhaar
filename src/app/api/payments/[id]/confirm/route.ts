@@ -30,6 +30,23 @@ export async function PATCH(
     return NextResponse.json({ error: "Payment already processed" }, { status: 400 });
   }
 
+  // Only the lender or the linked borrower on this loan may act on the payment
+  const [loan] = await db.select().from(loans).where(eq(loans.id, payment.loanId)).limit(1);
+  if (!loan) {
+    return NextResponse.json({ error: "Loan not found" }, { status: 404 });
+  }
+  if (loan.lenderId !== session.id && loan.borrowerId !== session.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // The person who marked the payment can't be the one who confirms/rejects it
+  if (payment.markedByUserId === session.id) {
+    return NextResponse.json(
+      { error: "You can't confirm a payment you marked yourself. Ask the other party to confirm." },
+      { status: 403 }
+    );
+  }
+
   // Update payment status
   await db
     .update(payments)

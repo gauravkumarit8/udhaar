@@ -34,6 +34,7 @@ export const loans = pgTable("loans", {
   lenderId: uuid("lender_id")
     .references(() => users.id)
     .notNull(),
+  borrowerId: uuid("borrower_id").references(() => users.id),
   borrowerName: varchar("borrower_name", { length: 100 }).notNull(),
   borrowerMobile: varchar("borrower_mobile", { length: 15 }).notNull(),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),

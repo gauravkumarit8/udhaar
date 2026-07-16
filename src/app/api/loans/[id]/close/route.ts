@@ -20,6 +20,11 @@ export async function POST(
     return NextResponse.json({ error: "Loan not found" }, { status: 404 });
   }
 
+  // Only the lender can close a loan
+  if (loan.lenderId !== session.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   // Check if all installments are fully paid
   const [result] = await db
     .select({

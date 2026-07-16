@@ -32,6 +32,14 @@ export async function POST(
 
   // Get loan for confirmation mode
   const [loan] = await db.select().from(loans).where(eq(loans.id, inst.loanId)).limit(1);
+  if (!loan) {
+    return NextResponse.json({ error: "Loan not found" }, { status: 404 });
+  }
+
+  // Only the lender or the linked borrower can mark a payment
+  if (loan.lenderId !== session.id && loan.borrowerId !== session.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const principalRemaining = parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid);
   const interestRemaining = parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid);

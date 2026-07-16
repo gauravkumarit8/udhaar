@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { loans, installments } from "@/db/schema";
+import { loans, installments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { generateInstallmentSchedule } from "@/lib/calculations";
 import { eq, or, desc } from "drizzle-orm";
@@ -11,14 +11,21 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Get loans where user is the lender
+  // Get loans where the user is either the lender or the borrower
   const userLoans = await db
     .select()
     .from(loans)
-    .where(eq(loans.lenderId, session.id))
+    .where(or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)))
     .orderBy(desc(loans.createdAt));
 
-  return NextResponse.json({ loans: userLoans });
+  // Tag each loan with the viewer's role so the UI can render
+  // "You lent" vs "You borrowed"
+  const taggedLoans = userLoans.map((loan) => ({
+    ...loan,
+    viewerRole: loan.lenderId === session.id ? "lender" : "borrower",
+  }));
+
+  return NextResponse.json({ loans: taggedLoans });
 }
 
 export async function POST(req: NextRequest) {
@@ -58,11 +65,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Amount and tenure must be positive" }, { status: 400 });
   }
 
+  // Resolve the borrower's user account, if they've already signed up
+  const [existingBorrower] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.mobile, borrowerMobile))
+    .limit(1);
+
   // Create loan
   const [loan] = await db
     .insert(loans)
     .values({
       lenderId: session.id,
+      borrowerId: existingBorrower?.id ?? null,
       borrowerName,
       borrowerMobile,
       amount: principalAmount.toFixed(2),
