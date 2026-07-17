@@ -29,6 +29,11 @@ export async function POST(
     return NextResponse.json({ error: "Loan not found" }, { status: 404 });
   }
 
+  // Only the lender can send a payment reminder to the borrower
+  if (loan.lenderId !== session.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   // Generate reminder message
   const interestDue = formatINR(parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid));
   const principalDue = formatINR(parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid));

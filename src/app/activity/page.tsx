@@ -12,28 +12,39 @@ interface Reminder {
   message: string;
   sentAt: string;
   status: string;
+  viewerRole: "lender" | "borrower";
 }
 
 interface DueItem {
   loanId: string;
   borrowerName: string;
+  lenderName: string | null;
   installmentId: string;
   dueDate: string;
   amount: number;
   computedStatus: string;
+  viewerRole: "lender" | "borrower";
 }
 
 export default function ActivityPage() {
   const [dueItems, setDueItems] = useState<DueItem[]>([]);
+  const [notifications, setNotifications] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
-        const res = await fetch("/api/dashboard");
-        if (res.ok) {
-          const data = await res.json();
+        const [dashRes, notifRes] = await Promise.all([
+          fetch("/api/dashboard"),
+          fetch("/api/notifications"),
+        ]);
+        if (dashRes.ok) {
+          const data = await dashRes.json();
           setDueItems(data.dueItems || []);
+        }
+        if (notifRes.ok) {
+          const data = await notifRes.json();
+          setNotifications(data.notifications || []);
         }
       } catch {
         // ignore
@@ -73,17 +84,29 @@ export default function ActivityPage() {
                 >
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-bold text-slate-800">{item.borrowerName}</p>
+                      <p className="font-bold text-slate-800">{item.viewerRole === "lender" ? item.borrowerName : (item.lenderName || "Lender")}</p>
                       <p className="text-xs text-red-600 mt-0.5">
                         Due {new Date(item.dueDate + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · ₹{item.amount.toLocaleString("en-IN")}
+                        {item.viewerRole === "borrower" && (
+                          <span className="ml-1.5 text-[10px] font-bold bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">YOU OWE</span>
+                        )}
                       </p>
                     </div>
-                    <button
-                      onClick={() => handleRemind(item.installmentId)}
-                      className="bg-red-600 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                    >
-                      🔔 Remind Now
-                    </button>
+                    {item.viewerRole === "lender" ? (
+                      <button
+                        onClick={() => handleRemind(item.installmentId)}
+                        className="bg-red-600 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
+                      >
+                        🔔 Remind Now
+                      </button>
+                    ) : (
+                      <a
+                        href={`/loans/${item.loanId}`}
+                        className="bg-red-600 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
+                      >
+                        Pay Now
+                      </a>
+                    )}
                   </div>
                 </div>
               ))}
@@ -106,17 +129,29 @@ export default function ActivityPage() {
                 >
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="font-bold text-slate-800">{item.borrowerName}</p>
+                      <p className="font-bold text-slate-800">{item.viewerRole === "lender" ? item.borrowerName : (item.lenderName || "Lender")}</p>
                       <p className="text-xs text-amber-600 mt-0.5">
                         Due {new Date(item.dueDate + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · ₹{item.amount.toLocaleString("en-IN")}
+                        {item.viewerRole === "borrower" && (
+                          <span className="ml-1.5 text-[10px] font-bold bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">YOU OWE</span>
+                        )}
                       </p>
                     </div>
-                    <button
-                      onClick={() => handleRemind(item.installmentId)}
-                      className="bg-amber-500 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                    >
-                      🔔 Remind
-                    </button>
+                    {item.viewerRole === "lender" ? (
+                      <button
+                        onClick={() => handleRemind(item.installmentId)}
+                        className="bg-amber-500 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
+                      >
+                        🔔 Remind
+                      </button>
+                    ) : (
+                      <a
+                        href={`/loans/${item.loanId}`}
+                        className="bg-amber-500 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
+                      >
+                        Pay Now
+                      </a>
+                    )}
                   </div>
                 </div>
               ))}
@@ -130,6 +165,30 @@ export default function ActivityPage() {
             <div className="text-6xl mb-4">🔔</div>
             <h3 className="text-xl font-bold text-slate-700">All Quiet!</h3>
             <p className="text-slate-400 text-sm mt-1">No overdue or upcoming reminders</p>
+          </div>
+        )}
+
+        {/* Notifications (e.g. "loan added for you", reminders sent) */}
+        {notifications.length > 0 && (
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-2 h-2 bg-blue-400 rounded-full" />
+              <h2 className="text-base font-bold text-slate-700">Notifications</h2>
+            </div>
+            <div className="space-y-2.5">
+              {notifications.map((n) => (
+                <a
+                  key={n.id}
+                  href={`/loans/${n.loanId}`}
+                  className="block bg-white rounded-2xl p-4 border border-slate-100 tap-highlight active:bg-slate-50 transition-all"
+                >
+                  <p className="text-sm text-slate-700">{n.message}</p>
+                  <p className="text-[11px] text-slate-400 mt-1.5">
+                    {new Date(n.sentAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}
+                  </p>
+                </a>
+              ))}
+            </div>
           </div>
         )}
 
