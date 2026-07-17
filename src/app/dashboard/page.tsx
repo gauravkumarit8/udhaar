@@ -8,10 +8,12 @@ import { useAppResume, useHaptics } from "@/hooks/useNative";
 interface DueItem {
   loanId: string;
   borrowerName: string;
+  lenderName: string | null;
   installmentId: string;
   dueDate: string;
   amount: number;
   computedStatus: string;
+  viewerRole: "lender" | "borrower";
 }
 
 interface Loan {
@@ -25,12 +27,14 @@ interface Loan {
   status: string;
   startDate: string;
   createdAt: string;
+  viewerRole: "lender" | "borrower";
+  lenderName: string | null;
 }
 
 interface DashboardData {
   summary: {
     youWillReceive: number;
-    youWillPay: number;
+    youWillPay: number; // now computed from loans where you're the borrower
     dueThisWeek: number;
     totalInterestEarned: number;
     activeLoans: number;
@@ -169,8 +173,17 @@ export default function DashboardPage() {
           </div>
           <div className="bg-white/15 backdrop-blur-md rounded-2xl p-4 border border-white/10">
             <div className="flex items-center gap-2 mb-2">
+              <div className="w-7 h-7 bg-red-400/30 rounded-lg flex items-center justify-center text-sm">📤</div>
+              <span className="text-emerald-200 text-xs font-medium">You&apos;ll Pay</span>
+            </div>
+            <p className="text-2xl font-extrabold text-white">
+              {formatINR(summary.youWillPay)}
+            </p>
+          </div>
+          <div className="bg-white/15 backdrop-blur-md rounded-2xl p-4 border border-white/10 col-span-2">
+            <div className="flex items-center gap-2 mb-2">
               <div className="w-7 h-7 bg-amber-400/30 rounded-lg flex items-center justify-center text-sm">⏰</div>
-              <span className="text-emerald-200 text-xs font-medium">Due This Week</span>
+              <span className="text-emerald-200 text-xs font-medium">Due This Week (both sides)</span>
             </div>
             <p className="text-2xl font-extrabold text-white">
               {formatINR(summary.dueThisWeek)}
@@ -225,6 +238,8 @@ export default function DashboardPage() {
                 const days = daysUntil(item.dueDate);
                 const isOverdue = item.computedStatus === "overdue";
                 const isDueSoon = item.computedStatus === "due_soon";
+                const displayName =
+                  item.viewerRole === "lender" ? item.borrowerName : item.lenderName || "Lender";
                 const dayLabel =
                   days < 0
                     ? `${Math.abs(days)}d overdue`
@@ -249,12 +264,23 @@ export default function DashboardPage() {
                           : "bg-emerald-500"
                       }`}
                     >
-                      {item.borrowerName.charAt(0).toUpperCase()}
+                      {displayName.charAt(0).toUpperCase()}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-slate-800 text-[15px] truncate">
-                        {item.borrowerName}
-                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="font-semibold text-slate-800 text-[15px] truncate">
+                          {displayName}
+                        </p>
+                        <span
+                          className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                            item.viewerRole === "lender"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-orange-100 text-orange-700"
+                          }`}
+                        >
+                          {item.viewerRole === "lender" ? "OWED TO YOU" : "YOU OWE"}
+                        </span>
+                      </div>
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <div
                           className={`w-1.5 h-1.5 rounded-full ${
@@ -310,7 +336,10 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="space-y-2.5">
-              {loans.map((loan) => (
+              {loans.map((loan) => {
+                const displayName =
+                  loan.viewerRole === "lender" ? loan.borrowerName : loan.lenderName || "Lender";
+                return (
                 <a
                   key={loan.id}
                   href={`/loans/${loan.id}`}
@@ -321,13 +350,22 @@ export default function DashboardPage() {
                       loan.status === "active" ? "bg-emerald-500" : "bg-slate-400"
                     }`}
                   >
-                    {loan.borrowerName.charAt(0).toUpperCase()}
+                    {displayName.charAt(0).toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className="font-semibold text-slate-800 text-[15px] truncate">
-                        {loan.borrowerName}
+                        {displayName}
                       </p>
+                      <span
+                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
+                          loan.viewerRole === "lender"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-orange-100 text-orange-700"
+                        }`}
+                      >
+                        {loan.viewerRole === "lender" ? "LENT" : "BORROWED"}
+                      </span>
                       <span
                         className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                           loan.status === "active"
@@ -356,7 +394,8 @@ export default function DashboardPage() {
                     />
                   </svg>
                 </a>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

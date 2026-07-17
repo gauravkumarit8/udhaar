@@ -11,6 +11,8 @@ import { useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 
 interface Loan {
   id: string;
+  lenderId: string;
+  borrowerId: string | null;
   borrowerName: string;
   borrowerMobile: string;
   amount: string;
@@ -24,6 +26,7 @@ interface Loan {
   status: string;
   confirmationMode: string;
   createdAt: string;
+  viewerRole: "lender" | "borrower";
 }
 
 interface Installment {
@@ -330,6 +333,9 @@ export default function LoanDetailPage() {
     );
   }
 
+  const isLender = loan.viewerRole === "lender";
+  const currentUserId = isLender ? loan.lenderId : loan.borrowerId;
+
   const paidInstallments = installments.filter((i) => i.computedStatus === "paid").length;
   const progressPercent = installments.length > 0
     ? Math.round((paidInstallments / installments.length) * 100)
@@ -367,6 +373,13 @@ export default function LoanDetailPage() {
           Dashboard
         </a>
       </div>
+
+      {!isLender && (
+        <div className="mx-5 mt-3 bg-blue-50 border border-blue-200 rounded-2xl px-4 py-2.5 text-xs font-medium text-blue-700 flex items-center gap-2">
+          <span>👤</span>
+          <span>This loan was added by the lender. You&apos;re viewing it as the borrower — you can mark payments, but only the lender can edit or close it.</span>
+        </div>
+      )}
 
       {/* Loan Summary Card */}
       <div className="mx-5 mt-3 bg-gradient-to-br from-emerald-600 to-emerald-700 rounded-3xl p-5 shadow-lg shadow-emerald-600/20">
@@ -426,7 +439,7 @@ export default function LoanDetailPage() {
 
         {/* Action buttons */}
         <div className="flex gap-2 mt-4">
-          {upiLink && (
+          {upiLink && !isLender && (
             <a
               href={upiLink}
               className="flex-1 bg-white text-emerald-700 font-semibold py-2.5 rounded-2xl text-sm text-center tap-highlight active:bg-emerald-50 transition"
@@ -434,7 +447,7 @@ export default function LoanDetailPage() {
               📱 Pay via UPI
             </a>
           )}
-          {loan.status === "active" && (
+          {isLender && loan.status === "active" && (
             <button
               onClick={handleCloseLoan}
               className="flex-1 bg-emerald-500/40 text-white font-semibold py-2.5 rounded-2xl text-sm tap-highlight active:bg-emerald-500/60 transition"
@@ -445,15 +458,17 @@ export default function LoanDetailPage() {
         </div>
 
 
-        {/* Share / Invite */}
-        <div className="mt-3">
-          <ShareButton
-            borrowerName={loan.borrowerName}
-            borrowerMobile={loan.borrowerMobile}
-            amount={loan.amount}
-            upiId={loan.upiId}
-          />
-        </div>
+        {/* Share / Invite - lender only, used to send loan details to the borrower */}
+        {isLender && (
+          <div className="mt-3">
+            <ShareButton
+              borrowerName={loan.borrowerName}
+              borrowerMobile={loan.borrowerMobile}
+              amount={loan.amount}
+              upiId={loan.upiId}
+            />
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -593,12 +608,14 @@ export default function LoanDetailPage() {
                         Interest Only
                       </button>
                     )}
-                    <button
-                      onClick={() => handleRemind(inst.id)}
-                      className="bg-white active:bg-slate-100 text-slate-600 text-xs font-semibold px-4 py-2 rounded-xl border border-slate-200 tap-highlight"
-                    >
-                      {reminderSent === inst.id ? "✓ Sent!" : "🔔 Remind"}
-                    </button>
+                    {isLender && (
+                      <button
+                        onClick={() => handleRemind(inst.id)}
+                        className="bg-white active:bg-slate-100 text-slate-600 text-xs font-semibold px-4 py-2 rounded-xl border border-slate-200 tap-highlight"
+                      >
+                        {reminderSent === inst.id ? "✓ Sent!" : "🔔 Remind"}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -656,7 +673,7 @@ export default function LoanDetailPage() {
                     {payment.status.toUpperCase()}
                   </span>
                 </div>
-                {payment.status === "pending" && (
+                {payment.status === "pending" && payment.markedByUserId !== currentUserId && (
                   <div className="flex gap-2 mt-3">
                     <button
                       onClick={() => handleConfirmPayment(payment.id, "confirm")}
@@ -671,6 +688,11 @@ export default function LoanDetailPage() {
                       ✗ Reject
                     </button>
                   </div>
+                )}
+                {payment.status === "pending" && payment.markedByUserId === currentUserId && (
+                  <p className="text-[11px] text-amber-600 font-medium mt-3">
+                    ⏳ Waiting for {isLender ? "borrower" : "lender"} to confirm
+                  </p>
                 )}
               </div>
             ))
@@ -766,25 +788,27 @@ export default function LoanDetailPage() {
         </div>
       </BottomSheet>
 
-      {/* Edit Loan Bottom Sheet */}
-      <div className="fixed left-0 right-0 z-40 px-3" style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}>
-        <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur-xl">
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={openEditForm}
-              className="bg-emerald-600 text-white font-semibold py-3 rounded-xl text-sm tap-highlight"
-            >
-              ✏️ Edit Loan
-            </button>
-            <button
-              onClick={handleDeleteLoan}
-              className="bg-red-50 text-red-600 font-semibold py-3 rounded-xl border border-red-200 text-sm tap-highlight"
-            >
-              🗑️ Delete Loan
-            </button>
+      {/* Edit/Delete - lender only */}
+      {isLender && (
+        <div className="fixed left-0 right-0 z-40 px-3" style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}>
+          <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur-xl">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={openEditForm}
+                className="bg-emerald-600 text-white font-semibold py-3 rounded-xl text-sm tap-highlight"
+              >
+                ✏️ Edit Loan
+              </button>
+              <button
+                onClick={handleDeleteLoan}
+                className="bg-red-50 text-red-600 font-semibold py-3 rounded-xl border border-red-200 text-sm tap-highlight"
+              >
+                🗑️ Delete Loan
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <BottomSheet
         open={!!editForm}

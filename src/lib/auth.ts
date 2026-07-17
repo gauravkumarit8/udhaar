@@ -4,8 +4,9 @@
  */
 import { cookies } from "next/headers";
 import { db } from "@/db";
-import { users, loans } from "@/db/schema";
+import { users, loans, installments, reminders } from "@/db/schema";
 import { eq, and, isNull } from "drizzle-orm";
+import { formatINR, formatDate } from "@/lib/calculations";
 
 const SESSION_COOKIE = "udhaar_session";
 
@@ -72,10 +73,39 @@ export async function getOrCreateUser(
  * Links any loans that were created against this mobile number before the
  * borrower had an account (or before they'd ever logged in). Safe to call
  * on every login — it's a no-op once a loan's borrowerId is already set.
+ * Also notifies the borrower about each loan that just got linked.
  */
 export async function backfillBorrowerLoans(userId: string, mobile: string): Promise<void> {
-  await db
+  const linkedLoans = await db
     .update(loans)
     .set({ borrowerId: userId })
-    .where(and(eq(loans.borrowerMobile, mobile), isNull(loans.borrowerId)));
+    .where(and(eq(loans.borrowerMobile, mobile), isNull(loans.borrowerId)))
+    .returning();
+
+  for (const loan of linkedLoans) {
+    const [firstInst] = await db
+      .select()
+      .from(installments)
+      .where(eq(installments.loanId, loan.id))
+      .orderBy(installments.installmentNumber)
+      .limit(1);
+
+    if (!firstInst) continue;
+
+    const [lender] = await db
+      .select({ name: users.name })
+      .from(users)
+      .where(eq(users.id, loan.lenderId))
+      .limit(1);
+
+    const message = `${lender?.name || "Someone"} added a loan of ${formatINR(loan.amount)} for you on Udhaar. First payment of ${formatINR(firstInst.totalAmount)} due on ${formatDate(firstInst.dueDate)}.`;
+
+    await db.insert(reminders).values({
+      installmentId: firstInst.id,
+      loanId: loan.id,
+      channel: "push",
+      message,
+      status: "sent",
+    });
+  }
 }
