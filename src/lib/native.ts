@@ -4,6 +4,7 @@
  */
 
 import { LocalNotifications, ScheduleOptions } from "@capacitor/local-notifications";
+import { PushNotifications } from "@capacitor/push-notifications";
 import { Haptics, ImpactStyle, NotificationType } from "@capacitor/haptics";
 import { Camera, CameraResultType, CameraSource } from "@capacitor/camera";
 import { Share } from "@capacitor/share";
@@ -146,6 +147,44 @@ export async function cancelInstallmentReminders(installmentId: string): Promise
     }
   } catch {
     // ignore
+  }
+}
+
+// ─── Push Notifications (real, server-sent via FCM) ────────────
+
+/**
+ * Requests push permission, grabs the device's FCM token, and registers it
+ * with the backend so the server can send real push notifications (e.g.
+ * "a loan was added for you") even when the app is closed.
+ * No-op in the browser - FCM registration only makes sense on native devices.
+ */
+export async function registerForPushNotifications(): Promise<boolean> {
+  if (!isNative()) return false;
+
+  try {
+    const perm = await PushNotifications.requestPermissions();
+    if (perm.receive !== "granted") return false;
+
+    await PushNotifications.register();
+
+    return new Promise((resolve) => {
+      PushNotifications.addListener("registration", async (tokenResult) => {
+        try {
+          const platform = (window as any).Capacitor?.getPlatform?.() || "android";
+          await fetch("/api/notifications/register-device", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: tokenResult.value, platform }),
+          });
+          resolve(true);
+        } catch {
+          resolve(false);
+        }
+      });
+      PushNotifications.addListener("registrationError", () => resolve(false));
+    });
+  } catch {
+    return false;
   }
 }
 

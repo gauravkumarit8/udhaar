@@ -1,29 +1,65 @@
 "use client";
 
+import { useState } from "react";
 import { useCamera, useHaptics } from "@/hooks/useNative";
 
 interface ProofUploadProps {
-  onCapture: (dataUrl: string) => void;
+  onCapture: (hostedUrl: string) => void;
   currentProof?: string | null;
 }
 
 export default function ProofUpload({ onCapture, currentProof }: ProofUploadProps) {
-  const { photoUrl, loading, capture, pick, clear } = useCamera();
+  const { loading: cameraLoading, capture, pick, clear } = useCamera();
   const haptics = useHaptics();
+  const [localPreview, setLocalPreview] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function uploadAndNotify(dataUrl: string) {
+    setError(null);
+    setLocalPreview(dataUrl); // instant feedback while the upload is in flight
+    setUploading(true);
+    try {
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Upload failed");
+      onCapture(data.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't upload the photo. Try again.");
+      setLocalPreview(null);
+      clear();
+    } finally {
+      setUploading(false);
+    }
+  }
 
   const handleCapture = async () => {
     haptics.tap();
     const result = await capture();
-    if (result) onCapture(result);
+    if (result) await uploadAndNotify(result);
   };
 
   const handlePick = async () => {
     haptics.tap();
     const result = await pick();
-    if (result) onCapture(result);
+    if (result) await uploadAndNotify(result);
   };
 
-  const displayUrl = currentProof || photoUrl;
+  const handleRemove = () => {
+    clear();
+    setLocalPreview(null);
+    setError(null);
+    onCapture("");
+  };
+
+  // Prefer the already-uploaded proof; fall back to the local preview
+  // while a fresh capture is still uploading.
+  const displayUrl = currentProof || localPreview;
+  const loading = cameraLoading || uploading;
 
   return (
     <div className="space-y-2">
@@ -38,15 +74,19 @@ export default function ProofUpload({ onCapture, currentProof }: ProofUploadProp
             alt="Payment proof"
             className="w-full h-40 object-cover"
           />
-          <button
-            onClick={() => {
-              clear();
-              onCapture("");
-            }}
-            className="absolute top-2 right-2 w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center text-sm shadow-lg tap-highlight"
-          >
-            ✕
-          </button>
+          {uploading && (
+            <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+              <span className="text-white text-xs font-semibold">Uploading…</span>
+            </div>
+          )}
+          {!uploading && (
+            <button
+              onClick={handleRemove}
+              className="absolute top-2 right-2 w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center text-sm shadow-lg tap-highlight"
+            >
+              ✕
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-2">
@@ -69,9 +109,10 @@ export default function ProofUpload({ onCapture, currentProof }: ProofUploadProp
         </div>
       )}
 
-      {loading && (
+      {loading && !displayUrl && (
         <p className="text-xs text-slate-400 text-center">Processing image...</p>
       )}
+      {error && <p className="text-xs text-red-500 text-center">{error}</p>}
     </div>
   );
 }
