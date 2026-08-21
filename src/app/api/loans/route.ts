@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { loans, installments, users } from "@/db/schema";
+import { loans, installments, users, reminders } from "@/db/schema";
 import { getSession } from "@/lib/auth";
-import { generateInstallmentSchedule } from "@/lib/calculations";
+import { generateInstallmentSchedule, formatINR, formatDate } from "@/lib/calculations";
+import { sendPushToUser } from "@/lib/push";
 import { eq, or, desc } from "drizzle-orm";
 
 export async function GET() {
@@ -105,7 +106,28 @@ export async function POST(req: NextRequest) {
     totalAmount: inst.totalAmount.toFixed(2),
   }));
 
-  await db.insert(installments).values(installmentValues);
+  const insertedInstallments = await db.insert(installments).values(installmentValues).returning();
+
+  // Notify the borrower if they already have an account - attach the
+  // notification to the first installment since `reminders` is scoped
+  // to a specific EMI.
+  if (existingBorrower && insertedInstallments.length > 0) {
+    const firstInst = insertedInstallments[0];
+    const message = `${session.name} added a loan of ${formatINR(principalAmount)} for you on Udhaar. First payment of ${formatINR(firstInst.totalAmount)} due on ${formatDate(firstInst.dueDate)}.`;
+
+    await db.insert(reminders).values({
+      installmentId: firstInst.id,
+      loanId: loan.id,
+      channel: "push",
+      message,
+      status: "sent",
+    });
+
+    await sendPushToUser(existingBorrower.id, "💸 New loan added", message, {
+      type: "loan_added",
+      loanId: loan.id,
+    });
+  }
 
   return NextResponse.json({ loan, installmentsGenerated: schedule.length }, { status: 201 });
 }

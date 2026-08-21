@@ -5,6 +5,7 @@ import {
   isNative,
   scheduleInstallmentReminders,
   cancelInstallmentReminders,
+  registerForPushNotifications,
   hapticImpact,
   hapticNotification,
   hapticTap,
@@ -30,6 +31,17 @@ export function useIsNative() {
   }, []);
 
   return native;
+}
+
+/**
+ * Registers the device for real push notifications once, on mount.
+ * Call this from a top-level authenticated page (e.g. dashboard) after
+ * login so the backend can push to this device even when the app is closed.
+ */
+export function usePushRegistration() {
+  useEffect(() => {
+    registerForPushNotifications();
+  }, []);
 }
 
 /** Network connectivity state */

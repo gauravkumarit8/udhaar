@@ -111,3 +111,14 @@ export const reminders = pgTable("reminders", {
   sentAt: timestamp("sent_at", { withTimezone: true }).defaultNow().notNull(),
   status: varchar("status", { length: 20 }).notNull().default("sent"), // sent | delivered | failed
 });
+
+// ─── Device Tokens (for push notifications via FCM) ─────────────
+export const deviceTokens = pgTable("device_tokens", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .references(() => users.id)
+    .notNull(),
+  token: varchar("token", { length: 512 }).notNull().unique(),
+  platform: varchar("platform", { length: 10 }).notNull(), // android | ios | web
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});

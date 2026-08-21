@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
-import { useAppResume, useHaptics } from "@/hooks/useNative";
+import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
 
 interface DueItem {
   loanId: string;
@@ -66,6 +66,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [greeting, setGreeting] = useState("Good morning");
   const haptics = useHaptics();
+  usePushRegistration();
 
   useEffect(() => {
     const hour = new Date().getHours();

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { installments, loans, reminders } from "@/db/schema";
 import { getSession } from "@/lib/auth";
+import { sendPushToUser } from "@/lib/push";
 import { formatINR, formatDate } from "@/lib/calculations";
 import { eq } from "drizzle-orm";
 
@@ -42,7 +43,7 @@ export async function POST(
 
   const message = `Reminder: Payment of ${totalDue} (Interest: ${interestDue}, Principal: ${principalDue}) due on ${dueDateStr} for loan from ${loan.borrowerName}. Pay now via UPI.`;
 
-  // Store reminder record (in production, this would trigger actual SMS/push/WhatsApp)
+  // Store reminder record
   const [reminder] = await db
     .insert(reminders)
     .values({
@@ -54,9 +55,22 @@ export async function POST(
     })
     .returning();
 
+  // Send a real push notification if the borrower has an account and a
+  // registered device. SMS/WhatsApp channels still need a provider wired up
+  // (see the send-otp integration for that same decision).
+  let pushResult: { sent: number; failed: number } | null = null;
+  if (loan.borrowerId) {
+    pushResult = await sendPushToUser(loan.borrowerId, "💰 Payment Reminder", message, {
+      type: "reminder",
+      installmentId: id,
+      loanId: inst.loanId,
+    });
+  }
+
   return NextResponse.json({
     success: true,
     reminder,
+    pushSent: pushResult?.sent ?? 0,
     upiLink: loan.upiId
       ? `upi://pay?pa=${loan.upiId}&am=${(parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid)).toFixed(2)}&tn=Payment+for+${loan.borrowerName}&pn=${loan.borrowerName}`
       : null,

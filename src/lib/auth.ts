@@ -7,6 +7,7 @@ import { db } from "@/db";
 import { users, loans, installments, reminders } from "@/db/schema";
 import { eq, and, isNull } from "drizzle-orm";
 import { formatINR, formatDate } from "@/lib/calculations";
+import { sendPushToUser } from "@/lib/push";
 
 const SESSION_COOKIE = "udhaar_session";
 
@@ -106,6 +107,11 @@ export async function backfillBorrowerLoans(userId: string, mobile: string): Pro
       channel: "push",
       message,
       status: "sent",
+    });
+
+    await sendPushToUser(userId, "💸 A loan is waiting for you", message, {
+      type: "loan_added",
+      loanId: loan.id,
     });
   }
 }
