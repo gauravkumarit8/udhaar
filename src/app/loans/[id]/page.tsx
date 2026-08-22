@@ -93,6 +93,7 @@ export default function LoanDetailPage() {
   const [payNotes, setPayNotes] = useState("");
   const [payProof, setPayProof] = useState<string | null>(null);
   const [payLoading, setPayLoading] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
   const [reminderSent, setReminderSent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"schedule" | "payments">("schedule");
   const [showUPI, setShowUPI] = useState(false);
@@ -153,6 +154,14 @@ export default function LoanDetailPage() {
 
   const handlePay = async () => {
     if (!payModal || !payAmount) return;
+
+    const amountNum = parseFloat(payAmount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      setPayError("Enter an amount greater than 0");
+      return;
+    }
+
+    setPayError(null);
     setPayLoading(true);
     try {
       const res = await fetch(`/api/installments/${payModal.installment.id}/pay`, {
@@ -166,25 +175,29 @@ export default function LoanDetailPage() {
         }),
       });
       const data = await res.json();
-      if (data.success) {
-        haptics.notification("success");
-        setPayModal(null);
-        setPayAmount("");
-        setPayNotes("");
-        setPayProof(null);
-        // Cancel reminders for this installment if fully paid
-        if (data.applied) {
-          const inst = payModal.installment;
-          const pRemaining = parseFloat(inst.principalAmount) - data.applied.principal;
-          const iRemaining = parseFloat(inst.interestAmount) - data.applied.interest;
-          if (pRemaining <= 0 && iRemaining <= 0) {
-            reminders.cancel(inst.id);
-          }
-        }
-        await loadData();
+      if (!res.ok || !data.success) {
+        setPayError(data.error || "Couldn't record the payment. Try again.");
+        haptics.notification("error");
+        return;
       }
+      haptics.notification("success");
+      setPayModal(null);
+      setPayAmount("");
+      setPayNotes("");
+      setPayProof(null);
+      // Cancel reminders for this installment if fully paid
+      if (data.applied) {
+        const inst = payModal.installment;
+        const pRemaining = parseFloat(inst.principalAmount) - data.applied.principal;
+        const iRemaining = parseFloat(inst.interestAmount) - data.applied.interest;
+        if (pRemaining <= 0 && iRemaining <= 0) {
+          reminders.cancel(inst.id);
+        }
+      }
+      await loadData();
     } catch {
-      // ignore
+      setPayError("Network error - couldn't reach the server. Try again.");
+      haptics.notification("error");
     } finally {
       setPayLoading(false);
     }
@@ -592,6 +605,7 @@ export default function LoanDetailPage() {
                       onClick={() => {
                         setPayModal({ installment: inst, type: "both" });
                         setPayAmount(totalRemaining.toFixed(2));
+                        setPayError(null);
                       }}
                       className="bg-emerald-600 active:bg-emerald-800 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
                     >
@@ -602,6 +616,7 @@ export default function LoanDetailPage() {
                         onClick={() => {
                           setPayModal({ installment: inst, type: "interest" });
                           setPayAmount(interestRemaining.toFixed(2));
+                          setPayError(null);
                         }}
                         className="bg-blue-600 active:bg-blue-800 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
                       >
@@ -703,7 +718,7 @@ export default function LoanDetailPage() {
       {/* Pay Bottom Sheet */}
       <BottomSheet
         open={!!payModal}
-        onClose={() => { setPayModal(null); setPayProof(null); }}
+        onClose={() => { setPayModal(null); setPayProof(null); setPayError(null); }}
         title="Record Payment"
         subtitle={
           payModal
@@ -718,11 +733,16 @@ export default function LoanDetailPage() {
             </label>
             <input
               type="number"
+              min="0.01"
+              step="0.01"
               value={payAmount}
-              onChange={(e) => setPayAmount(e.target.value)}
+              onChange={(e) => { setPayAmount(e.target.value); setPayError(null); }}
               className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-2xl font-bold"
               autoFocus
             />
+            {payError && (
+              <p className="text-xs text-red-500 font-medium mt-1.5">{payError}</p>
+            )}
           </div>
 
           <div className="flex gap-2">

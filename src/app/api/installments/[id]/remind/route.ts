@@ -56,8 +56,7 @@ export async function POST(
     .returning();
 
   // Send a real push notification if the borrower has an account and a
-  // registered device. SMS/WhatsApp channels still need a provider wired up
-  // (see the send-otp integration for that same decision).
+  // registered device. SMS/WhatsApp channels still need a provider wired up.
   let pushResult: { sent: number; failed: number } | null = null;
   if (loan.borrowerId) {
     pushResult = await sendPushToUser(loan.borrowerId, "💰 Payment Reminder", message, {
