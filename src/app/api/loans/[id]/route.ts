@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { loans, installments, payments, reminders } from "@/db/schema";
+import { loans, installments, payments, reminders, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { computeInstallmentStatus, generateInstallmentSchedule } from "@/lib/calculations";
 import { eq } from "drizzle-orm";
@@ -102,6 +102,13 @@ export async function PATCH(
     );
   }
 
+  if (!/^\d{10}$/.test(borrowerMobile)) {
+    return NextResponse.json(
+      { error: "Borrower mobile must be exactly 10 digits (no spaces, +91, or dashes)" },
+      { status: 400 }
+    );
+  }
+
   const principalAmount = parseFloat(amount);
   const rate = interestRate ? parseFloat(interestRate) : 0;
   const tenure = parseInt(tenureMonths, 10);
@@ -140,10 +147,24 @@ export async function PATCH(
     );
   }
 
+  // Re-resolve the borrower's account if the mobile number changed (or was
+  // never linked in the first place) - otherwise fixing a typo'd number
+  // would leave the loan permanently invisible to the borrower.
+  let borrowerId = loan.borrowerId;
+  if (borrowerMobile !== loan.borrowerMobile) {
+    const [matchedBorrower] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.mobile, borrowerMobile))
+      .limit(1);
+    borrowerId = matchedBorrower?.id ?? null;
+  }
+
   const updatedLoan = await db.transaction(async (tx) => {
     const [loanRecord] = await tx
       .update(loans)
       .set({
+        borrowerId,
         borrowerName,
         borrowerMobile,
         amount: principalAmount.toFixed(2),

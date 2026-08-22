@@ -22,7 +22,18 @@ export async function POST(
     return NextResponse.json({ error: "Amount and payment type required" }, { status: 400 });
   }
 
+  if (!["interest", "principal", "both"].includes(paymentType)) {
+    return NextResponse.json(
+      { error: "paymentType must be one of: interest, principal, both" },
+      { status: 400 }
+    );
+  }
+
   const payAmount = parseFloat(amount);
+
+  if (!Number.isFinite(payAmount) || payAmount <= 0) {
+    return NextResponse.json({ error: "Amount must be a positive number" }, { status: 400 });
+  }
 
   // Get installment
   const [inst] = await db.select().from(installments).where(eq(installments.id, id)).limit(1);
@@ -43,6 +54,22 @@ export async function POST(
 
   const principalRemaining = parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid);
   const interestRemaining = parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid);
+  const totalRemaining = principalRemaining + interestRemaining;
+
+  // Don't silently swallow an overpayment - the payments audit trail would
+  // then permanently disagree with the ledger. Reject and tell the caller
+  // exactly what's left, so the UI can prompt for the right amount (or
+  // route the excess to the next installment as a separate action).
+  const EPSILON = 0.01;
+  if (payAmount > totalRemaining + EPSILON) {
+    return NextResponse.json(
+      {
+        error: `Amount exceeds what's remaining on this installment (₹${totalRemaining.toFixed(2)}). If they overpaid, record the extra against the next installment instead.`,
+        remaining: totalRemaining,
+      },
+      { status: 400 }
+    );
+  }
 
   let principalPayment = 0;
   let interestPayment = 0;

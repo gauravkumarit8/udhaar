@@ -58,6 +58,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Must match the same format enforced at login, or the borrower's account
+  // will never auto-link to this loan (e.g. "+91 98765-43210" vs "9876543210"
+  // would silently never match).
+  if (!/^\d{10}$/.test(borrowerMobile)) {
+    return NextResponse.json(
+      { error: "Borrower mobile must be exactly 10 digits (no spaces, +91, or dashes)" },
+      { status: 400 }
+    );
+  }
+
   const principalAmount = parseFloat(amount);
   const rate = interestRate ? parseFloat(interestRate) : 0;
   const tenure = parseInt(tenureMonths);
