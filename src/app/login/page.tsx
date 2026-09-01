@@ -9,9 +9,11 @@ export default function LoginPage() {
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [devCode, setDevCode] = useState<string | null>(null);
 
   const handleSendOTP = async () => {
     setError("");
+    setDevCode(null);
     if (!/^\d{10}$/.test(mobile)) {
       setError("Enter a valid 10-digit mobile number");
       return;
@@ -27,6 +29,7 @@ export default function LoginPage() {
       if (data.error) {
         setError(data.error);
       } else {
+        if (data.devCode) setDevCode(data.devCode);
         setStep("otp");
       }
     } catch {
@@ -183,6 +186,7 @@ export default function LoginPage() {
                 setStep("mobile");
                 setOtp(["", "", "", "", "", ""]);
                 setError("");
+                setDevCode(null);
               }}
               className="text-emerald-300 mb-6 flex items-center gap-1 text-sm font-medium tap-highlight"
             >
@@ -221,9 +225,11 @@ export default function LoginPage() {
                 ))}
               </div>
 
-              <p className="text-xs text-slate-400 text-center mb-4">
-                Dev mode: Use <span className="font-mono font-bold text-slate-600">123456</span>
-              </p>
+              {devCode && (
+                <p className="text-xs text-slate-400 text-center mb-4">
+                  Dev mode (SMS not configured): Use <span className="font-mono font-bold text-slate-600">{devCode}</span>
+                </p>
+              )}
 
               {error && (
                 <div className="bg-red-50 text-red-600 text-sm p-3.5 rounded-2xl mb-4 animate-scale-in">

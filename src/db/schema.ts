@@ -24,6 +24,7 @@ export const otps = pgTable("otps", {
   mobile: varchar("mobile", { length: 15 }).notNull(),
   code: varchar("code", { length: 6 }).notNull(),
   verified: boolean("verified").default(false).notNull(),
+  attempts: integer("attempts").default(0).notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });

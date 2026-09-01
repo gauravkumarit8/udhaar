@@ -4,6 +4,8 @@ import { otps } from "@/db/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { setSession, getOrCreateUser } from "@/lib/auth";
 
+const MAX_ATTEMPTS = 5;
+
 export async function POST(req: Request) {
   const { mobile, code, name } = await req.json();
 
@@ -27,8 +29,28 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "OTP expired. Request a new one." }, { status: 400 });
   }
 
+  if (otp.attempts >= MAX_ATTEMPTS) {
+    // Lock this OTP out entirely - no more guesses against it, even if the
+    // caller somehow still has time left on the expiry window.
+    await db.update(otps).set({ verified: true }).where(eq(otps.id, otp.id));
+    return NextResponse.json(
+      { error: "Too many incorrect attempts. Request a new OTP." },
+      { status: 429 }
+    );
+  }
+
   if (otp.code !== code) {
-    return NextResponse.json({ error: "Invalid OTP" }, { status: 400 });
+    const attemptsLeft = MAX_ATTEMPTS - (otp.attempts + 1);
+    await db.update(otps).set({ attempts: otp.attempts + 1 }).where(eq(otps.id, otp.id));
+    return NextResponse.json(
+      {
+        error:
+          attemptsLeft > 0
+            ? `Invalid OTP. ${attemptsLeft} attempt${attemptsLeft === 1 ? "" : "s"} left.`
+            : "Invalid OTP. Request a new one.",
+      },
+      { status: 400 }
+    );
   }
 
   // Mark OTP as verified
