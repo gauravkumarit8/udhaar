@@ -33,7 +33,7 @@ export async function setSession(userId: string): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.set(SESSION_COOKIE, userId, {
     httpOnly: true,
-    secure: false, // sandbox has no HTTPS
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     maxAge: 60 * 60 * 24 * 30, // 30 days
     path: "/",
