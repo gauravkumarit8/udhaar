@@ -13,6 +13,14 @@ services:
           property: connectionString
       - key: NODE_ENV
         value: production
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_KEY
+        sync: false
 
 databases:
   - name: udhaar-db
