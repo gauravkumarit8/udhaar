@@ -86,6 +86,17 @@ function classify(error: unknown): { status: number; payload: ErrorPayload } {
     };
   }
 
+  // 42703: a database that hasn't had the latest migration applied.
+  if (code === "42703" || /column .* does not exist/.test(message)) {
+    return {
+      status: 503,
+      payload: {
+        error: "The database is missing a column this version of the app needs.",
+        action: "Run npm run db:migrate against that database (see /api/health).",
+      },
+    };
+  }
+
   if (code === "42P01" || /relation .* does not exist/.test(message) || /database .* does not exist/.test(message)) {
     return {
       status: 503,

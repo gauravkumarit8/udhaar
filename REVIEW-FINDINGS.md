@@ -5,14 +5,24 @@
 >
 > | Fixed | Still open |
 > |-------|-----------|
-> | **C1, C2** (sessions, OTP_MODE incl. explicit dummy mode) | **M9** server-side scheduled reminders (push fires on user action today) |
-> | **H1–H6** (FK 500s, payment allocation, 2-side dead-end, Render static assets, release workflows, lint/CI) | Low: Capacitor remote-URL shell (`server.url` points at the hosted app) |
+> | **C1, C2** (sessions, OTP_MODE incl. explicit dummy mode) | Low: Capacitor remote-URL shell (`server.url` points at the hosted app) |
+> | **H1–H6** (FK 500s, payment allocation, 2-side dead-end, Render static assets, release workflows, lint/CI) | |
 > | **M1–M8, M10, M11, M13, M14** | |
+> | **M9** — server-side scheduled reminders: `POST /api/reminders/run` + the free `.github/workflows/reminders.yml` clock (09:00 IST daily), `CRON_SECRET`-guarded, idempotent per EMI per day via `reminders.dedupe_key` | |
 > | **M12** — SQL migrations now exist in `drizzle/`, generated from `schema.ts`, applied by CI and by the deploy boot command; `scripts/baseline-migrations.mjs` adopts an existing `db:push` database | |
 > | Low: unbounded amount/rate/tenure validation → `src/lib/validation.ts` (NaN, negatives, `numeric(12,2)` overflow, impossible dates, 100M-month tenures all rejected; live-tested) | |
 > | Low: unvalidated `proofUrl` → must now be an https URL on the app's own Cloudinary account | |
 > | `/api/health` now diagnoses *which* layer is broken (env var / connection / schema / OTP / integrations) and names the fix; `npm run check-deploy` does the same from a terminal | |
 > | API routes are wrapped (`src/lib/api-handler.ts`): a database outage now returns `503 {error, action, reference}` JSON instead of an empty 500, and the login screen shows that text instead of "Something went wrong" | |
+>
+> M9 was verified against a production build with 12 seeded EMIs spanning the
+> whole window: it picked exactly T-2/T-1/T0 and overdue days 1-7, and skipped an
+> EMI 3 days early, one 8 days late, a settled EMI, a closed loan and a borrower
+> with no account. **Six sweeps fired simultaneously wrote 7 rows in total** (one
+> per EMI, no duplicates); a second sweep the same day sent nothing while the
+> next day's did. `CRON_SECRET` unset → 503, wrong secret → 401, `?dryRun=1`
+> plans without writing, and a database missing migration 0001 → 503 naming the
+> missing column and the command that fixes it.
 >
 > Verification for the second pass: `67` unit tests, `tsc` clean, `eslint`
 > clean, `next build` green, migrations diffed against `drizzle-kit push`

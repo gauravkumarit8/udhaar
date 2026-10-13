@@ -2,6 +2,7 @@ import {
   pgTable,
   uuid,
   varchar,
+  uniqueIndex,
   numeric,
   integer,
   date,
@@ -127,7 +128,14 @@ export const reminders = pgTable("reminders", {
   message: text("message").notNull(),
   sentAt: timestamp("sent_at", { withTimezone: true }).defaultNow().notNull(),
   status: varchar("status", { length: 20 }).notNull().default("sent"), // sent | delivered | failed
-});
+  /**
+   * Idempotency key for the scheduled sweep: "<installment>:<kind>:<day>".
+   * Unique, so a scheduler that fires twice (retry, manual run, overlapping
+   * cron) cannot ring the borrower's phone twice for the same EMI on the
+   * same day. NULL for reminders sent by hand.
+   */
+  dedupeKey: varchar("dedupe_key", { length: 120 }),
+}, (table) => [uniqueIndex("reminders_dedupe_key_unique").on(table.dedupeKey)]);
 
 // ─── Device Tokens (for push notifications via FCM) ─────────────
 export const deviceTokens = pgTable("device_tokens", {

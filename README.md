@@ -90,6 +90,7 @@ Two commands answer "why doesn't it work?" without reading any logs:
 |---|---|
 | `npm run check-deploy` | Whether `DATABASE_URL` is set, the database is reachable, the schema is applied, and OTP delivery is configured - with the fix for each problem. Exits non-zero when something is wrong, so it can gate a deploy. |
 | `GET /api/health` | The same checks as JSON, for a browser or an uptime monitor. Returns **503** when unhealthy, and names the first problem plus the command that fixes it. |
+| `POST /api/reminders/run` | Runs the scheduled reminder sweep by hand (needs `CRON_SECRET`). Add `?dryRun=1` to see what it would send. |
 
 `/api/health` is also the path Render health-checks, so a deployment with a
 broken database reports *why* instead of a bare `{"ok":false}`.
@@ -253,6 +254,80 @@ Triggers all three builds + creates a GitHub Release with:
 
 ---
 
+## ⏰ Scheduled reminders (free)
+
+Borrowers get a push when an EMI is coming up or late — T-2, T-1, T0, then one a
+day for the first week overdue — without the lender having to open the app and
+tap "Remind". This is the same cadence the app already schedules *locally* on
+the lender's own phone (`src/lib/native.ts`), moved to the server so the person
+who owes the money actually hears about it.
+
+**It costs nothing.** Push delivery is Firebase Cloud Messaging (free and
+unlimited), and the clock is a GitHub Actions schedule — the same free minutes
+as any other workflow.
+
+### How it works
+
+```
+.github/workflows/reminders.yml   →   POST /api/reminders/run   →   FCM push
+   09:00 IST daily (03:30 UTC)         one reminder per EMI          to the borrower
+   + a manual "Run workflow"           per day, deduplicated
+```
+
+`POST /api/reminders/run` refuses to run unless `CRON_SECRET` is set, so it can
+never be used by a stranger to spam every borrower. It is also **idempotent**:
+`reminders.dedupe_key` is unique, so a scheduler that fires twice (retry, a
+manual run, two overlapping crons) sends one notification, not two. Six
+simultaneous sweeps still produce exactly one reminder per EMI per day.
+
+### Setup (2 steps, ~2 minutes)
+
+1. **Generate a secret** and set it on the service as `CRON_SECRET`:
+
+   ```powershell
+   # PowerShell - or use any long random string
+   $secret = -join ((48..57) + (97..102) | Get-Random -Count 64 | ForEach-Object {[char]$_})
+   $secret
+   ```
+
+   Render → your service → Environment → add `CRON_SECRET`.
+
+2. **Add the same value to GitHub** → Settings → Secrets and variables →
+   Actions → New repository secret → name `CRON_SECRET`.
+
+That's it — the workflow runs every morning. Press **Actions → Reminders sweep →
+Run workflow** to trigger one by hand; tick *dry_run* to see what it *would*
+send without sending anything.
+
+Pinned somewhere else? Set a repository **variable** `UDHAAR_APP_URL` and the
+workflow will use it instead of the default deployment URL.
+
+### If the schedule ever stops
+
+GitHub silently disables schedules in a **public** repository after 60 days with
+no activity (one push re-enables it), and its timer can run late under load —
+which is fine for a reminder. Any other free clock works too, because the
+endpoint is just HTTP:
+
+| Fallback | Notes |
+|---|---|
+| [cron-job.org](https://cron-job.org) | Free, unlimited jobs, down to once a minute. 30-second timeout — a sleeping free Render service may need a retry. |
+| Cloudflare Worker cron trigger | Free tier allows 5 triggers per account. |
+| Any uptime monitor | Point it at the URL below. |
+
+```
+POST https://<your-app>/api/reminders/run
+Authorization: Bearer <CRON_SECRET>
+```
+
+`/api/health` reports whether `CRON_SECRET` is configured, and
+`npm run check-deploy` says the same from a terminal.
+
+> **Delivery caveat.** A push only lands if the borrower has opened the app at
+> least once and allowed notifications. Until then the reminder is still
+> recorded and shows up in their Activity feed, and the sweep tells you how many
+> went undelivered (`"note"` in its JSON response).
+
 ## 🚢 Deployment notes
 
 - **Static assets with `output: standalone`.** Next.js does *not* copy
@@ -310,6 +385,7 @@ Go to **Settings → Secrets and variables → Actions**
 ├── .devcontainer/          # GitHub Codespace config
 ├── .github/workflows/      # CI/CD pipelines
 │   ├── ci.yml              # PR checks
+│   ├── reminders.yml       # Daily reminder sweep (free cron)
 │   ├── deploy-web.yml      # Docker build + deploy
 │   ├── build-android.yml   # Android APK/AAB
 │   ├── build-ios.yml       # iOS IPA

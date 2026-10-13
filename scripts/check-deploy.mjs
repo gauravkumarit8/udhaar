@@ -22,6 +22,9 @@
 import "dotenv/config";
 import pg from "pg";
 
+/** Columns added by a later migration - a stale schema is caught by name. */
+const REQUIRED_COLUMNS = [{ table: "reminders", column: "dedupe_key" }];
+
 const REQUIRED_TABLES = [
   "users",
   "sessions",
@@ -146,14 +149,31 @@ if (databaseUrl) {
          where table_schema = 'public' and table_type = 'BASE TABLE'`
       );
       const present = new Set(rows.map((r) => r.table_name));
-      const missing = REQUIRED_TABLES.filter((t) => !present.has(t));
+      const missingTables = REQUIRED_TABLES.filter((t) => !present.has(t));
 
-      if (missing.length === 0) {
-        ok("schema", `all ${REQUIRED_TABLES.length} tables present`);
+      let missingColumns = [];
+      if (missingTables.length === 0) {
+        const { rows: columnRows } = await client.query(
+          `select table_name, column_name from information_schema.columns
+           where table_schema = 'public'`
+        );
+        const has = new Set(columnRows.map((r) => `${r.table_name}.${r.column_name}`));
+        missingColumns = REQUIRED_COLUMNS.filter((c) => !has.has(`${c.table}.${c.column}`)).map(
+          (c) => `${c.table}.${c.column}`
+        );
+      }
+
+      if (missingTables.length === 0 && missingColumns.length === 0) {
+        ok("schema", `all ${REQUIRED_TABLES.length} tables present, all migrations applied`);
       } else {
-        bad("schema", `missing: ${missing.join(", ")}`);
-        fix("npm run db:migrate       (applies the migrations in drizzle/)");
-        fix("npm run db:push          (for a database created before migrations existed)");
+        bad(
+          "schema",
+          missingTables.length > 0
+            ? `missing tables: ${missingTables.join(", ")}`
+            : `missing columns: ${missingColumns.join(", ")}`
+        );
+        fix("npm run db:migrate     (applies the migrations in drizzle/)");
+        fix("npm run db:baseline    (once, if the database was created with db:push)");
         failures++;
       }
     } catch (error) {
@@ -193,6 +213,14 @@ if (otpMode === "dummy") {
 }
 
 // ── 5. Optional integrations ────────────────────────────────────────────────
+const cronSecret = Boolean(process.env.CRON_SECRET);
+if (cronSecret) {
+  ok("scheduled reminders", "CRON_SECRET is set - the sweep can run from .github/workflows/reminders.yml");
+} else {
+  warn("scheduled reminders", "CRON_SECRET is not set - POST /api/reminders/run answers 503, so nothing is sent on a schedule");
+  fix("Set it on the service and as a GitHub Actions secret (README → Scheduled reminders).");
+}
+
 const cloudinary = Boolean(
   process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET
 );
