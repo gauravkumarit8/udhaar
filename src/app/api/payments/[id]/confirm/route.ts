@@ -6,6 +6,7 @@ import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments"
 import { closeLoanIfSettled } from "@/lib/loans";
 import { eq, and, lte, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
+import { notifyCounterparty, paymentNotice } from "@/lib/notify";
 
 async function handlePATCH(
   req: NextRequest,
@@ -51,6 +52,21 @@ async function handlePATCH(
   const counterpartyId = session.id === loan.lenderId ? loan.borrowerId : loan.lenderId;
   const selfConfirm = payment.markedByUserId === session.id && !counterpartyId;
 
+  const [inst] = await db
+    .select()
+    .from(installments)
+    .where(eq(installments.id, payment.installmentId))
+    .limit(1);
+
+  if (!inst) {
+    return NextResponse.json({ error: "Installment not found" }, { status: 404 });
+  }
+
+  // The person who marked the payment is the one who needs to hear the
+  // outcome - unless that is the same person acting now (self-confirmation
+  // on a loan whose borrower has no account).
+  const markerId = payment.markedByUserId === session.id ? null : payment.markedByUserId;
+
   if (payment.markedByUserId === session.id && counterpartyId) {
     return NextResponse.json(
       { error: "You can't confirm a payment you marked yourself. Ask the other party to confirm." },
@@ -64,20 +80,24 @@ async function handlePATCH(
       .set({ status: "rejected", confirmedByUserId: session.id })
       .where(eq(payments.id, id));
 
+    await notifyCounterparty({
+      userId: markerId,
+      installmentId: payment.installmentId,
+      loanId: payment.loanId,
+      notice: paymentNotice({
+        event: "rejected",
+        actorName: session.name,
+        actorRole: session.id === loan.lenderId ? "lender" : "borrower",
+        amount: parseFloat(payment.amount),
+        installmentNumber: inst.installmentNumber,
+        dueDate: inst.dueDate,
+      }),
+    });
+
     return NextResponse.json({ success: true, action });
   }
 
   // ── Confirm ────────────────────────────────────────────────────────────
-  const [inst] = await db
-    .select()
-    .from(installments)
-    .where(eq(installments.id, payment.installmentId))
-    .limit(1);
-
-  if (!inst) {
-    return NextResponse.json({ error: "Installment not found" }, { status: 404 });
-  }
-
   const { principalRemaining, interestRemaining } = remainingFor(inst);
 
   const allocation = allocatePayment({
@@ -96,6 +116,21 @@ async function handlePATCH(
       .set({ status: "rejected", confirmedByUserId: session.id })
       .where(eq(payments.id, id));
 
+    await notifyCounterparty({
+      userId: markerId,
+      installmentId: payment.installmentId,
+      loanId: payment.loanId,
+      notice: paymentNotice({
+        event: "rejected",
+        actorName: session.name,
+        actorRole: session.id === loan.lenderId ? "lender" : "borrower",
+        amount: parseFloat(payment.amount),
+        installmentNumber: inst.installmentNumber,
+        dueDate: inst.dueDate,
+        reason: `${allocation.error} The EMI had already moved on, so the payment was marked rejected.`,
+      }),
+    });
+
     return NextResponse.json(
       {
         error: `This payment can't be applied any more: ${allocation.error} It has been marked rejected.`,
@@ -104,8 +139,9 @@ async function handlePATCH(
     );
   }
 
+  let settled = false;
   try {
-    await db.transaction(async (tx) => {
+    settled = await db.transaction(async (tx) => {
       await tx
         .update(payments)
         .set({
@@ -142,7 +178,9 @@ async function handlePATCH(
 
       if (!updated) throw new Error("PAYMENT_CONFLICT");
 
-      await closeLoanIfSettled(payment.loanId, (q) => tx.execute(q));
+      const close = await closeLoanIfSettled(payment.loanId, (q) => tx.execute(q));
+
+      return close.closed;
     });
   } catch (err) {
     if (err instanceof Error && err.message === "PAYMENT_CONFLICT") {
@@ -154,7 +192,22 @@ async function handlePATCH(
     throw err;
   }
 
-  return NextResponse.json({ success: true, action, selfConfirmed: selfConfirm });
+  await notifyCounterparty({
+    userId: markerId,
+    installmentId: payment.installmentId,
+    loanId: payment.loanId,
+    notice: paymentNotice({
+      event: "confirmed",
+      actorName: session.name,
+      actorRole: session.id === loan.lenderId ? "lender" : "borrower",
+      amount: parseFloat(payment.amount),
+      installmentNumber: inst.installmentNumber,
+      dueDate: inst.dueDate,
+      settled,
+    }),
+  });
+
+  return NextResponse.json({ success: true, action, selfConfirmed: selfConfirm, loanSettled: settled });
 }
 
 // Any unhandled failure becomes a JSON error the UI can actually show.

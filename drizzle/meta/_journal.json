@@ -15,6 +15,13 @@
       "when": 1791884546102,
       "tag": "0001_reminder_dedupe_key",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791888086997,
+      "tag": "0002_notification_recipient",
+      "breakpoints": true
     }
   ]
 }

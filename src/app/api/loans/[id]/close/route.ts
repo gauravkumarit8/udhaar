@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { loans, reminders } from "@/db/schema";
+import { installments, loans } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { getOutstanding } from "@/lib/loans";
 import { eq } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
+import { loanClosedNotice, notifyCounterparty } from "@/lib/notify";
 
 async function handlePOST(
   _req: NextRequest,
@@ -44,10 +45,40 @@ async function handlePOST(
     );
   }
 
+  // Closing twice used to notify twice, and to wipe the loan's notification
+  // history. It is a no-op now: the first close already said everything.
+  if (loan.status === "closed") {
+    return NextResponse.json({
+      success: true,
+      message: "Loan was already closed",
+      interestOutstanding: outstanding.interest,
+    });
+  }
+
   await db.update(loans).set({ status: "closed" }).where(eq(loans.id, id));
 
-  // Reminders for a settled loan are noise - drop the ones still queued for it.
-  await db.delete(reminders).where(eq(reminders.loanId, id));
+  // Rows for this loan are its history, so they stay: the Activity screen is
+  // where the borrower reads what happened, and the scheduler only ever looks
+  // at active loans, so a closed one is never nagged again.
+  const [firstInst] = await db
+    .select({ id: installments.id })
+    .from(installments)
+    .where(eq(installments.loanId, id))
+    .orderBy(installments.installmentNumber)
+    .limit(1);
+
+  if (firstInst) {
+    await notifyCounterparty({
+      userId: loan.borrowerId,
+      installmentId: firstInst.id,
+      loanId: loan.id,
+      notice: loanClosedNotice({
+        actorName: session.name,
+        amount: parseFloat(loan.amount),
+        interestOutstanding: outstanding.interest,
+      }),
+    });
+  }
 
   return NextResponse.json({
     success: true,

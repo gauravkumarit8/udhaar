@@ -12,10 +12,9 @@
 import { cookies } from "next/headers";
 import { randomBytes } from "node:crypto";
 import { db } from "@/db";
-import { users, sessions, loans, installments, reminders } from "@/db/schema";
+import { users, sessions, loans, installments } from "@/db/schema";
 import { eq, and, isNull, lt } from "drizzle-orm";
-import { formatINR, formatDate } from "@/lib/calculations";
-import { sendPushToUser } from "@/lib/push";
+import { loanAddedNotice, notifyCounterparty } from "@/lib/notify";
 
 const SESSION_COOKIE = "udhaar_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
@@ -145,19 +144,17 @@ export async function backfillBorrowerLoans(userId: string, mobile: string): Pro
       .where(eq(users.id, loan.lenderId))
       .limit(1);
 
-    const message = `${lender?.name || "Someone"} added a loan of ${formatINR(loan.amount)} for you on Udhaar. First payment of ${formatINR(firstInst.totalAmount)} due on ${formatDate(firstInst.dueDate)}.`;
-
-    await db.insert(reminders).values({
+    await notifyCounterparty({
+      userId,
       installmentId: firstInst.id,
       loanId: loan.id,
-      channel: "push",
-      message,
-      status: "sent",
-    });
-
-    await sendPushToUser(userId, "💸 A loan is waiting for you", message, {
-      type: "loan_added",
-      loanId: loan.id,
+      notice: loanAddedNotice({
+        actorName: lender?.name || "Someone",
+        amount: parseFloat(loan.amount),
+        firstDueAmount: parseFloat(firstInst.totalAmount),
+        firstDueDate: firstInst.dueDate,
+        waiting: true,
+      }),
     });
   }
 }

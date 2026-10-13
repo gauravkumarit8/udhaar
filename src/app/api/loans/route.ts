@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { loans, installments, users, reminders } from "@/db/schema";
+import { loans, installments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
-import { generateInstallmentSchedule, formatINR, formatDate } from "@/lib/calculations";
-import { sendPushToUser } from "@/lib/push";
+import { generateInstallmentSchedule } from "@/lib/calculations";
+import { loanAddedNotice, notifyCounterparty } from "@/lib/notify";
 import { parseLoanInput } from "@/lib/validation";
 import { eq, or, desc } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
@@ -105,24 +105,22 @@ async function handlePOST(req: NextRequest) {
 
   const insertedInstallments = await db.insert(installments).values(installmentValues).returning();
 
-  // Notify the borrower if they already have an account - attach the
-  // notification to the first installment since `reminders` is scoped
-  // to a specific EMI.
+  // Tell the borrower, if they already have an account. The row is anchored
+  // to the first EMI because that is what the Activity feed links to; someone
+  // who signs up later is picked up by backfillBorrowerLoans on first login.
   if (existingBorrower && insertedInstallments.length > 0) {
     const firstInst = insertedInstallments[0];
-    const message = `${session.name} added a loan of ${formatINR(principalAmount)} for you on Udhaar. First payment of ${formatINR(firstInst.totalAmount)} due on ${formatDate(firstInst.dueDate)}.`;
 
-    await db.insert(reminders).values({
+    await notifyCounterparty({
+      userId: existingBorrower.id,
       installmentId: firstInst.id,
       loanId: loan.id,
-      channel: "push",
-      message,
-      status: "sent",
-    });
-
-    await sendPushToUser(existingBorrower.id, "💸 New loan added", message, {
-      type: "loan_added",
-      loanId: loan.id,
+      notice: loanAddedNotice({
+        actorName: session.name,
+        amount: principalAmount,
+        firstDueAmount: parseFloat(firstInst.totalAmount),
+        firstDueDate: firstInst.dueDate,
+      }),
     });
   }
 

@@ -183,6 +183,8 @@ async function handlePOST(req: NextRequest) {
       .values({
         installmentId: candidate.installmentId,
         loanId: candidate.loanId,
+        recipientId: candidate.borrowerId,
+        type: "reminder",
         channel: "push",
         message: body,
         dedupeKey,

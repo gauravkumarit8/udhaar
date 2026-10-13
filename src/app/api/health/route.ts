@@ -28,6 +28,7 @@ interface Check {
 /** Columns added by a migration, so a stale schema is caught by name. */
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "reminders", column: "dedupe_key" },
+  { table: "reminders", column: "recipient_id" },
 ];
 
 /** The tables the app cannot run without. */

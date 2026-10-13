@@ -23,7 +23,10 @@ import "dotenv/config";
 import pg from "pg";
 
 /** Columns added by a later migration - a stale schema is caught by name. */
-const REQUIRED_COLUMNS = [{ table: "reminders", column: "dedupe_key" }];
+const REQUIRED_COLUMNS = [
+  { table: "reminders", column: "dedupe_key" },
+  { table: "reminders", column: "recipient_id" },
+];
 
 const REQUIRED_TABLES = [
   "users",

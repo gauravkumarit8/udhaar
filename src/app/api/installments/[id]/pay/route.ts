@@ -7,6 +7,7 @@ import { getOutstanding, closeLoanIfSettled } from "@/lib/loans";
 import { eq, sql, and, lte } from "drizzle-orm";
 import { toNumber, validateProofUrl, LIMITS } from "@/lib/validation";
 import { withErrors } from "@/lib/api-handler";
+import { notifyCounterparty, paymentNotice } from "@/lib/notify";
 
 async function handlePOST(
   req: NextRequest,
@@ -84,6 +85,12 @@ async function handlePOST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // Whoever did *not* tap the button is told about it. Null when the borrower
+  // has no account yet - there is nobody to notify.
+  const isLender = session.id === loan.lenderId;
+  const counterpartyId = isLender ? loan.borrowerId : loan.lenderId;
+  const actorRole = isLender ? ("lender" as const) : ("borrower" as const);
+
   const { principalRemaining, interestRemaining, totalRemaining } = remainingFor(inst);
 
   // In 2-side mode the ledger only moves once a payment is confirmed, so two
@@ -156,6 +163,20 @@ async function handlePOST(
       .values({ ...paymentValues, status: "pending" })
       .returning();
 
+    await notifyCounterparty({
+      userId: counterpartyId,
+      installmentId: id,
+      loanId: inst.loanId,
+      notice: paymentNotice({
+        event: "marked",
+        actorName: session.name,
+        actorRole,
+        amount: allocation.applied,
+        installmentNumber: inst.installmentNumber,
+        dueDate: inst.dueDate,
+      }),
+    });
+
     return NextResponse.json({
       success: true,
       payment,
@@ -168,8 +189,9 @@ async function handlePOST(
   // The balance is incremented in SQL inside a conditional UPDATE, so two
   // payments racing on the same EMI can't both win and overpay it.
   let payment: typeof payments.$inferSelect;
+  let settled = false;
   try {
-    payment = await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       const [created] = await tx
         .insert(payments)
         .values({ ...paymentValues, status: "confirmed" })
@@ -200,10 +222,13 @@ async function handlePOST(
         throw new Error("PAYMENT_CONFLICT");
       }
 
-      await closeLoanIfSettled(inst.loanId, (q) => tx.execute(q));
+      const close = await closeLoanIfSettled(inst.loanId, (q) => tx.execute(q));
 
-      return created;
+      return { created, settled: close.closed };
     });
+
+    payment = result.created;
+    settled = result.settled;
   } catch (err) {
     if (err instanceof Error && err.message === "PAYMENT_CONFLICT") {
       const outstanding = await getOutstanding(inst.loanId);
@@ -219,6 +244,21 @@ async function handlePOST(
     throw err;
   }
 
+  await notifyCounterparty({
+    userId: counterpartyId,
+    installmentId: id,
+    loanId: inst.loanId,
+    notice: paymentNotice({
+      event: "recorded",
+      actorName: session.name,
+      actorRole,
+      amount: allocation.applied,
+      installmentNumber: inst.installmentNumber,
+      dueDate: inst.dueDate,
+      settled,
+    }),
+  });
+
   return NextResponse.json({
     success: true,
     payment,
@@ -228,6 +268,7 @@ async function handlePOST(
       total: allocation.applied,
     },
     autoConfirmed: true,
+    loanSettled: settled,
   });
 }
 

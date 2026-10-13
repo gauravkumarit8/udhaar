@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { reminders, loans } from "@/db/schema";
 import { getSession } from "@/lib/auth";
-import { eq, or, desc } from "drizzle-orm";
+import { and, eq, isNull, or, desc } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
 async function handleGET() {
@@ -11,7 +11,13 @@ async function handleGET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Reminders for any loan where the user is either the lender or the borrower
+  // Only the notifications *addressed to* this user: the copy is written in
+  // the second person ("your loan", "for you"), so showing the other side's
+  // would read as though it were about them. Rows written before recipient_id
+  // existed are shown to both sides of the loan, as they used to be.
+  //
+  // The loan join still runs, so a notification for a loan the viewer is no
+  // longer part of cannot leak in.
   const rows = await db
     .select({
       id: reminders.id,
@@ -21,12 +27,19 @@ async function handleGET() {
       message: reminders.message,
       sentAt: reminders.sentAt,
       status: reminders.status,
+      type: reminders.type,
+      recipientId: reminders.recipientId,
       lenderId: loans.lenderId,
       borrowerId: loans.borrowerId,
     })
     .from(reminders)
     .innerJoin(loans, eq(loans.id, reminders.loanId))
-    .where(or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)))
+    .where(
+      and(
+        or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)),
+        or(eq(reminders.recipientId, session.id), isNull(reminders.recipientId))
+      )
+    )
     .orderBy(desc(reminders.sentAt))
     .limit(30);
 
@@ -38,6 +51,7 @@ async function handleGET() {
     message: r.message,
     sentAt: r.sentAt,
     status: r.status,
+    type: r.type,
     viewerRole: r.lenderId === session.id ? ("lender" as const) : ("borrower" as const),
   }));
 

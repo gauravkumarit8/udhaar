@@ -353,6 +353,53 @@ Authorization: Bearer <CRON_SECRET>
 > recorded and shows up in their Activity feed, and the sweep tells you how many
 > went undelivered (`"note"` in its JSON response).
 
+## 🔔 Who gets notified, and when
+
+Every event that matters to the *other* side of a loan now tells them about it —
+not just the scheduled reminders. The notification lands in their Activity feed
+always, and on their phone whenever the app is installed and push is configured
+(`FIREBASE_SERVICE_ACCOUNT_KEY`).
+
+| Event | Who is told | What they read |
+| --- | --- | --- |
+| A loan is added for them | the borrower | "Gaurav added a loan of ₹5,000 for you … first payment of ₹1,000 due on 15 Oct 2026." |
+| They sign up after a loan was recorded | the borrower | the same notice, the first time they log in |
+| A payment is marked (2-side loan) | whoever has to confirm it | "Rahul marked ₹1,000 as paid for EMI 1 (due 15 Nov). Confirm it once the money reaches you." |
+| A payment is recorded (1-side loan) | the other side | "Gaurav recorded a payment of ₹1,000 for EMI 1." — plus "the loan is settled 🎉" when it was the last one |
+| A payment is confirmed | the person who marked it | "Gaurav confirmed your ₹1,000 payment for EMI 1." |
+| A payment is rejected — including one that can no longer be applied | the person who marked it | "Gaurav rejected the ₹1,000 payment you marked for EMI 2." |
+| The loan terms change | the borrower | "Gaurav updated your loan: ₹6,000 over 6 months from 1 Nov 2026. The EMI schedule has been rebuilt…" |
+| The loan is closed | the borrower | "Gaurav closed the loan of ₹5,000." (interest still owed is spelled out) |
+| T-2 / T-1 / T0 / first week overdue | the borrower | the scheduled reminders above |
+
+Three rules keep it predictable:
+
+- **Nobody is told about what they did themselves.** The actor knows; only the
+  counterparty is notified.
+- **A notification never breaks the money.** If push fails, or the row cannot be
+  written, the payment or the loan still commits — the failure is logged, and
+  the feed row keeps an honest `sent` / `failed` status rather than claiming
+  delivery.
+- **The feed is per-person.** The copy is written in the second person ("your
+  loan"), so `GET /api/notifications` only returns what was addressed to the
+  caller (`reminders.recipient_id`). Rows written before that column existed are
+  shown to both sides of the loan, as they always were.
+
+A borrower who has no Udhaar account yet is not forgotten: their notifications
+are delivered the moment they sign up (`backfillBorrowerLoans` links the loans
+recorded against their mobile number, and announces them).
+
+Not covered, deliberately: **deleting a loan** notifies nobody, because the
+notification rows belong to the loan and go with it — and a payment "reminder"
+for a loan that no longer exists would be noise.
+
+> `reminders.recipient_id` and `reminders.type` come from
+> `drizzle/0002_notification_recipient.sql`. On an existing database run
+> `npm run db:migrate` (or `npm run db:push`); until then `npm run check-deploy`
+> reports the missing column, the Activity feed answers 503 with the fix, and
+> everything else — including the loan and payment that triggered the
+> notification — keeps working.
+
 ## 🚢 Deployment notes
 
 - **Static assets with `output: standalone`.** Next.js does *not* copy

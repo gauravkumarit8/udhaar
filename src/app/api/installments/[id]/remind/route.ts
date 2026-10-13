@@ -82,6 +82,8 @@ async function handlePOST(
     .values({
       installmentId: id,
       loanId: inst.loanId,
+      recipientId: loan.borrowerId,
+      type: "reminder",
       channel,
       message,
       status,

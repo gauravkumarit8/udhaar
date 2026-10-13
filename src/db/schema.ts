@@ -135,6 +135,15 @@ export const reminders = pgTable("reminders", {
    * same day. NULL for reminders sent by hand.
    */
   dedupeKey: varchar("dedupe_key", { length: 120 }),
+  /**
+   * Who this notification is *for*. The copy is written in the second person
+   * ("your loan", "for you"), so it is only ever shown to that person: the
+   * Activity feed filters on it. NULL on rows written before this existed -
+   * those are shown to both sides of the loan, which is what used to happen.
+   */
+  recipientId: uuid("recipient_id").references(() => users.id, { onDelete: "cascade" }),
+  /** loan_added | payment_marked | payment_recorded | … | reminder. */
+  type: varchar("type", { length: 24 }),
 }, (table) => [uniqueIndex("reminders_dedupe_key_unique").on(table.dedupeKey)]);
 
 // ─── Device Tokens (for push notifications via FCM) ─────────────
