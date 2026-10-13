@@ -9,6 +9,8 @@ jobs:
   release-web:
     name: Release Web
     uses: ./.github/workflows/deploy-web.yml
+    with:
+      deploy: true
     secrets: inherit
 
   # ── Job 2: Android ────────────────────────────────────────
@@ -17,7 +19,7 @@ jobs:
     uses: ./.github/workflows/build-android.yml
     with:
       build_type: debug
-      app_url: ${{ vars.APP_URL || 'https://udhaar.vercel.app' }}
+      app_url: ${{ vars.APP_URL || 'https://udhaar-y94f.onrender.com' }}
     secrets: inherit
 
   # ── Job 3: iOS ────────────────────────────────────────────
@@ -25,7 +27,7 @@ jobs:
     name: Release iOS
     uses: ./.github/workflows/build-ios.yml
     with:
-      app_url: ${{ vars.APP_URL || 'https://udhaar.vercel.app' }}
+      app_url: ${{ vars.APP_URL || 'https://udhaar-y94f.onrender.com' }}
     secrets: inherit
 
   # ── Job 4: Create GitHub Release ──────────────────────────

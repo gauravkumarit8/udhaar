@@ -1,54 +1,100 @@
 /**
- * Simple cookie-based auth for Udhaar MVP
- * Uses Next.js cookies() API
+ * Cookie-based auth for Udhaar.
+ *
+ * The session cookie holds a random, opaque 32-byte token - never a user id.
+ * The token is looked up in the `sessions` table to resolve the user, which
+ * means:
+ *   - a tampered/garbage cookie is simply "not logged in" (never a 500),
+ *   - sessions can be revoked server-side (logout deletes the row),
+ *   - knowing another user's id (which the app *does* expose in loan
+ *     payloads) gives you nothing.
  */
 import { cookies } from "next/headers";
+import { randomBytes } from "node:crypto";
 import { db } from "@/db";
-import { users, loans, installments, reminders } from "@/db/schema";
-import { eq, and, isNull } from "drizzle-orm";
+import { users, sessions, loans, installments, reminders } from "@/db/schema";
+import { eq, and, isNull, lt } from "drizzle-orm";
 import { formatINR, formatDate } from "@/lib/calculations";
 import { sendPushToUser } from "@/lib/push";
 
 const SESSION_COOKIE = "udhaar_session";
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 
-export async function getSession(): Promise<{
+export interface SessionUser {
   id: string;
   name: string;
   mobile: string;
-} | null> {
-  const cookieStore = await cookies();
-  const userId = cookieStore.get(SESSION_COOKIE)?.value;
-  if (!userId) return null;
+}
 
-  const [user] = await db
-    .select({ id: users.id, name: users.name, mobile: users.mobile })
-    .from(users)
-    .where(eq(users.id, userId))
+export async function getSession(): Promise<SessionUser | null> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
+
+  // Anything that isn't the exact token format (including legacy cookies that
+  // held a raw user id, or a user poking at the cookie) is treated as
+  // "logged out" rather than being handed to Postgres as a uuid.
+  if (!token || !TOKEN_PATTERN.test(token)) return null;
+
+  const [row] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      mobile: users.mobile,
+      expiresAt: sessions.expiresAt,
+    })
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .where(eq(sessions.token, token))
     .limit(1);
 
-  return user ?? null;
+  if (!row) return null;
+
+  if (row.expiresAt.getTime() <= Date.now()) {
+    await db.delete(sessions).where(eq(sessions.token, token));
+    return null;
+  }
+
+  return { id: row.id, name: row.name, mobile: row.mobile };
 }
 
 export async function setSession(userId: string): Promise<void> {
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+
+  await db.insert(sessions).values({ token, userId, expiresAt });
+
+  // Opportunistic cleanup: drop this user's expired sessions so the table
+  // doesn't grow forever on a long-lived deployment.
+  await db
+    .delete(sessions)
+    .where(and(eq(sessions.userId, userId), lt(sessions.expiresAt, new Date())));
+
   const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE, userId, {
+  cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: 60 * 60 * 24 * 30, // 30 days
+    maxAge: SESSION_TTL_MS / 1000,
     path: "/",
   });
 }
 
 export async function clearSession(): Promise<void> {
   const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
+
+  if (token && TOKEN_PATTERN.test(token)) {
+    await db.delete(sessions).where(eq(sessions.token, token));
+  }
+
   cookieStore.delete(SESSION_COOKIE);
 }
 
 export async function getOrCreateUser(
   mobile: string,
   name?: string
-): Promise<{ id: string; name: string; mobile: string }> {
+): Promise<SessionUser> {
   const [existing] = await db
     .select()
     .from(users)

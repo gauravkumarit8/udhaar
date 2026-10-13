@@ -1,1 +1,17 @@
+node_modules
+.next
+.git
+.github
+out
+build
+dist
+coverage
+*.log
+.env
+.env.*
+!.env.example
+README.md
+MOBILE_README.md
+REVIEW-FINDINGS.md
+manifest.json
 docker-compose.yml

@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { installments, loans, reminders } from "@/db/schema";
+import { installments, loans, reminders, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { sendPushToUser } from "@/lib/push";
-import { formatINR, formatDate } from "@/lib/calculations";
+import { formatINR, formatDate, generateUPILink } from "@/lib/calculations";
+import { remainingFor } from "@/lib/payments";
 import { eq } from "drizzle-orm";
+
+const VALID_CHANNELS = ["push", "sms", "whatsapp"] as const;
+type ReminderChannel = (typeof VALID_CHANNELS)[number];
 
 export async function POST(
   req: NextRequest,
@@ -16,7 +20,10 @@ export async function POST(
   }
 
   const { id } = await params;
-  const { channel = "sms" } = await req.json(); // push | sms | whatsapp
+  const body = await req.json().catch(() => ({}));
+  const channel: ReminderChannel = VALID_CHANNELS.includes(body?.channel)
+    ? body.channel
+    : "push";
 
   // Get installment
   const [inst] = await db.select().from(installments).where(eq(installments.id, id)).limit(1);
@@ -35,28 +42,28 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // Generate reminder message
-  const interestDue = formatINR(parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid));
-  const principalDue = formatINR(parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid));
-  const totalDue = formatINR(parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid));
+  const { principalRemaining, interestRemaining, totalRemaining } = remainingFor(inst);
+
+  if (totalRemaining <= 0) {
+    return NextResponse.json(
+      { error: "Nothing left to remind about - this EMI is already settled." },
+      { status: 400 }
+    );
+  }
+
   const dueDateStr = formatDate(inst.dueDate);
 
-  const message = `Reminder: Payment of ${totalDue} (Interest: ${interestDue}, Principal: ${principalDue}) due on ${dueDateStr} for loan from ${loan.borrowerName}. Pay now via UPI.`;
+  // The reminder goes to the borrower, so it should name the *lender*
+  // (it previously said "loan from <borrower>", i.e. the recipient's own name).
+  const message = `${session.name} is reminding you: ${formatINR(totalRemaining)} is due on ${dueDateStr} (interest ${formatINR(interestRemaining)}, principal ${formatINR(principalRemaining)}). Pay via UPI in the Udhaar app.`;
 
-  // Store reminder record
-  const [reminder] = await db
-    .insert(reminders)
-    .values({
-      installmentId: id,
-      loanId: inst.loanId,
-      channel,
-      message,
-      status: "sent",
-    })
-    .returning();
+  const upiLink = loan.upiId
+    ? generateUPILink(loan.upiId, totalRemaining, `Payment for ${loan.borrowerName}`, session.name)
+    : null;
 
   // Send a real push notification if the borrower has an account and a
-  // registered device. SMS/WhatsApp channels still need a provider wired up.
+  // registered device. SMS/WhatsApp channels still need a provider wired up,
+  // so record what actually happened rather than claiming "sent".
   let pushResult: { sent: number; failed: number } | null = null;
   if (loan.borrowerId) {
     pushResult = await sendPushToUser(loan.borrowerId, "💰 Payment Reminder", message, {
@@ -66,12 +73,33 @@ export async function POST(
     });
   }
 
+  const delivered = (pushResult?.sent ?? 0) > 0;
+  const status = delivered ? "sent" : "failed";
+
+  const [reminder] = await db
+    .insert(reminders)
+    .values({
+      installmentId: id,
+      loanId: inst.loanId,
+      channel,
+      message,
+      status,
+    })
+    .returning();
+
   return NextResponse.json({
     success: true,
     reminder,
+    delivered,
+    /** Who actually received something - the UI uses this to be honest. */
     pushSent: pushResult?.sent ?? 0,
-    upiLink: loan.upiId
-      ? `upi://pay?pa=${loan.upiId}&am=${(parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid)).toFixed(2)}&tn=Payment+for+${loan.borrowerName}&pn=${loan.borrowerName}`
-      : null,
+    reason: delivered
+      ? undefined
+      : channel !== "push"
+        ? `The ${channel} channel isn't connected yet - share the link below instead.`
+        : loan.borrowerId
+          ? "The borrower hasn't enabled notifications on any device yet."
+          : "The borrower hasn't joined Udhaar yet - share the link below instead.",
+    upiLink,
   });
 }

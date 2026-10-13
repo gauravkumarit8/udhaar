@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
@@ -36,6 +37,7 @@ interface DashboardData {
     youWillReceive: number;
     youWillPay: number; // now computed from loans where you're the borrower
     dueThisWeek: number;
+    overdueAmount: number;
     totalInterestEarned: number;
     activeLoans: number;
     totalLoans: number;
@@ -64,16 +66,14 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [user, setUser] = useState<{ name: string; mobile: string } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [greeting, setGreeting] = useState("Good morning");
+  const [greeting] = useState(() => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 17) return "Good afternoon";
+    return "Good evening";
+  });
   const haptics = useHaptics();
   usePushRegistration();
-
-  useEffect(() => {
-    const hour = new Date().getHours();
-    if (hour < 12) setGreeting("Good morning");
-    else if (hour < 17) setGreeting("Good afternoon");
-    else setGreeting("Good evening");
-  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -83,7 +83,7 @@ export default function DashboardPage() {
       ]);
 
       if (meRes.status === 401) {
-        window.location.href = "/login";
+        window.location.assign("/login");
         return;
       }
 
@@ -107,7 +107,11 @@ export default function DashboardPage() {
   useAppResume(() => { loadData(); });
 
   useEffect(() => {
-    loadData();
+    // Kicked off inside an async IIFE so the state updates all happen after an
+    // await (fetch), never synchronously during the effect.
+    void (async () => {
+      await loadData();
+    })();
   }, [loadData]);
 
   if (loading) {
@@ -184,12 +188,25 @@ export default function DashboardPage() {
           <div className="bg-white/15 backdrop-blur-md rounded-2xl p-4 border border-white/10 col-span-2">
             <div className="flex items-center gap-2 mb-2">
               <div className="w-7 h-7 bg-amber-400/30 rounded-lg flex items-center justify-center text-sm">⏰</div>
-              <span className="text-emerald-200 text-xs font-medium">Due This Week (both sides)</span>
+              <span className="text-emerald-200 text-xs font-medium">
+                {summary.overdueAmount > 0 ? "Due in next 7 days" : "Due This Week (both sides)"}
+              </span>
             </div>
             <p className="text-2xl font-extrabold text-white">
               {formatINR(summary.dueThisWeek)}
             </p>
           </div>
+          {summary.overdueAmount > 0 && (
+            <div className="bg-red-500/25 backdrop-blur-md rounded-2xl p-4 border border-red-200/30 col-span-2">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-7 h-7 bg-red-400/40 rounded-lg flex items-center justify-center text-sm">🔴</div>
+                <span className="text-red-50 text-xs font-medium">Overdue (already past due date)</span>
+              </div>
+              <p className="text-2xl font-extrabold text-white">
+                {formatINR(summary.overdueAmount)}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -226,12 +243,12 @@ export default function DashboardPage() {
               <div className="text-5xl mb-3">🎉</div>
               <p className="text-slate-700 font-semibold">All caught up!</p>
               <p className="text-slate-400 text-sm mt-1">No pending payments right now</p>
-              <a
+              <Link
                 href="/loans/new"
                 className="inline-flex items-center gap-2 mt-4 bg-emerald-600 text-white px-6 py-2.5 rounded-2xl font-semibold text-sm tap-highlight"
               >
                 <span>+</span> Add Your First Loan
-              </a>
+              </Link>
             </div>
           ) : (
             <div className="space-y-2.5">
@@ -324,9 +341,9 @@ export default function DashboardPage() {
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-bold text-slate-800">Your Loans</h2>
-            <a href="/loans/new" className="text-xs text-emerald-600 font-semibold tap-highlight">
+            <Link href="/loans/new" className="text-xs text-emerald-600 font-semibold tap-highlight">
               + New
-            </a>
+            </Link>
           </div>
 
           {loans.length === 0 ? (

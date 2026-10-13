@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { installments, payments, loans } from "@/db/schema";
 import { getSession } from "@/lib/auth";
-import { eq, sql } from "drizzle-orm";
+import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments";
+import { getOutstanding, closeLoanIfSettled } from "@/lib/loans";
+import { eq, sql, and, lte } from "drizzle-orm";
 
 export async function POST(
   req: NextRequest,
@@ -52,69 +54,139 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const principalRemaining = parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid);
-  const interestRemaining = parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid);
-  const totalRemaining = principalRemaining + interestRemaining;
+  const { principalRemaining, interestRemaining, totalRemaining } = remainingFor(inst);
 
-  // Don't silently swallow an overpayment - the payments audit trail would
-  // then permanently disagree with the ledger. Reject and tell the caller
-  // exactly what's left, so the UI can prompt for the right amount (or
-  // route the excess to the next installment as a separate action).
-  const EPSILON = 0.01;
-  if (payAmount > totalRemaining + EPSILON) {
+  // In 2-side mode the ledger only moves once a payment is confirmed, so two
+  // people marking the same EMI would otherwise both "claim" the same money
+  // and only find out at confirmation time. Subtract what other pending
+  // payments already claim before validating this one.
+  let reservedInterest = 0;
+  let reservedPrincipal = 0;
+
+  if (loan.confirmationMode !== "1-side") {
+    const pending = await db
+      .select({ amount: payments.amount, paymentType: payments.paymentType })
+      .from(payments)
+      .where(and(eq(payments.installmentId, id), eq(payments.status, "pending")));
+
+    for (const claim of pending) {
+      const claimed = parseFloat(claim.amount) || 0;
+      if (claim.paymentType === "interest") reservedInterest += claimed;
+      else if (claim.paymentType === "principal") reservedPrincipal += claimed;
+      else {
+        // "both" settles interest first, same as allocation does
+        const toInterest = Math.min(claimed, Math.max(0, interestRemaining - reservedInterest));
+        reservedInterest += toInterest;
+        reservedPrincipal += claimed - toInterest;
+      }
+    }
+  }
+
+  const availableInterest = Math.max(0, interestRemaining - reservedInterest);
+  const availablePrincipal = Math.max(0, principalRemaining - reservedPrincipal);
+
+  // Never record more than actually gets applied to the ledger: validate
+  // against the bucket the caller aimed at, not just the EMI total.
+  const allocation = allocatePayment({
+    amount: payAmount,
+    paymentType: paymentType as PaymentType,
+    principalRemaining: availablePrincipal,
+    interestRemaining: availableInterest,
+  });
+
+  if (!allocation.ok) {
+    const hasPendingClaims = reservedInterest > 0 || reservedPrincipal > 0;
     return NextResponse.json(
       {
-        error: `Amount exceeds what's remaining on this installment (₹${totalRemaining.toFixed(2)}). If they overpaid, record the extra against the next installment instead.`,
-        remaining: totalRemaining,
+        error: hasPendingClaims
+          ? `${allocation.error} (₹${(reservedInterest + reservedPrincipal).toFixed(2)} on this EMI is already claimed by ${loan.confirmationMode === "2-side" ? "a payment awaiting confirmation" : "another payment"}.)`
+          : allocation.error,
+        remaining: allocation.remaining ?? totalRemaining,
       },
       { status: 400 }
     );
   }
 
-  let principalPayment = 0;
-  let interestPayment = 0;
+  const { principalPayment, interestPayment } = allocation;
 
-  if (paymentType === "interest") {
-    interestPayment = Math.min(payAmount, interestRemaining);
-  } else if (paymentType === "principal") {
-    principalPayment = Math.min(payAmount, principalRemaining);
-  } else {
-    // "both" - pay interest first, then principal
-    interestPayment = Math.min(payAmount, interestRemaining);
-    const remaining = payAmount - interestPayment;
-    principalPayment = Math.min(remaining, principalRemaining);
+  const paymentValues = {
+    installmentId: id,
+    loanId: inst.loanId,
+    amount: allocation.applied.toFixed(2),
+    paymentType,
+    proofUrl: proofUrl || null,
+    markedByUserId: session.id,
+    notes: notes || null,
+  };
+
+  // ── 2-side mode: record the claim only. The ledger moves on confirmation. ──
+  if (loan.confirmationMode !== "1-side") {
+    const [payment] = await db
+      .insert(payments)
+      .values({ ...paymentValues, status: "pending" })
+      .returning();
+
+    return NextResponse.json({
+      success: true,
+      payment,
+      applied: { interest: interestPayment, principal: principalPayment, total: allocation.applied },
+      autoConfirmed: false,
+    });
   }
 
-  // For 1-side mode, confirm immediately
-  const paymentStatus = loan?.confirmationMode === "1-side" ? "confirmed" : "pending";
+  // ── 1-side mode: the payment row and the ledger update are one unit. ──
+  // The balance is incremented in SQL inside a conditional UPDATE, so two
+  // payments racing on the same EMI can't both win and overpay it.
+  let payment: typeof payments.$inferSelect;
+  try {
+    payment = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(payments)
+        .values({ ...paymentValues, status: "confirmed" })
+        .returning();
 
-  // Create payment record
-  const [payment] = await db
-    .insert(payments)
-    .values({
-      installmentId: id,
-      loanId: inst.loanId,
-      amount: payAmount.toFixed(2),
-      paymentType,
-      proofUrl: proofUrl || null,
-      markedByUserId: session.id,
-      status: paymentStatus,
-      notes: notes || null,
-    })
-    .returning();
+      const [updated] = await tx
+        .update(installments)
+        .set({
+          principalPaid: sql`${installments.principalPaid} + ${principalPayment.toFixed(2)}::numeric`,
+          interestPaid: sql`${installments.interestPaid} + ${interestPayment.toFixed(2)}::numeric`,
+        })
+        .where(
+          and(
+            eq(installments.id, id),
+            lte(
+              sql`${installments.principalPaid} + ${principalPayment.toFixed(2)}::numeric`,
+              sql`${installments.principalAmount} + 0.01`
+            ),
+            lte(
+              sql`${installments.interestPaid} + ${interestPayment.toFixed(2)}::numeric`,
+              sql`${installments.interestAmount} + 0.01`
+            )
+          )
+        )
+        .returning({ id: installments.id });
 
-  // If 1-side mode, update installment immediately
-  if (paymentStatus === "confirmed") {
-    const newPrincipalPaid = (parseFloat(inst.principalPaid) + principalPayment).toFixed(2);
-    const newInterestPaid = (parseFloat(inst.interestPaid) + interestPayment).toFixed(2);
+      if (!updated) {
+        throw new Error("PAYMENT_CONFLICT");
+      }
 
-    await db
-      .update(installments)
-      .set({ principalPaid: newPrincipalPaid, interestPaid: newInterestPaid })
-      .where(eq(installments.id, id));
+      await closeLoanIfSettled(inst.loanId, (q) => tx.execute(q));
 
-    // Check if loan should be auto-closed
-    await autoCloseLoanIfPaid(inst.loanId);
+      return created;
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === "PAYMENT_CONFLICT") {
+      const outstanding = await getOutstanding(inst.loanId);
+      return NextResponse.json(
+        {
+          error:
+            "This EMI was updated at the same time (another payment just landed). Check the schedule and try again.",
+          remaining: outstanding.principal + outstanding.interest,
+        },
+        { status: 409 }
+      );
+    }
+    throw err;
   }
 
   return NextResponse.json({
@@ -123,24 +195,8 @@ export async function POST(
     applied: {
       interest: interestPayment,
       principal: principalPayment,
+      total: allocation.applied,
     },
-    autoConfirmed: paymentStatus === "confirmed",
+    autoConfirmed: true,
   });
-}
-
-async function autoCloseLoanIfPaid(loanId: string) {
-  const [result] = await db
-    .select({
-      totalPrincipal: sql<string>`COALESCE(SUM(${installments.principalAmount}), 0)`,
-      paidPrincipal: sql<string>`COALESCE(SUM(${installments.principalPaid}), 0)`,
-    })
-    .from(installments)
-    .where(eq(installments.loanId, loanId));
-
-  const totalP = parseFloat(result.totalPrincipal);
-  const paidP = parseFloat(result.paidPrincipal);
-
-  if (paidP >= totalP) {
-    await db.update(loans).set({ status: "closed" }).where(eq(loans.id, loanId));
-  }
 }

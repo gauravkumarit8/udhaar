@@ -2,9 +2,9 @@
 
 > **Splitwise + EMI Tracker + Auto Reminder** for informal loans in India
 
-[![CI](https://github.com/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/badge.svg)](https://github.com/${GITHUB_REPOSITORY}/actions/workflows/ci.yml)
-[![Release](https://github.com/${GITHUB_REPOSITORY}/actions/workflows/release.yml/badge.svg)](https://github.com/${GITHUB_REPOSITORY}/actions/workflows/release.yml)
-[![Android Build](https://github.com/${GITHUB_REPOSITORY}/actions/workflows/build-android.yml/badge.svg)](https://github.com/${GITHUB_REPOSITORY}/actions/workflows/build-android.yml)
+[![CI](https://github.com/gauravkumarit8/udhaar/actions/workflows/ci.yml/badge.svg)](https://github.com/gauravkumarit8/udhaar/actions/workflows/ci.yml)
+[![Release](https://github.com/gauravkumarit8/udhaar/actions/workflows/release.yml/badge.svg)](https://github.com/gauravkumarit8/udhaar/actions/workflows/release.yml)
+[![Android Build](https://github.com/gauravkumarit8/udhaar/actions/workflows/build-android.yml/badge.svg)](https://github.com/gauravkumarit8/udhaar/actions/workflows/build-android.yml)
 
 ---
 
@@ -25,7 +25,7 @@ People in India lend money to friends and family, but tracking it is awkward. Ud
 
 ### Option 1: GitHub Codespace (Fastest)
 
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/YOUR_USERNAME/udhaar)
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/gauravkumarit8/udhaar)
 
 1. Click the badge above → creates a full dev environment
 2. PostgreSQL + Node.js are pre-configured
@@ -35,27 +35,77 @@ People in India lend money to friends and family, but tracking it is awkward. Ud
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/udhaar.git
+git clone https://github.com/<your-username>/udhaar.git
 cd udhaar
 
 # Install
 npm install
 
-# Set up database
+# Configure
 cp .env.example .env
-npx drizzle-kit push
+
+# Create the tables (Drizzle pushes the schema in src/db/schema.ts)
+npm run db:push
 
 # Run
 npm run dev
 ```
 
-Open http://localhost:3000 → Login with any 10-digit mobile, OTP: `123456`
+Open http://localhost:3000 → enter any 10-digit mobile → the login screen shows
+the **dummy OTP** and a "Tap to fill" button, because no SMS provider is
+configured yet. See [OTP delivery](#-otp-delivery) below before you launch.
+
+No Postgres installed? `node scripts/dev-db.mjs` runs one in-process (PGlite)
+that speaks the normal Postgres protocol on `127.0.0.1:5432`:
+
+```bash
+node scripts/dev-db.mjs &                       # terminal 1
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db npm run db:push
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db npm run dev
+```
+
+### Tests & checks
+
+```bash
+npm test          # vitest - EMI maths, payment allocation, OTP policy
+npm run typecheck # tsc --noEmit
+npm run lint      # eslint
+npm run build     # production build
+```
 
 ### Option 3: Docker
 
 ```bash
 docker compose up
 ```
+
+---
+
+## 🔐 OTP delivery
+
+Udhaar doesn't assume an SMS provider. `OTP_MODE` decides what happens:
+
+| `OTP_MODE` | Behaviour |
+|-----------|-----------|
+| `auto` *(default)* | Real SMS when `MSG91_AUTH_KEY` + `MSG91_FLOW_ID` are set. Otherwise: **development** falls back to the dummy OTP, **production refuses to issue OTPs** (503) instead of handing the code to whoever asks. |
+| `dummy` | Always the dummy OTP (`123456`), in every environment, and the code is returned in the API response. Convenient for testing and demos — **anyone who can reach the API can log in as any mobile number.** |
+| `sms` | Always MSG91; fails loudly if it isn't configured. |
+
+Set `OTP_MODE=dummy` explicitly if you want the dummy code on a deployed
+instance (it logs a warning on every boot and the login screen shows a badge).
+Leave it on `auto` and configure MSG91 before real users arrive.
+
+Upgrade path: create a DLT-approved MSG91 Flow template with a variable named
+`OTP`, then set `MSG91_AUTH_KEY`, `MSG91_FLOW_ID` and `OTP_MODE=sms`. Codes are
+generated with `crypto.randomInt`, expire after 5 minutes, and lock out after 5
+wrong attempts.
+
+### Sessions
+
+Login sets an opaque 32-byte random token in an `httpOnly` cookie and stores it
+in the `sessions` table. The cookie never contains a user id, so a tampered or
+forged cookie is simply "not logged in", and logging out revokes the session
+server-side. Sessions expire after 30 days.
 
 ---
 
@@ -119,7 +169,9 @@ npx cap open android
 
 ### CI (every PR)
 Runs on every push to `main` and every PR:
+- ✅ ESLint
 - ✅ TypeScript type checking
+- ✅ Vitest unit tests
 - ✅ Next.js build
 - ✅ Docker image build
 
@@ -127,12 +179,12 @@ Runs on every push to `main` and every PR:
 - Builds Docker image → pushes to GitHub Container Registry
 - Deploys to Render / Fly.io / Vercel
 
-### Android Build (on tag `v*` or manual)
+### Android Build (on tag `v*` or manual dispatch)
 - Sets Capacitor server URL to production
 - Builds debug APK or release AAB
 - Uploads APK to GitHub Releases
 
-### iOS Build (on tag `v*` or manual)
+### iOS Build (on tag `v*` or manual dispatch; skipped with a warning until the Apple secrets are set)
 - Builds on macOS runner with Xcode
 - Signs with Apple certificate
 - Uploads IPA artifact
@@ -145,6 +197,23 @@ Triggers all three builds + creates a GitHub Release with:
 - Release notes from git log
 
 ---
+
+## 🚢 Deployment notes
+
+- **Static assets with `output: standalone`.** Next.js does *not* copy
+  `.next/static` or `public/` into `.next/standalone`, so any start command that
+  runs `node .next/standalone/server.js` must stage them first (the Dockerfile
+  and `render.yaml` both do). Skipping this serves HTML with no CSS or JS.
+- **Create the tables on a fresh database.** There are no SQL migration files
+  yet — the schema lives in `src/db/schema.ts` and is applied with
+  `npx drizzle-kit push`. Run it once against every new environment (it is also
+  what CI does) before the app will work.
+- **`OTP_MODE`.** Set it deliberately on every deployment: `auto` (default)
+  fails closed in production until MSG91 is configured, `dummy` opts into the
+  insecure-but-testable code.
+- **Render / Fly / Vercel.** `render.yaml` and `Dockerfile` are kept working;
+  `vercel.json` is a plain Next.js config, so any of them works as long as the
+  two points above are handled.
 
 ## 🔧 GitHub Secrets (Required for Mobile Builds)
 

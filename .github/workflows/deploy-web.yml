@@ -1,6 +1,13 @@
 name: Deploy Web — Docker Image + Release
 
 on:
+  workflow_call:
+    inputs:
+      deploy:
+        description: "Trigger the Render deploy hook (takes effect on tag builds)"
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main]
     tags: ["v*"]
@@ -52,10 +59,15 @@ jobs:
     name: Deploy to Render
     needs: build-and-push
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Tag builds deploy; a plain push to main only publishes the image.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.deploy
     steps:
       - name: 🚀 Trigger Render Deploy
         run: |
-          curl -s -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" || true
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
+            echo "::warning::RENDER_DEPLOY_HOOK is not set - skipping the deploy trigger."
+            exit 0
+          fi
+          curl -sS -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
         continue-on-error: true
 

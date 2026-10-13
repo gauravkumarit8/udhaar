@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { loans, installments, payments, reminders, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { computeInstallmentStatus, generateInstallmentSchedule } from "@/lib/calculations";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 export async function GET(
   _req: NextRequest,
@@ -147,6 +147,27 @@ export async function PATCH(
     );
   }
 
+  // A payment that's still awaiting confirmation refers to specific EMIs.
+  // Rebuilding the schedule under it would orphan it, so make the caller
+  // resolve it first.
+  if (scheduleChanged) {
+    const [pendingPayment] = await db
+      .select({ id: payments.id })
+      .from(payments)
+      .where(and(eq(payments.loanId, id), eq(payments.status, "pending")))
+      .limit(1);
+
+    if (pendingPayment) {
+      return NextResponse.json(
+        {
+          error:
+            "This loan has a payment waiting for confirmation. Confirm or reject it before changing the EMI schedule.",
+        },
+        { status: 400 }
+      );
+    }
+  }
+
   // Re-resolve the borrower's account if the mobile number changed (or was
   // never linked in the first place) - otherwise fixing a typo'd number
   // would leave the loan permanently invisible to the borrower.
@@ -181,6 +202,11 @@ export async function PATCH(
       .returning();
 
     if (scheduleChanged) {
+      // Reminders were generated from the old schedule, so they go with it.
+      // (The child FKs also cascade, but being explicit keeps this correct
+      // even on a database that hasn't picked up the new constraint yet.)
+      await tx.delete(reminders).where(eq(reminders.loanId, id));
+      await tx.delete(payments).where(eq(payments.loanId, id));
       await tx.delete(installments).where(eq(installments.loanId, id));
       const schedule = generateInstallmentSchedule(principalAmount, rate, tenure, startDate, ratePeriod);
       const installmentValues = schedule.map((inst) => ({

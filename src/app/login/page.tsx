@@ -10,10 +10,12 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [devCode, setDevCode] = useState<string | null>(null);
+  const [dummyOtp, setDummyOtp] = useState(false);
 
   const handleSendOTP = async () => {
     setError("");
     setDevCode(null);
+    setDummyOtp(false);
     if (!/^\d{10}$/.test(mobile)) {
       setError("Enter a valid 10-digit mobile number");
       return;
@@ -30,6 +32,7 @@ export default function LoginPage() {
         setError(data.error);
       } else {
         if (data.devCode) setDevCode(data.devCode);
+        setDummyOtp(Boolean(data.dummyOtp));
         setStep("otp");
       }
     } catch {
@@ -41,8 +44,7 @@ export default function LoginPage() {
 
   const handleOtpChange = (index: number, value: string) => {
     if (!/^\d*$/.test(value)) return;
-    const newOtp = [...otp];
-    newOtp[index] = value.slice(-1);
+    const newOtp = otp.map((digit, i) => (i === index ? value.slice(-1) : digit));
     setOtp(newOtp);
 
     // Auto-focus next input
@@ -77,7 +79,7 @@ export default function LoginPage() {
       if (data.error) {
         setError(data.error);
       } else {
-        window.location.href = "/dashboard";
+        window.location.assign("/dashboard");
       }
     } catch {
       setError("Something went wrong");
@@ -202,7 +204,9 @@ export default function LoginPage() {
               </div>
               <h2 className="text-2xl font-bold text-white">Verify OTP</h2>
               <p className="text-emerald-200 mt-1 text-sm">
-                We sent a 6-digit code to +91 {mobile}
+                {dummyOtp
+                  ? `Dummy mode — no SMS sent. Code for +91 ${mobile} below.`
+                  : `We sent a 6-digit code to +91 ${mobile}`}
               </p>
             </div>
 
@@ -226,9 +230,22 @@ export default function LoginPage() {
               </div>
 
               {devCode && (
-                <p className="text-xs text-slate-400 text-center mb-4">
-                  Dev mode (SMS not configured): Use <span className="font-mono font-bold text-slate-600">{devCode}</span>
-                </p>
+                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 mb-4 text-center">
+                  <p className="text-[11px] font-bold text-amber-700 uppercase tracking-wide">
+                    Dummy OTP mode
+                  </p>
+                  <p className="text-xs text-amber-700 mt-1">
+                    Use <span className="font-mono font-bold text-base">{devCode}</span> — SMS isn&apos;t
+                    configured yet. Anyone can log in as any number until real SMS is turned on.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setOtp(devCode.split(""))}
+                    className="mt-2 text-[11px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-3 py-1.5 rounded-full tap-highlight"
+                  >
+                    Tap to fill {devCode}
+                  </button>
+                </div>
               )}
 
               {error && (
