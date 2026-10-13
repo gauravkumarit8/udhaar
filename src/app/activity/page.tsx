@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { readApi, requestJson } from "@/lib/http";
@@ -32,21 +32,52 @@ export default function ActivityPage() {
   const [notifications, setNotifications] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [justArrived, setJustArrived] = useState(0);
+  /** Notification ids already rendered, so arrivals mid-session can be called out. */
+  const knownIds = useRef<Set<string>>(new Set());
+
+  // Marks the feed read, which is what the tab badge counts. Fire-and-forget:
+  // the badge is a convenience, and the screen must render whether or not this
+  // request lands.
+  const markSeen = useCallback(async () => {
+    try {
+      await fetch("/api/notifications/seen", { method: "POST" });
+      window.dispatchEvent(new Event("udhaar:notifications-seen"));
+    } catch {
+      // Ignore - the count simply stays until the next successful call.
+    }
+  }, []);
+
+  // Bumping this re-runs the fetch below. Coming back to the tab, or a minute
+  // passing, is exactly when something new is likely to have happened on the
+  // other side of the loan.
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     async function load() {
       try {
-        const [dashRes, notifRes] = await Promise.all([
-          fetch("/api/dashboard"),
-          fetch("/api/notifications"),
-        ]);
-        const [dashResult, notifResult] = await Promise.all([
-          readApi<{ dueItems?: DueItem[] }>(dashRes),
-          readApi<{ notifications?: Reminder[] }>(notifRes),
-        ]);
+      const [dashRes, notifRes] = await Promise.all([
+        fetch("/api/dashboard"),
+        fetch("/api/notifications"),
+      ]);
+      const [dashResult, notifResult] = await Promise.all([
+        readApi<{ dueItems?: DueItem[] }>(dashRes),
+        readApi<{ notifications?: Reminder[]; unread?: number }>(notifRes),
+      ]);
 
-        if (dashResult.ok) setDueItems(dashResult.data?.dueItems ?? []);
-        if (notifResult.ok) setNotifications(notifResult.data?.notifications ?? []);
+      if (dashResult.ok) setDueItems(dashResult.data?.dueItems ?? []);
+      if (notifResult.ok) {
+        const list = notifResult.data?.notifications ?? [];
+        // Anything that arrived while this screen was open is called out, so a
+        // notification that lands mid-session isn't silently mixed in.
+        const fresh = list.filter((n) => !knownIds.current.has(n.id)).length;
+        const wasLoaded = knownIds.current.size > 0;
+        knownIds.current = new Set(list.map((n) => n.id));
+        setNotifications(list);
+        if (wasLoaded && fresh > 0) setJustArrived(fresh);
+
+        if ((notifResult.data?.unread ?? 0) > 0) void markSeen();
+      }
 
         // A silent failure used to leave this page looking merely empty.
         setLoadError(dashResult.error ?? notifResult.error ?? null);
@@ -56,7 +87,24 @@ export default function ActivityPage() {
         setLoading(false);
       }
     }
-    load();
+
+    void load();
+  }, [refreshKey, markSeen]);
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") setRefreshKey((key) => key + 1);
+    };
+
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = setInterval(refresh, 60_000);
+
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      clearInterval(timer);
+    };
   }, []);
 
   const [reminderNote, setReminderNote] = useState<string | null>(null);
@@ -206,13 +254,27 @@ export default function ActivityPage() {
           </div>
         )}
 
-        {/* Notifications (e.g. "loan added for you", reminders sent) */}
-        {notifications.length > 0 && (
+        {/* Notifications: loans added, payments marked/confirmed/rejected,
+            reminders sent. Always rendered - an empty section that says so is
+            how you know nothing is wrong. */}
+        {!loading && (
           <div className="mb-6">
             <div className="flex items-center gap-2 mb-3">
               <div className="w-2 h-2 bg-blue-400 rounded-full" />
               <h2 className="text-base font-bold text-slate-700">Notifications</h2>
+              {justArrived > 0 && (
+                <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full animate-scale-in">
+                  {justArrived} new
+                </span>
+              )}
             </div>
+            {notifications.length === 0 && (
+              <p className="text-xs text-slate-400 bg-white rounded-2xl border border-slate-100 p-4">
+                Nothing here yet. When someone adds a loan for you, marks a payment, confirms or
+                rejects one, or changes the loan, it shows up here - and on your phone if you&apos;ve
+                turned notifications on.
+              </p>
+            )}
             <div className="space-y-2.5">
               {notifications.map((n) => (
                 <a

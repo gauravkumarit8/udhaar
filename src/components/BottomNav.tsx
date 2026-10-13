@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useHaptics } from "@/hooks/useNative";
 
@@ -11,9 +11,59 @@ const tabs = [
   { href: "/profile", label: "Profile", icon: "person" },
 ];
 
+/**
+ * The Activity tab's badge: how many notifications arrived since this person
+ * last opened that screen.
+ *
+ * Without it, a notification was only discoverable by going to the Activity
+ * screen and looking - which is why "I can't see the notification" was a
+ * reasonable thing to say even when one existed. The count lives on the
+ * server (users.notifications_seen_at), so it is the same on every device.
+ */
+function useUnreadCount(): number {
+  const [unread, setUnread] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const res = await fetch("/api/notifications?summary=1", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setUnread(typeof data?.unread === "number" ? data.unread : 0);
+      } catch {
+        // Offline or logged out - leave the last known count alone.
+      }
+    };
+
+    void load();
+    const timer = setInterval(load, 60_000);
+    const onFocus = () => void load();
+    // Opening the Activity screen clears the badge immediately instead of
+    // waiting for the next poll.
+    const onSeen = () => setUnread(0);
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    window.addEventListener("udhaar:notifications-seen", onSeen);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("udhaar:notifications-seen", onSeen);
+    };
+  }, []);
+
+  return unread;
+}
+
 export default function BottomNav() {
   const pathname = usePathname();
   const haptics = useHaptics();
+  const unread = useUnreadCount();
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-xl border-t border-slate-200/60 safe-area-bottom">
@@ -37,6 +87,14 @@ export default function BottomNav() {
                 isActive ? "text-emerald-600" : "text-slate-400"
               }`}
             >
+              {tab.icon === "bell" && unread > 0 && (
+                <span
+                  aria-label={`${unread} unread notification${unread === 1 ? "" : "s"}`}
+                  className="absolute top-2 right-2 min-w-4 h-4 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center"
+                >
+                  {unread > 9 ? "9+" : unread}
+                </span>
+              )}
               {tab.icon === "plus" ? (
                 <div className="absolute -top-3 w-12 h-12 bg-emerald-600 rounded-full flex items-center justify-center shadow-lg shadow-emerald-600/30">
                   <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>

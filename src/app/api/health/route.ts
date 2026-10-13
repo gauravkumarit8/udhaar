@@ -29,6 +29,7 @@ interface Check {
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "reminders", column: "dedupe_key" },
   { table: "reminders", column: "recipient_id" },
+  { table: "users", column: "notifications_seen_at" },
 ];
 
 /** The tables the app cannot run without. */
@@ -255,10 +256,21 @@ export async function GET() {
       : "Set CRON_SECRET on the service to a long random string, and add the same value as a GitHub Actions secret (see README → Scheduled reminders).",
   });
 
+  // Browser push needs its own key pair; without it a website visitor can
+  // never be notified, even though the native app's FCM credentials are set.
+  const webPush = Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
   checks.push({
     name: "optional integrations",
-    status: "ok",
-    detail: `payment proofs: ${cloudinary ? "configured" : "not configured (uploads return 503)"}, push: ${push ? "configured" : "not configured"}`,
+    // Not a failure - the app works. But with neither channel configured,
+    // nobody can be notified about anything, which is worth saying out loud.
+    status: push || webPush ? "ok" : "warn",
+    detail:
+      `payment proofs: ${cloudinary ? "configured" : "not configured (uploads return 503)"}, ` +
+      `push (app): ${push ? "configured" : "not configured"}, ` +
+      `push (browser): ${webPush ? "configured" : "not configured (websites can't be notified)"}`,
+    fix: webPush || push
+      ? undefined
+      : "Run npm run generate:vapid and set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so browsers can be notified (README → Notifications).",
   });
 
   const failed = checks.filter((c) => c.status === "fail");

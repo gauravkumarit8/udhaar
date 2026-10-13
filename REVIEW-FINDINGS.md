@@ -9,7 +9,8 @@
 > | **H1–H6** (FK 500s, payment allocation, 2-side dead-end, Render static assets, release workflows, lint/CI) | |
 > | **M1–M8, M10, M11, M13, M14** | |
 > | **M9** — server-side scheduled reminders: `POST /api/reminders/run` + the free `.github/workflows/reminders.yml` clock (09:00 IST daily), `CRON_SECRET`-guarded, idempotent per EMI per day via `reminders.dedupe_key` | |
-> | **M12** — SQL migrations now exist in `drizzle/`, generated from `schema.ts`, applied by CI and by the deploy boot command; `scripts/baseline-migrations.mjs` adopts an existing `db:push` database | |
+> | **Notifications actually arrive** — browser push (Web Push + VAPID, `npm run generate:vapid`, `push_subscriptions` from migration 0003), an unread badge on the 🔔 tab with `users.notifications_seen_at`, an always-visible Activity feed with an empty state, and a one-tap "Turn on notifications" prompt. Before this, `registerForPushNotifications()` returned early in any browser and `build-android.yml` never wrote `google-services.json`, so *no* device on *any* platform could receive a push | |
+| **M12** — SQL migrations now exist in `drizzle/`, generated from `schema.ts`, applied by CI and by the deploy boot command; `scripts/baseline-migrations.mjs` adopts an existing `db:push` database | |
 > | **Notifications** — every money event tells the other side (`src/lib/notify.ts`): payment marked / recorded / confirmed / rejected, loan added, loan claimed at signup, loan edited (schedule rebuilt or payment details changed), loan closed; `GET /api/notifications` is scoped per person via `reminders.recipient_id` (migration 0002), and a notification can never fail the payment that caused it | |
 | Low: unbounded amount/rate/tenure validation → `src/lib/validation.ts` (NaN, negatives, `numeric(12,2)` overflow, impossible dates, 100M-month tenures all rejected; live-tested) | |
 > | Low: unvalidated `proofUrl` → must now be an https URL on the app's own Cloudinary account | |
@@ -42,7 +43,12 @@
 > what was addressed to it. On a database still missing migration 0002 the loan
 > is created anyway (201) while the feed answers 503 naming the column and the
 > fix — the notification failure is logged, never surfaced as a failed payment.
-> The rest of this document is the original review, kept as written.
+> Notification delivery was verified separately: the Web Push module's failure
+> modes (404/410 → prune the row, 500/network error → report unsent, no keys →
+> send nothing), the fan-out from `sendPushToUser`, and live over HTTP against a
+> real database — subscribe, unsubscribe, the unread count before and after
+> opening the Activity screen, and a database still at migration 0002. The rest
+> of this document is the original review, kept as written.
 
 **Reviewed:** `main` @ `4219ee8` (working branch `arena/ea943d9f-udhaar`)
 **Scope:** full repo — 39 TypeScript files / ~5.7k LOC in `src/`, 15 API routes, 7 pages, Capacitor mobile layer, 5 GitHub Actions workflows, deploy configs.

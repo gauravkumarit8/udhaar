@@ -25,6 +25,7 @@ export const LIMITS = {
   UPI_MAX: 100,
   ACCOUNT_MAX: 50,
   PROOF_URL_MAX: 500,
+  PUSH_ENDPOINT_MAX: 500, // push service URLs are long, but not this long
 } as const;
 
 export interface LoanInput {

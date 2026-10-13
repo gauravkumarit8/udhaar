@@ -29,6 +29,15 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_KEY
         sync: false
+      # Browser push. Generate with `npm run generate:vapid` and paste both
+      # values: without them the website (and an installed PWA) can never be
+      # notified, because FCM only reaches the native app.
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        value: mailto:noreply@udhaar.app
       # Remove this once MSG91 is configured, or real OTPs will never be sent.
       - key: OTP_MODE
         value: dummy

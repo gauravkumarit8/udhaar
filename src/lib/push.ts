@@ -1,6 +1,7 @@
 import { db } from "@/db";
-import { deviceTokens, users } from "@/db/schema";
+import { deviceTokens, pushSubscriptions, users } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
+import { isWebPushConfigured, sendWebPush } from "@/lib/webpush";
 
 // Lazily initialized so this module can be imported even when Firebase
 // isn't configured yet (local dev, CI, etc) without throwing at import time.
@@ -60,9 +61,9 @@ export async function registerDeviceToken(
 }
 
 /**
- * Sends a push notification to every device registered to a user.
- * No-ops quietly (logs a warning once) if Firebase isn't configured,
- * so the rest of the app keeps working without it.
+ * Sends a push notification to every device registered to a user - the native
+ * app through FCM, and browsers/installed PWAs through Web Push. Both are
+ * best-effort: a failure here must never surface as a failed payment.
  */
 export async function sendPushToUser(
   userId: string,
@@ -70,10 +71,7 @@ export async function sendPushToUser(
   body: string,
   data: Record<string, string> = {}
 ): Promise<{ sent: number; failed: number }> {
-  const fcm = await getMessaging();
-  if (!fcm) return { sent: 0, failed: 0 };
-
-  // Honour the user's notification preference before touching FCM.
+  // Honour the user's notification preference before touching any channel.
   const [recipient] = await db
     .select({ pushEnabled: users.pushEnabled })
     .from(users)
@@ -81,6 +79,11 @@ export async function sendPushToUser(
     .limit(1);
 
   if (recipient && !recipient.pushEnabled) return { sent: 0, failed: 0 };
+
+  const web = await sendWebPushToUser(userId, { title, body, data });
+
+  const fcm = await getMessaging();
+  if (!fcm) return web;
 
   const tokens = await db
     .select({ id: deviceTokens.id, token: deviceTokens.token })
@@ -106,5 +109,49 @@ export async function sendPushToUser(
     await db.delete(deviceTokens).where(inArray(deviceTokens.id, staleTokenIds));
   }
 
-  return { sent: response.successCount, failed: response.failureCount };
+  return {
+    sent: web.sent + response.successCount,
+    failed: web.failed + response.failureCount,
+  };
+}
+
+/**
+ * Notifies every browser this user has subscribed with.
+ *
+ * Dead subscriptions are deleted as they are discovered rather than left to
+ * fail forever - that is the whole cleanup story for uninstalled PWAs.
+ */
+async function sendWebPushToUser(
+  userId: string,
+  payload: { title: string; body: string; data: Record<string, string> }
+): Promise<{ sent: number; failed: number }> {
+  if (!isWebPushConfigured()) return { sent: 0, failed: 0 };
+
+  const subscriptions = await db
+    .select({
+      id: pushSubscriptions.id,
+      endpoint: pushSubscriptions.endpoint,
+      p256dh: pushSubscriptions.p256dh,
+      auth: pushSubscriptions.auth,
+    })
+    .from(pushSubscriptions)
+    .where(eq(pushSubscriptions.userId, userId));
+
+  if (subscriptions.length === 0) return { sent: 0, failed: 0 };
+
+  const results = await Promise.all(
+    subscriptions.map((subscription) =>
+      sendWebPush(subscription, { ...payload.data, title: payload.title, body: payload.body })
+    )
+  );
+
+  const dead = subscriptions.filter((_, i) => results[i] === "gone").map((s) => s.id);
+  if (dead.length > 0) {
+    await db.delete(pushSubscriptions).where(inArray(pushSubscriptions.id, dead));
+  }
+
+  return {
+    sent: results.filter((r) => r === "sent").length,
+    failed: results.filter((r) => r === "failed").length,
+  };
 }

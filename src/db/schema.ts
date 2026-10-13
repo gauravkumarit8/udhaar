@@ -19,6 +19,29 @@ export const users = pgTable("users", {
   /** Opt-out switch honoured by sendPushToUser. */
   pushEnabled: boolean("push_enabled").default(true).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  /**
+   * When the user last opened the Activity screen. Everything addressed to
+   * them after this is "unread", which is what the tab badge counts. Null
+   * until they look once - so the badge is right from the very first login.
+   */
+  notificationsSeenAt: timestamp("notifications_seen_at", { withTimezone: true }),
+});
+
+// ─── Web Push subscriptions (browser/installed-PWA notifications) ─
+// FCM only covers the native app, and only once google-services.json is in
+// the Android build. A browser (or an installed PWA) subscribes through the
+// Web Push protocol instead: one row per device, deleted as soon as the push
+// service reports it is gone (410), which is how uninstalling cleans up.
+export const pushSubscriptions = pgTable("push_subscriptions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .references(() => users.id, { onDelete: "cascade" })
+    .notNull(),
+  endpoint: text("endpoint").notNull().unique(),
+  /** Public key + auth secret from `PushSubscription.toJSON()`. */
+  p256dh: varchar("p256dh", { length: 255 }).notNull(),
+  auth: varchar("auth", { length: 255 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
 // ─── Sessions ────────────────────────────────────────────────────
