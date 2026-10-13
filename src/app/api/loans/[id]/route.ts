@@ -6,6 +6,7 @@ import { computeInstallmentStatus, generateInstallmentSchedule } from "@/lib/cal
 import { and, eq } from "drizzle-orm";
 import { parseLoanInput } from "@/lib/validation";
 import { withErrors } from "@/lib/api-handler";
+import { loanAddedNotice, loanUpdatedNotice, notifyCounterparty } from "@/lib/notify";
 
 async function handleGET(
   _req: NextRequest,
@@ -216,6 +217,49 @@ async function handlePATCH(
 
     return loanRecord;
   });
+
+  // Tell the borrower, after the transaction: a rebuilt schedule deletes the
+  // old installments (and the notification rows anchored to them) inside it,
+  // so the notice has to be written against the new schedule, not the old one.
+  const [firstInst] = await db
+    .select({ id: installments.id, totalAmount: installments.totalAmount, dueDate: installments.dueDate })
+    .from(installments)
+    .where(eq(installments.loanId, id))
+    .orderBy(installments.installmentNumber)
+    .limit(1);
+
+  const paymentDetailsChanged =
+    loan.upiId !== (upiId || null) || loan.accountNumber !== (accountNumber || null);
+  // A loan that only now found its owner (the mobile number was corrected, or
+  // the person just signed up) is news to them - same notice as a new loan,
+  // because that is what it is from their side.
+  const linkedNow = borrowerId !== loan.borrowerId;
+  const worthTelling = linkedNow || scheduleChanged || paymentDetailsChanged;
+
+  if (firstInst && borrowerId && worthTelling) {
+
+    await notifyCounterparty({
+      userId: borrowerId,
+      installmentId: firstInst.id,
+      loanId: id,
+      notice: linkedNow
+        ? loanAddedNotice({
+            actorName: session.name,
+            amount: principalAmount,
+            firstDueAmount: parseFloat(firstInst.totalAmount),
+            firstDueDate: firstInst.dueDate,
+            waiting: true,
+          })
+        : loanUpdatedNotice({
+            actorName: session.name,
+            amount: principalAmount,
+            tenureMonths: tenure,
+            startDate,
+            scheduleRebuilt: scheduleChanged,
+            paymentDetailsChanged,
+          }),
+    });
+  }
 
   return NextResponse.json({ success: true, loan: updatedLoan });
 }

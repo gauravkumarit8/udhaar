@@ -10,7 +10,8 @@
 > | **M1–M8, M10, M11, M13, M14** | |
 > | **M9** — server-side scheduled reminders: `POST /api/reminders/run` + the free `.github/workflows/reminders.yml` clock (09:00 IST daily), `CRON_SECRET`-guarded, idempotent per EMI per day via `reminders.dedupe_key` | |
 > | **M12** — SQL migrations now exist in `drizzle/`, generated from `schema.ts`, applied by CI and by the deploy boot command; `scripts/baseline-migrations.mjs` adopts an existing `db:push` database | |
-> | Low: unbounded amount/rate/tenure validation → `src/lib/validation.ts` (NaN, negatives, `numeric(12,2)` overflow, impossible dates, 100M-month tenures all rejected; live-tested) | |
+> | **Notifications** — every money event tells the other side (`src/lib/notify.ts`): payment marked / recorded / confirmed / rejected, loan added, loan claimed at signup, loan edited (schedule rebuilt or payment details changed), loan closed; `GET /api/notifications` is scoped per person via `reminders.recipient_id` (migration 0002), and a notification can never fail the payment that caused it | |
+| Low: unbounded amount/rate/tenure validation → `src/lib/validation.ts` (NaN, negatives, `numeric(12,2)` overflow, impossible dates, 100M-month tenures all rejected; live-tested) | |
 > | Low: unvalidated `proofUrl` → must now be an https URL on the app's own Cloudinary account | |
 > | `/api/health` now diagnoses *which* layer is broken (env var / connection / schema / OTP / integrations) and names the fix; `npm run check-deploy` does the same from a terminal | |
 > | API routes are wrapped (`src/lib/api-handler.ts`): a database outage now returns `503 {error, action, reference}` JSON instead of an empty 500, and the login screen shows that text instead of "Something went wrong" | |
@@ -28,8 +29,20 @@
 > clean, `next build` green, migrations diffed against `drizzle-kit push`
 > output on two fresh databases, and every failure mode exercised against a
 > production build (deleted DB host, refused port, empty schema, unset
-> `DATABASE_URL`). The rest of this document is the original review, kept as
-> written.
+> `DATABASE_URL`).
+>
+> Notifications were verified the same way — against a live server over HTTP,
+> not by reading the code: a lender adds a loan for a registered borrower; the
+> borrower marks a payment and the lender is asked to confirm; the lender
+> confirms (borrower told), rejects (borrower told), and edits the terms
+> (borrower told the schedule was rebuilt); a loan paid in full reports "the
+> loan is settled" and a second `close` is a no-op instead of a duplicate
+> notice; and a loan recorded for a mobile number with no account is announced
+> the moment that person signs up. Each side's feed was checked to contain only
+> what was addressed to it. On a database still missing migration 0002 the loan
+> is created anyway (201) while the feed answers 503 naming the column and the
+> fix — the notification failure is logged, never surfaced as a failed payment.
+> The rest of this document is the original review, kept as written.
 
 **Reviewed:** `main` @ `4219ee8` (working branch `arena/ea943d9f-udhaar`)
 **Scope:** full repo — 39 TypeScript files / ~5.7k LOC in `src/`, 15 API routes, 7 pages, Capacitor mobile layer, 5 GitHub Actions workflows, deploy configs.
