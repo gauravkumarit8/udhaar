@@ -4,8 +4,10 @@ import { loans, installments, payments, reminders, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { computeInstallmentStatus, generateInstallmentSchedule } from "@/lib/calculations";
 import { and, eq } from "drizzle-orm";
+import { parseLoanInput } from "@/lib/validation";
+import { withErrors } from "@/lib/api-handler";
 
-export async function GET(
+async function handleGET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -60,7 +62,7 @@ export async function GET(
   });
 }
 
-export async function PATCH(
+async function handlePATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -70,7 +72,6 @@ export async function PATCH(
   }
 
   const { id } = await params;
-  const body = await req.json();
 
   const [loan] = await db.select().from(loans).where(eq(loans.id, id)).limit(1);
   if (!loan) {
@@ -81,41 +82,31 @@ export async function PATCH(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Request body must be valid JSON" }, { status: 400 });
+  }
+
+  const parsed = parseLoanInput(body);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+
   const {
     borrowerName,
     borrowerMobile,
-    amount,
-    interestRate,
+    amount: principalAmount,
+    interestRate: rate,
     interestRatePeriod,
-    tenureMonths,
+    tenureMonths: tenure,
     startDate,
     upiId,
     accountNumber,
     notes,
     confirmationMode,
-  } = body;
-
-  if (!borrowerName || !borrowerMobile || !amount || !tenureMonths || !startDate) {
-    return NextResponse.json(
-      { error: "Borrower name, mobile, amount, tenure, and start date are required" },
-      { status: 400 }
-    );
-  }
-
-  if (!/^\d{10}$/.test(borrowerMobile)) {
-    return NextResponse.json(
-      { error: "Borrower mobile must be exactly 10 digits (no spaces, +91, or dashes)" },
-      { status: 400 }
-    );
-  }
-
-  const principalAmount = parseFloat(amount);
-  const rate = interestRate ? parseFloat(interestRate) : 0;
-  const tenure = parseInt(tenureMonths, 10);
-
-  if (principalAmount <= 0 || tenure <= 0) {
-    return NextResponse.json({ error: "Amount and tenure must be positive" }, { status: 400 });
-  }
+  } = parsed.value;
 
   const ratePeriod = (interestRatePeriod === "monthly" ? "monthly" : "yearly") as "monthly" | "yearly";
   const scheduleChanged =
@@ -229,7 +220,7 @@ export async function PATCH(
   return NextResponse.json({ success: true, loan: updatedLoan });
 }
 
-export async function DELETE(
+async function handleDELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -256,3 +247,8 @@ export async function DELETE(
 
   return NextResponse.json({ success: true, message: "Loan deleted" });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const GET = withErrors(handleGET);
+export const PATCH = withErrors(handlePATCH);
+export const DELETE = withErrors(handleDELETE);

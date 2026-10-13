@@ -5,8 +5,9 @@ import { getSession } from "@/lib/auth";
 import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments";
 import { closeLoanIfSettled } from "@/lib/loans";
 import { eq, and, lte, sql } from "drizzle-orm";
+import { withErrors } from "@/lib/api-handler";
 
-export async function PATCH(
+async function handlePATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -155,3 +156,6 @@ export async function PATCH(
 
   return NextResponse.json({ success: true, action, selfConfirmed: selfConfirm });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const PATCH = withErrors(handlePATCH);

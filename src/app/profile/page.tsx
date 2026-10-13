@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
+import { requestJson } from "@/lib/http";
 
 interface User {
   id: string;
@@ -25,22 +26,16 @@ export default function ProfilePage() {
 
   useEffect(() => {
     void (async () => {
-      try {
-        const res = await fetch("/api/profile");
-        if (res.status === 401) {
-          window.location.assign("/login");
-          return;
-        }
-        if (res.ok) {
-          const data = await res.json();
-          setUser(data.profile);
-          setChannels(data.channels);
-        }
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false);
+      const result = await requestJson<{ profile: User; channels: Channels }>("/api/profile");
+      if (result.status === 401) {
+        window.location.assign("/login");
+        return;
       }
+      if (result.ok && result.data) {
+        setUser(result.data.profile);
+        setChannels(result.data.channels);
+      }
+      setLoading(false);
     })();
   }, []);
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { requestJson } from "@/lib/http";
 
 export default function LoginPage() {
   const [step, setStep] = useState<"mobile" | "otp">("mobile");
@@ -21,25 +22,23 @@ export default function LoginPage() {
       return;
     }
     setLoading(true);
-    try {
-      const res = await fetch("/api/auth/send-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mobile }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        if (data.devCode) setDevCode(data.devCode);
-        setDummyOtp(Boolean(data.dummyOtp));
-        setStep("otp");
-      }
-    } catch {
-      setError("Something went wrong");
-    } finally {
-      setLoading(false);
+    // requestJson never throws on a non-JSON body, so a 500 from the server
+    // shows what actually went wrong instead of a generic message.
+    const result = await requestJson<{ devCode?: string; dummyOtp?: boolean }>("/api/auth/send-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mobile }),
+    });
+
+    if (!result.ok) {
+      setError(result.error ?? "Couldn't send the OTP. Try again.");
+    } else {
+      const data = result.data ?? {};
+      if (data.devCode) setDevCode(data.devCode);
+      setDummyOtp(Boolean(data.dummyOtp));
+      setStep("otp");
     }
+    setLoading(false);
   };
 
   const handleOtpChange = (index: number, value: string) => {
@@ -69,23 +68,19 @@ export default function LoginPage() {
   const verifyOtp = async (code: string) => {
     setError("");
     setLoading(true);
-    try {
-      const res = await fetch("/api/auth/verify-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mobile, code, name: name || undefined }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        window.location.assign("/dashboard");
-      }
-    } catch {
-      setError("Something went wrong");
-    } finally {
+    const result = await requestJson("/api/auth/verify-otp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mobile, code, name: name || undefined }),
+    });
+
+    if (!result.ok) {
+      setError(result.error ?? "Couldn't verify the code. Try again.");
       setLoading(false);
+      return;
     }
+
+    window.location.assign("/dashboard");
   };
 
   return (

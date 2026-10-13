@@ -4,9 +4,11 @@ import { loans, installments, users, reminders } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { generateInstallmentSchedule, formatINR, formatDate } from "@/lib/calculations";
 import { sendPushToUser } from "@/lib/push";
+import { parseLoanInput } from "@/lib/validation";
 import { eq, or, desc } from "drizzle-orm";
+import { withErrors } from "@/lib/api-handler";
 
-export async function GET() {
+async function handleGET() {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -29,52 +31,37 @@ export async function GET() {
   return NextResponse.json({ loans: taggedLoans });
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = await req.json();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Request body must be valid JSON" }, { status: 400 });
+  }
+
+  const parsed = parseLoanInput(body);
+  if (!parsed.ok) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+
   const {
     borrowerName,
     borrowerMobile,
-    amount,
-    interestRate,
+    amount: principalAmount,
+    interestRate: rate,
     interestRatePeriod,
-    tenureMonths,
+    tenureMonths: tenure,
     startDate,
     upiId,
     accountNumber,
     notes,
     confirmationMode,
-  } = body;
-
-  // Validation
-  if (!borrowerName || !borrowerMobile || !amount || !tenureMonths || !startDate) {
-    return NextResponse.json(
-      { error: "Borrower name, mobile, amount, tenure, and start date are required" },
-      { status: 400 }
-    );
-  }
-
-  // Must match the same format enforced at login, or the borrower's account
-  // will never auto-link to this loan (e.g. "+91 98765-43210" vs "9876543210"
-  // would silently never match).
-  if (!/^\d{10}$/.test(borrowerMobile)) {
-    return NextResponse.json(
-      { error: "Borrower mobile must be exactly 10 digits (no spaces, +91, or dashes)" },
-      { status: 400 }
-    );
-  }
-
-  const principalAmount = parseFloat(amount);
-  const rate = interestRate ? parseFloat(interestRate) : 0;
-  const tenure = parseInt(tenureMonths);
-
-  if (principalAmount <= 0 || tenure <= 0) {
-    return NextResponse.json({ error: "Amount and tenure must be positive" }, { status: 400 });
-  }
+  } = parsed.value;
 
   // Resolve the borrower's user account, if they've already signed up
   const [existingBorrower] = await db
@@ -141,3 +128,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ loan, installmentsGenerated: schedule.length }, { status: 201 });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const GET = withErrors(handleGET);
+export const POST = withErrors(handlePOST);

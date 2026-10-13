@@ -3,8 +3,9 @@ import { db } from "@/db";
 import { reminders, loans } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { eq, or, desc } from "drizzle-orm";
+import { withErrors } from "@/lib/api-handler";
 
-export async function GET() {
+async function handleGET() {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -42,3 +43,6 @@ export async function GET() {
 
   return NextResponse.json({ notifications });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const GET = withErrors(handleGET);

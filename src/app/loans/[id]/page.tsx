@@ -8,6 +8,7 @@ import MobileShell from "@/components/MobileShell";
 import ProofUpload from "@/components/ProofUpload";
 import ShareButton from "@/components/ShareButton";
 import { useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
+import { requestJson } from "@/lib/http";
 
 interface Loan {
   id: string;
@@ -118,6 +119,7 @@ export default function LoanDetailPage() {
   } | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState("");
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Native hooks
   const haptics = useHaptics();
@@ -128,19 +130,26 @@ export default function LoanDetailPage() {
   const loadData = useCallback(
     async (opts: { redirectOn401?: boolean } = {}) => {
       try {
-        const res = await fetch(`/api/loans/${loanId}`);
-        if (opts.redirectOn401 && res.status === 401) {
+        const result = await requestJson<{
+          loan: Loan;
+          installments: Installment[];
+          payments: Payment[];
+        }>(`/api/loans/${loanId}`);
+
+        if (opts.redirectOn401 && result.status === 401) {
           window.location.assign("/login");
           return;
         }
-        if (res.ok) {
-          const data = await res.json();
-          setLoan(data.loan);
-          setInstallments(data.installments);
-          setPayments(data.payments);
+        if (result.ok && result.data) {
+          setLoan(result.data.loan);
+          setInstallments(result.data.installments);
+          setPayments(result.data.payments);
+          setLoadError(null);
+        } else if (result.error) {
+          setLoadError(result.error);
         }
       } catch {
-        // ignore - the UI keeps whatever it last rendered
+        setLoadError("Couldn't load this loan. Check your connection and try again.");
       } finally {
         setLoading(false);
       }
@@ -171,22 +180,27 @@ export default function LoanDetailPage() {
     setPayError(null);
     setPayLoading(true);
     try {
-      const res = await fetch(`/api/installments/${payModal.installment.id}/pay`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: payAmount,
-          paymentType: payModal.type,
-          notes: payNotes || undefined,
-          proofUrl: payProof || undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        setPayError(data.error || "Couldn't record the payment. Try again.");
+      const result = await requestJson<{ applied: { principal: number; interest: number } }>(
+        `/api/installments/${payModal.installment.id}/pay`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: payAmount,
+            paymentType: payModal.type,
+            notes: payNotes || undefined,
+            proofUrl: payProof || undefined,
+          }),
+        }
+      );
+
+      if (!result.ok) {
+        setPayError(result.error ?? "Couldn't record the payment. Try again.");
         haptics.notification("error");
         return;
       }
+
+      const data = result.data ?? { applied: { principal: 0, interest: 0 } };
       haptics.notification("success");
       setPayModal(null);
       setPayAmount("");
@@ -213,15 +227,18 @@ export default function LoanDetailPage() {
   const handleRemind = async (installmentId: string) => {
     haptics.tap();
     try {
-      const res = await fetch(`/api/installments/${installmentId}/remind`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: "push" }),
-      });
-      const data = await res.json();
+      const result = await requestJson<{ delivered?: boolean; reason?: string; upiLink?: string }>(
+        `/api/installments/${installmentId}/remind`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: "push" }),
+        }
+      );
+      const data = result.data ?? {};
 
-      if (!res.ok || !data.success) {
-        setReminderNote({ installmentId, text: data.error || "Couldn't send that reminder." });
+      if (!result.ok) {
+        setReminderNote({ installmentId, text: result.error ?? "Couldn't send that reminder." });
         haptics.notification("error");
         return;
       }
@@ -258,15 +275,14 @@ export default function LoanDetailPage() {
   const handleCloseLoan = async () => {
     if (!confirm("Close this loan? All principal must be paid.")) return;
     try {
-      const res = await fetch(`/api/loans/${loanId}/close`, { method: "POST" });
-      const data = await res.json();
-      if (data.error) {
-        alert(data.error);
+      const result = await requestJson(`/api/loans/${loanId}/close`, { method: "POST" });
+      if (!result.ok) {
+        alert(result.error ?? "Couldn't close the loan.");
       } else {
         await loadData();
       }
     } catch {
-      // ignore
+      alert("Network error - the loan wasn't closed.");
     }
   };
 
@@ -294,15 +310,14 @@ export default function LoanDetailPage() {
     setEditError("");
 
     try {
-      const res = await fetch(`/api/loans/${loanId}`, {
+      const result = await requestJson(`/api/loans/${loanId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editForm),
       });
-      const data = await res.json();
 
-      if (!res.ok || data.error) {
-        setEditError(data.error || "Unable to update loan");
+      if (!result.ok) {
+        setEditError(result.error ?? "Unable to update loan");
         return;
       }
 
@@ -319,11 +334,10 @@ export default function LoanDetailPage() {
     if (!confirm("Delete this loan and all associated records? This action cannot be undone.")) return;
 
     try {
-      const res = await fetch(`/api/loans/${loanId}`, { method: "DELETE" });
-      const data = await res.json();
+      const result = await requestJson(`/api/loans/${loanId}`, { method: "DELETE" });
 
-      if (!res.ok || data.error) {
-        alert(data.error || "Unable to delete loan");
+      if (!result.ok) {
+        alert(result.error ?? "Unable to delete loan");
         return;
       }
 
@@ -335,18 +349,17 @@ export default function LoanDetailPage() {
 
   const handleConfirmPayment = async (paymentId: string, action: "confirm" | "reject") => {
     try {
-      const res = await fetch(`/api/payments/${paymentId}/confirm`, {
+      const result = await requestJson(`/api/payments/${paymentId}/confirm`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
-      const data = await res.json().catch(() => ({}));
 
-      if (!res.ok || data.error) {
+      if (!result.ok) {
         // Errors here are meaningful ("you can't confirm your own payment",
         // "this EMI already moved on") and used to be swallowed silently.
         haptics.notification("error");
-        setPaymentError(data.error || "Couldn't update that payment.");
+        setPaymentError(result.error ?? "Couldn't update that payment.");
         setTimeout(() => setPaymentError(null), 6000);
       } else {
         haptics.notification("success");
@@ -377,7 +390,17 @@ export default function LoanDetailPage() {
       <div className="min-h-screen bg-slate-50 flex items-center justify-center max-w-lg mx-auto">
         <div className="text-center">
           <div className="text-5xl mb-4">😕</div>
-          <p className="text-slate-600 font-medium">Loan not found</p>
+          <p className="text-slate-600 font-medium">
+            {loadError ?? "Loan not found"}
+          </p>
+          {loadError && (
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-3 block mx-auto text-emerald-600 font-semibold"
+            >
+              Retry
+            </button>
+          )}
           <a href="/dashboard" className="text-emerald-600 mt-4 inline-block font-semibold">
             ← Back to Dashboard
           </a>

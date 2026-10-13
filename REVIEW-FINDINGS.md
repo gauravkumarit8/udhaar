@@ -1,17 +1,25 @@
 # Udhaar — Code Review Findings
 
-> **Status:** the fixes for this review are in PR #5 on branch
-> `arena/ea943d9f-udhaar`. Quick map:
+> **Status:** fixed in PR #5 (branch `arena/ea943d9f-udhaar`) plus a second
+> pass on branch `arena/f92976fc-udhaar`.
 >
 > | Fixed | Still open |
 > |-------|-----------|
-> | **C1, C2** (sessions, OTP_MODE incl. explicit dummy mode) | **M9** server-side scheduled reminders |
-> | **H1–H6** (FK 500s, payment allocation, 2-side dead-end, Render static assets, release workflows, lint/CI) | **M12** no SQL migration files (`drizzle-kit push` is the flow) |
-> | **M1–M8, M10, M11, M13, M14** | Low: unbounded amount/rate validation, public Cloudinary proof URLs, Capacitor remote-URL shell |
+> | **C1, C2** (sessions, OTP_MODE incl. explicit dummy mode) | **M9** server-side scheduled reminders (push fires on user action today) |
+> | **H1–H6** (FK 500s, payment allocation, 2-side dead-end, Render static assets, release workflows, lint/CI) | Low: Capacitor remote-URL shell (`server.url` points at the hosted app) |
+> | **M1–M8, M10, M11, M13, M14** | |
+> | **M12** — SQL migrations now exist in `drizzle/`, generated from `schema.ts`, applied by CI and by the deploy boot command; `scripts/baseline-migrations.mjs` adopts an existing `db:push` database | |
+> | Low: unbounded amount/rate/tenure validation → `src/lib/validation.ts` (NaN, negatives, `numeric(12,2)` overflow, impossible dates, 100M-month tenures all rejected; live-tested) | |
+> | Low: unvalidated `proofUrl` → must now be an https URL on the app's own Cloudinary account | |
+> | `/api/health` now diagnoses *which* layer is broken (env var / connection / schema / OTP / integrations) and names the fix; `npm run check-deploy` does the same from a terminal | |
+> | API routes are wrapped (`src/lib/api-handler.ts`): a database outage now returns `503 {error, action, reference}` JSON instead of an empty 500, and the login screen shows that text instead of "Something went wrong" | |
 >
-> `30` unit tests, `tsc` clean, `eslint` clean, `next build` green, and the
-> auth/payment flows were exercised end-to-end against a real Postgres.
-> The rest of this document is the original review, kept as written.
+> Verification for the second pass: `67` unit tests, `tsc` clean, `eslint`
+> clean, `next build` green, migrations diffed against `drizzle-kit push`
+> output on two fresh databases, and every failure mode exercised against a
+> production build (deleted DB host, refused port, empty schema, unset
+> `DATABASE_URL`). The rest of this document is the original review, kept as
+> written.
 
 **Reviewed:** `main` @ `4219ee8` (working branch `arena/ea943d9f-udhaar`)
 **Scope:** full repo — 39 TypeScript files / ~5.7k LOC in `src/`, 15 API routes, 7 pages, Capacitor mobile layer, 5 GitHub Actions workflows, deploy configs.

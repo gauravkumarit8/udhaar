@@ -5,6 +5,7 @@ import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
+import { requestJson } from "@/lib/http";
 
 interface DueItem {
   loanId: string;
@@ -66,6 +67,7 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [user, setUser] = useState<{ name: string; mobile: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [greeting] = useState(() => {
     const hour = new Date().getHours();
     if (hour < 12) return "Good morning";
@@ -77,27 +79,26 @@ export default function DashboardPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [dashRes, meRes] = await Promise.all([
-        fetch("/api/dashboard"),
-        fetch("/api/auth/me"),
+      const [dashResult, meResult] = await Promise.all([
+        requestJson<DashboardData>("/api/dashboard"),
+        requestJson<{ user: { name: string; mobile: string } }>("/api/auth/me"),
       ]);
 
-      if (meRes.status === 401) {
+      if (meResult.status === 401) {
         window.location.assign("/login");
         return;
       }
 
-      if (meRes.ok) {
-        const meData = await meRes.json();
-        if (meData.user) setUser(meData.user);
-      }
+      if (meResult.ok && meResult.data?.user) setUser(meResult.data.user);
 
-      if (dashRes.ok) {
-        const dashData = await dashRes.json();
-        setData(dashData);
+      if (dashResult.ok && dashResult.data) {
+        setData(dashResult.data);
+      } else if (dashResult.error) {
+        // Previously this failed silently and the dashboard just looked empty.
+        setLoadError(dashResult.error);
       }
     } catch {
-      // ignore
+      setLoadError("Couldn't load your dashboard. Check your connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -135,7 +136,14 @@ export default function DashboardPage() {
       <div className="min-h-screen bg-slate-50 flex items-center justify-center max-w-lg mx-auto">
         <div className="text-center">
           <div className="text-5xl mb-4">😕</div>
-          <p className="text-slate-600 font-medium">Failed to load dashboard</p>
+          <p className="text-slate-600 font-medium">
+            {loadError ?? "Failed to load dashboard"}
+          </p>
+          {loadError && (
+            <p className="text-slate-400 text-xs mt-2">
+              Open <span className="font-mono">/api/health</span> for details.
+            </p>
+          )}
           <button
             onClick={() => window.location.reload()}
             className="mt-4 bg-emerald-600 text-white px-8 py-3 rounded-2xl font-semibold tap-highlight"

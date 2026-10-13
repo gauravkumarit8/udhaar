@@ -9,7 +9,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "check-deploy": "node scripts/check-deploy.mjs",
+    "db:studio": "drizzle-kit studio",
+    "db:baseline": "node scripts/baseline-migrations.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.1",

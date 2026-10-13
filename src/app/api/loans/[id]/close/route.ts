@@ -4,8 +4,9 @@ import { loans, reminders } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { getOutstanding } from "@/lib/loans";
 import { eq } from "drizzle-orm";
+import { withErrors } from "@/lib/api-handler";
 
-export async function POST(
+async function handlePOST(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -58,3 +59,6 @@ export async function POST(
         : undefined,
   });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const POST = withErrors(handlePOST);

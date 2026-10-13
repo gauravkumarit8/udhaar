@@ -4,8 +4,9 @@ import { loans, installments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { computeInstallmentStatus, daysUntil } from "@/lib/calculations";
 import { or, eq, inArray } from "drizzle-orm";
+import { withErrors } from "@/lib/api-handler";
 
-export async function GET() {
+async function handleGET() {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -128,3 +129,6 @@ export async function GET() {
     loans: taggedLoans,
   });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const GET = withErrors(handleGET);
