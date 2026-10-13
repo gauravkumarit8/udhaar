@@ -400,6 +400,70 @@ for a loan that no longer exists would be noise.
 > everything else — including the loan and payment that triggered the
 > notification — keeps working.
 
+## 📲 Making notifications actually arrive
+
+Udhaar notifies people about money two ways, and **both are off by default** -
+that is the whole reason "I can see the dashboard updating but no notification"
+was possible even when everything on the server worked.
+
+| Channel | Reaches | Needs |
+| --- | --- | --- |
+| **In-app** (always on) | the Activity screen, with a badge on the 🔔 tab | nothing |
+| **Browser push** (Web Push) | this browser / an installed PWA, even when it's closed | `npm run generate:vapid` → `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` on the service |
+| **App push** (FCM) | the native Android/iOS app | `FIREBASE_SERVICE_ACCOUNT_KEY` **and** `google-services.json` inside the Android build |
+
+### Turning on browser push (2 minutes, free)
+
+```bash
+npm run generate:vapid     # prints the two keys
+```
+
+Set `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` on the service (Render →
+Environment; `render.yaml` already declares them), optionally
+`VAPID_SUBJECT=mailto:you@example.com`, then deploy once.
+
+The next person to open the app sees a **"Turn on notifications"** card on the
+dashboard - one tap subscribes that browser. It can also be toggled later in
+**Profile → Push Notifications**, which subscribes or unsubscribes *that device*
+as well as saving the preference.
+
+`npm run check-deploy` and `/api/health` both report the channel state: with no
+keys they say `push (browser): not configured`, and nothing silently pretends to
+work.
+
+**Notes**
+- The private key is a secret. Don't regenerate the pair once people have
+  subscribed - existing subscriptions are bound to it and would stop working.
+- iOS only allows web push for a PWA that has been **added to the Home Screen**
+  (iOS 16.4+). In an ordinary Safari tab there is nothing to deliver to, and the
+  app says so rather than failing silently.
+- Dead subscriptions (browser data cleared, PWA uninstalled, permission
+  revoked) are deleted automatically the first time a send returns 404/410.
+- The in-app feed is not a fallback you can be lazy about: it is the record.
+  Every notification is written there with an honest `sent` / `failed` status,
+  whether or not a device accepted it.
+
+### Turning on push for the Android app
+
+FCM cannot register without a Firebase config file *inside the Android project*.
+Add `google-services.json` (Firebase console → Project settings → Your apps) as
+the repository secret `ANDROID_GOOGLE_SERVICES_JSON`, base64-encoded:
+
+```bash
+base64 -w0 google-services.json    # Windows: [Convert]::ToBase64String([IO.File]::ReadAllBytes("google-services.json"))
+```
+
+`build-android.yml` writes it to `android/app/` on the next build. Without the
+secret the step is skipped and the build still succeeds - it just can't receive
+push.
+
+### Where notifications show up
+
+- **🔔 Activity tab** - every notification addressed to you, newest first, with
+  an unread count badge on the tab itself. Opening the screen clears the badge.
+- **Phone/browser** - a real notification, if a channel above is configured and
+  enabled for that device. Tapping it opens the loan it is about.
+
 ## 🚢 Deployment notes
 
 - **Static assets with `output: standalone`.** Next.js does *not* copy
@@ -427,6 +491,11 @@ for a loan that no longer exists would be noise.
 ## 🔧 GitHub Secrets (Required for Mobile Builds)
 
 Go to **Settings → Secrets and variables → Actions**
+
+| Secret | Used by | Notes |
+| --- | --- | --- |
+| `CRON_SECRET` | reminders sweep | same value as the one set on the service |
+| `ANDROID_GOOGLE_SERVICES_JSON` | Android build | base64 `google-services.json`; without it the APK can't receive push |
 
 | Secret | Purpose |
 |--------|---------|
@@ -468,7 +537,7 @@ Go to **Settings → Secrets and variables → Actions**
 │   │   ├── dashboard/      # Home
 │   │   ├── loans/          # Add + detail
 │   │   ├── activity/       # Reminders
-│   │   ├── profile/        # Settings
+│   │   ├── profile/        # Settings (incl. per-device notification toggle)
 │   │   └── api/            # Backend routes
 │   ├── components/         # UI components
 │   ├── hooks/              # React hooks (native bridge)
@@ -477,7 +546,7 @@ Go to **Settings → Secrets and variables → Actions**
 │   └── db/                 # Database schema
 ├── drizzle/                # Generated SQL migrations + journal
 ├── scripts/                # dev-db.mjs (local Postgres), check-deploy.mjs,
-│                           #   baseline-migrations.mjs
+│                           #   baseline-migrations.mjs, generate-vapid-keys.mjs
 ├── tests/                  # Vitest suites
 ├── public/                 # Static assets + PWA
 ├── capacitor.config.ts     # Capacitor native config

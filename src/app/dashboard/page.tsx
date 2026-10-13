@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
+import EnableNotifications from "@/components/EnableNotifications";
 import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
 
@@ -344,6 +345,8 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+
+        <EnableNotifications />
 
         {/* Your Loans */}
         <div>

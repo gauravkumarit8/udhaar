@@ -84,6 +84,21 @@ jobs:
       - name: 🔧 Sync native project
         run: npx cap sync android
 
+      # Firebase Cloud Messaging needs this file inside the Android project -
+      # without it the push plugin's registration always fails, which is why
+      # "notifications never arrive" was true even for a built APK. Add the
+      # file from the Firebase console (Project settings → Your apps →
+      # google-services.json) as the secret ANDROID_GOOGLE_SERVICES_JSON,
+      # base64-encoded. Skipped when the secret is not set, so builds keep
+      # working without it.
+      - name: 🔥 Add Firebase config (if provided)
+        if: env.GOOGLE_SERVICES_JSON != ''
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json
+          echo "::notice::google-services.json added - this build can receive push notifications"
+
       - name: 🔑 Decode keystore (release only)
         if: env.BUILD_TYPE == 'release'
         run: |

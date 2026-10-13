@@ -6,15 +6,16 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "check-deploy": "node scripts/check-deploy.mjs",
+    "db:push": "drizzle-kit push",
+    "db:baseline": "node scripts/baseline-migrations.mjs",
     "db:studio": "drizzle-kit studio",
-    "db:baseline": "node scripts/baseline-migrations.mjs"
+    "check-deploy": "node scripts/check-deploy.mjs",
+    "generate:vapid": "node scripts/generate-vapid-keys.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.1",
@@ -37,7 +38,8 @@
     "next": "16.2.6",
     "pg": "8.20.0",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.9",
@@ -47,6 +49,7 @@
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/web-push": "^3.6.4",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",

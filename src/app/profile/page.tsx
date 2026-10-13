@@ -4,6 +4,12 @@ import { useState, useEffect } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { requestJson } from "@/lib/http";
+import {
+  browserPushState,
+  disableBrowserPush,
+  enableBrowserPush,
+  type BrowserPushState,
+} from "@/lib/webpush-client";
 
 interface User {
   id: string;
@@ -39,14 +45,42 @@ export default function ProfilePage() {
     })();
   }, []);
 
+  // Whether *this* browser can receive notifications right now.
+  const [browserPush, setBrowserPush] = useState<BrowserPushState | null>(null);
+  const [pushNote, setPushNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    void browserPushState().then(setBrowserPush);
+  }, []);
+
   // The push switch is a real preference: sendPushToUser checks it before
-  // touching FCM. It previously toggled local component state and nothing else.
+  // touching any channel. It previously toggled local component state and
+  // nothing else.
+  //
+  // Turning it on also subscribes *this* browser, and turning it off
+  // unsubscribes it - otherwise the switch would claim something it hadn't
+  // done, which is exactly the kind of lie this screen used to tell.
   const togglePush = async () => {
     if (!user || savingPush) return;
     const next = !user.pushEnabled;
     setUser({ ...user, pushEnabled: next });
     setSavingPush(true);
+    setPushNote(null);
+
     try {
+      if (next && (browserPush === "default" || browserPush === "granted-unsubscribed")) {
+        const result = await enableBrowserPush();
+        if (result.ok) {
+          setBrowserPush("granted-subscribed");
+        } else {
+          setPushNote(result.reason);
+          if (result.reason.includes("blocked")) setBrowserPush("denied");
+        }
+      } else if (!next && browserPush === "granted-subscribed") {
+        await disableBrowserPush();
+        setBrowserPush("granted-unsubscribed");
+      }
+
       const res = await fetch("/api/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -89,7 +123,21 @@ export default function ProfilePage() {
               on={user?.pushEnabled ?? true}
               disabled={!loading && !user}
               onToggle={togglePush}
+              hint={
+                browserPush === "granted-subscribed"
+                  ? "This device is registered"
+                  : browserPush === "denied"
+                    ? "Blocked in your browser settings"
+                    : browserPush === "not-configured"
+                      ? "The server has no VAPID keys yet"
+                      : browserPush === "unsupported"
+                        ? "This browser can't show notifications"
+                        : undefined
+              }
             />
+            {pushNote && (
+              <p className="px-4 py-3 text-xs text-amber-700 border-t border-slate-50">{pushNote}</p>
+            )}
             <ToggleRow
               label="SMS Reminders"
               icon="💬"

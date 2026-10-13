@@ -10,6 +10,7 @@
  *   3. the schema is applied (all 8 tables)
  *   4. OTP delivery is configured in a way that lets people log in
  *   5. optional integrations (payment proofs, push)
+ *   6. notification channels (native FCM, browser Web Push)
  *
  * Usage:
  *   npm run check-deploy                      # uses .env / the environment
@@ -26,6 +27,7 @@ import pg from "pg";
 const REQUIRED_COLUMNS = [
   { table: "reminders", column: "dedupe_key" },
   { table: "reminders", column: "recipient_id" },
+  { table: "users", column: "notifications_seen_at" },
 ];
 
 const REQUIRED_TABLES = [
@@ -236,8 +238,15 @@ cloudinary
   ? ok("payment proofs", "Cloudinary configured")
   : warn("payment proofs", "Cloudinary not configured — proof uploads return 503");
 firebase
-  ? ok("push notifications", "Firebase configured")
-  : warn("push notifications", "Firebase not configured — reminders only appear in the Activity feed");
+  ? ok("push (app)", "Firebase configured")
+  : warn("push (app)", "Firebase not configured — the native app can't be notified");
+const vapid = Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+vapid
+  ? ok("push (browser)", "VAPID keys configured")
+  : warn(
+      "push (browser)",
+      "VAPID keys not configured — websites and installed PWAs get no notifications. Run npm run generate:vapid, then set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY."
+    );
 
 console.log(
   failures === 0
