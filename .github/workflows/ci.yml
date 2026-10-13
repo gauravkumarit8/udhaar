@@ -146,9 +146,9 @@ jobs:
           psql -h 127.0.0.1 -U postgres -c 'create database legacy_db'
           psql -h 127.0.0.1 -U postgres -d legacy_db -q -f drizzle/0000_initial_schema.sql
           test "$(psql -h 127.0.0.1 -U postgres -d legacy_db -At -c "select count(*) from information_schema.columns where table_name = 'reminders' and column_name = 'dedupe_key'")" = "0"
-          npm run db:baseline | tee baseline.log
-          grep -q "recorded as already applied: 0000_initial_schema" baseline.log
-          grep -q "Still to apply: 0001_reminder_dedupe_key" baseline.log
+          npm run db:baseline | tee "$RUNNER_TEMP/baseline.log"
+          grep -q "recorded as already applied: 0000_initial_schema" "$RUNNER_TEMP/baseline.log"
+          grep -q "Still to apply: 0001_reminder_dedupe_key" "$RUNNER_TEMP/baseline.log"
           test "$(psql -h 127.0.0.1 -U postgres -d legacy_db -At -c 'select count(*) from drizzle.__drizzle_migrations')" = "1"
 
       - name: 🧱 …the pending migration must really be applied
@@ -169,14 +169,14 @@ jobs:
         run: |
           psql -h 127.0.0.1 -U postgres -c 'create database stale_db'
           psql -h 127.0.0.1 -U postgres -d stale_db -q -f drizzle/0000_initial_schema.sql
-          node -e 'const c=require("node:crypto"),f=require("node:fs");const j=JSON.parse(f.readFileSync("drizzle/meta/_journal.json","utf8"));console.log(j.entries.map((e)=>c.createHash("sha256").update(f.readFileSync("drizzle/"+e.tag+".sql")).digest("hex")+" "+e.when).join("\n"))' > rows.txt
+          node -e 'const c=require("node:crypto"),f=require("node:fs");const j=JSON.parse(f.readFileSync("drizzle/meta/_journal.json","utf8"));console.log(j.entries.map((e)=>c.createHash("sha256").update(f.readFileSync("drizzle/"+e.tag+".sql")).digest("hex")+" "+e.when).join("\n"))' > "$RUNNER_TEMP/rows.txt"
           psql -h 127.0.0.1 -U postgres -d stale_db -c 'create schema drizzle'
           psql -h 127.0.0.1 -U postgres -d stale_db -c 'create table drizzle.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)'
           while read -r hash ts; do
             psql -h 127.0.0.1 -U postgres -d stale_db -c "insert into drizzle.__drizzle_migrations (hash, created_at) values ('$hash', $ts)"
-          done < rows.txt
-          npm run db:baseline | tee baseline.log
-          grep -q 'removed an incorrect "applied" record: 0001_reminder_dedupe_key' baseline.log
+          done < "$RUNNER_TEMP/rows.txt"
+          npm run db:baseline | tee "$RUNNER_TEMP/baseline.log"
+          grep -q 'removed an incorrect "applied" record: 0001_reminder_dedupe_key' "$RUNNER_TEMP/baseline.log"
           npm run db:migrate
           test "$(psql -h 127.0.0.1 -U postgres -d stale_db -At -c "select count(*) from information_schema.columns where table_name = 'reminders' and column_name = 'dedupe_key'")" = "1"
           npm run check-deploy
