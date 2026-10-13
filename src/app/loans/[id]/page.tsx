@@ -95,7 +95,13 @@ export default function LoanDetailPage() {
   const [payLoading, setPayLoading] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
   const [reminderSent, setReminderSent] = useState<string | null>(null);
+  const [reminderNote, setReminderNote] = useState<{
+    installmentId: string;
+    text: string;
+    upiLink?: string;
+  } | null>(null);
   const [activeTab, setActiveTab] = useState<"schedule" | "payments">("schedule");
+  const [paymentError, setPaymentError] = useState<string | null>(null);
   const [showUPI, setShowUPI] = useState(false);
   const [editForm, setEditForm] = useState<{
     borrowerName: string;
@@ -116,15 +122,15 @@ export default function LoanDetailPage() {
   // Native hooks
   const haptics = useHaptics();
   const reminders = useReminders();
-  const handleResume = useCallback(() => { loadData(); }, []);
-  useAppResume(handleResume);
 
-  useEffect(() => {
-    async function load() {
+  // Declared before anything that calls it (it used to be referenced above its
+  // own declaration, which the react-hooks lint rule flags).
+  const loadData = useCallback(
+    async (opts: { redirectOn401?: boolean } = {}) => {
       try {
         const res = await fetch(`/api/loans/${loanId}`);
-        if (res.status === 401) {
-          window.location.href = "/login";
+        if (opts.redirectOn401 && res.status === 401) {
+          window.location.assign("/login");
           return;
         }
         if (res.ok) {
@@ -134,23 +140,24 @@ export default function LoanDetailPage() {
           setPayments(data.payments);
         }
       } catch {
-        // ignore
+        // ignore - the UI keeps whatever it last rendered
       } finally {
         setLoading(false);
       }
-    }
-    load();
-  }, [loanId]);
+    },
+    [loanId]
+  );
 
-  const loadData = async () => {
-    const res = await fetch(`/api/loans/${loanId}`);
-    if (res.ok) {
-      const data = await res.json();
-      setLoan(data.loan);
-      setInstallments(data.installments);
-      setPayments(data.payments);
-    }
-  };
+  const handleResume = useCallback(() => {
+    void loadData();
+  }, [loadData]);
+  useAppResume(handleResume);
+
+  useEffect(() => {
+    void (async () => {
+      await loadData({ redirectOn401: true });
+    })();
+  }, [loadData]);
 
   const handlePay = async () => {
     if (!payModal || !payAmount) return;
@@ -209,22 +216,42 @@ export default function LoanDetailPage() {
       const res = await fetch(`/api/installments/${installmentId}/remind`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: "sms" }),
+        body: JSON.stringify({ channel: "push" }),
       });
       const data = await res.json();
-      if (data.success) {
-        setReminderSent(installmentId);
-        haptics.notification("success");
-        // Also schedule native local notifications
-        const inst = installments.find((i) => i.id === installmentId);
-        if (inst && loan) {
-          const remaining = parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid);
-          reminders.schedule(installmentId, inst.dueDate, loan.borrowerName, remaining);
-        }
-        setTimeout(() => setReminderSent(null), 3000);
+
+      if (!res.ok || !data.success) {
+        setReminderNote({ installmentId, text: data.error || "Couldn't send that reminder." });
+        haptics.notification("error");
+        return;
       }
+
+      setReminderSent(installmentId);
+
+      if (data.delivered) {
+        haptics.notification("success");
+        setReminderNote({ installmentId, text: "Reminder delivered to the borrower's phone." });
+      } else {
+        // Be honest: push only reaches the borrower if they registered a
+        // device. Until SMS/WhatsApp is wired up there's no other channel.
+        haptics.notification("warning");
+        setReminderNote({
+          installmentId,
+          text: data.reason || "Reminder recorded, but it couldn't be delivered.",
+          upiLink: data.upiLink ?? undefined,
+        });
+      }
+
+      // Locally scheduled notifications nudge *this* device (the lender's) to
+      // follow up, on top of whatever reached the borrower.
+      const inst = installments.find((i) => i.id === installmentId);
+      if (inst && loan && data.delivered) {
+        const remaining = parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid);
+        reminders.schedule(installmentId, inst.dueDate, loan.borrowerName, remaining);
+      }
+      setTimeout(() => setReminderSent(null), 3000);
     } catch {
-      // ignore
+      setReminderNote({ installmentId, text: "Network error - the reminder wasn't sent." });
     }
   };
 
@@ -300,7 +327,7 @@ export default function LoanDetailPage() {
         return;
       }
 
-      window.location.href = "/dashboard";
+      window.location.assign("/dashboard");
     } catch {
       alert("Something went wrong while deleting the loan");
     }
@@ -308,14 +335,27 @@ export default function LoanDetailPage() {
 
   const handleConfirmPayment = async (paymentId: string, action: "confirm" | "reject") => {
     try {
-      await fetch(`/api/payments/${paymentId}/confirm`, {
+      const res = await fetch(`/api/payments/${paymentId}/confirm`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.error) {
+        // Errors here are meaningful ("you can't confirm your own payment",
+        // "this EMI already moved on") and used to be swallowed silently.
+        haptics.notification("error");
+        setPaymentError(data.error || "Couldn't update that payment.");
+        setTimeout(() => setPaymentError(null), 6000);
+      } else {
+        haptics.notification("success");
+      }
+
       await loadData();
     } catch {
-      // ignore
+      setPaymentError("Network error - the payment wasn't updated.");
+      setTimeout(() => setPaymentError(null), 6000);
     }
   };
 
@@ -348,6 +388,11 @@ export default function LoanDetailPage() {
 
   const isLender = loan.viewerRole === "lender";
   const currentUserId = isLender ? loan.lenderId : loan.borrowerId;
+  // In 2-side mode a payment normally needs the *other* party to confirm it.
+  // If the borrower never joined Udhaar there is no other party, so the
+  // marker has to be able to confirm their own payment or it would sit
+  // pending forever.
+  const noCounterparty = isLender && !loan.borrowerId;
 
   const paidInstallments = installments.filter((i) => i.computedStatus === "paid").length;
   const progressPercent = installments.length > 0
@@ -356,6 +401,10 @@ export default function LoanDetailPage() {
   const totalPrincipalPaid = installments.reduce((sum, i) => sum + parseFloat(i.principalPaid), 0);
   const totalPrincipal = installments.reduce((sum, i) => sum + parseFloat(i.principalAmount), 0);
   const principalProgressPercent = totalPrincipal > 0 ? Math.round((totalPrincipalPaid / totalPrincipal) * 100) : 0;
+
+  const totalInterest = installments.reduce((sum, i) => sum + parseFloat(i.interestAmount), 0);
+  const totalInterestPaid = installments.reduce((sum, i) => sum + parseFloat(i.interestPaid), 0);
+  const interestOutstanding = Math.max(0, Math.round((totalInterest - totalInterestPaid) * 100) / 100);
 
   const upiLink = loan.upiId
     ? `upi://pay?pa=${loan.upiId}&pn=${encodeURIComponent(loan.borrowerName)}`
@@ -450,6 +499,15 @@ export default function LoanDetailPage() {
           </p>
         </div>
 
+        {loan.status === "closed" && interestOutstanding > 0 && (
+          <div className="mt-3 bg-amber-400/20 border border-amber-200/40 rounded-xl px-3 py-2">
+            <p className="text-[11px] text-amber-50 font-medium">
+              ⚠️ Closed with {formatINR(interestOutstanding)} interest still unpaid — the loan was
+              settled on principal only.
+            </p>
+          </div>
+        )}
+
         {/* Action buttons */}
         <div className="flex gap-2 mt-4">
           {upiLink && !isLender && (
@@ -511,6 +569,27 @@ export default function LoanDetailPage() {
       {/* Schedule */}
       {activeTab === "schedule" && (
         <div className="px-5 pb-24 space-y-2.5">
+          {reminderNote && (
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3.5 animate-scale-in">
+              <p className="text-xs text-blue-800">{reminderNote.text}</p>
+              <div className="flex items-center gap-3 mt-2">
+                {reminderNote.upiLink && (
+                  <a
+                    href={reminderNote.upiLink}
+                    className="text-xs font-semibold text-blue-700 underline"
+                  >
+                    Open UPI link
+                  </a>
+                )}
+                <button
+                  onClick={() => setReminderNote(null)}
+                  className="text-xs font-semibold text-slate-500"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
           {installments.map((inst) => {
             const days = daysUntil(inst.dueDate);
             const principalRemaining = parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid);
@@ -642,6 +721,11 @@ export default function LoanDetailPage() {
       {/* Payments Tab */}
       {activeTab === "payments" && (
         <div className="px-5 pb-24 space-y-2.5">
+          {paymentError && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-3.5 text-xs text-red-700 animate-scale-in">
+              {paymentError}
+            </div>
+          )}
           {payments.length === 0 ? (
             <div className="bg-white rounded-2xl p-8 text-center border border-slate-100">
               <div className="text-4xl mb-2">💳</div>
@@ -688,7 +772,8 @@ export default function LoanDetailPage() {
                     {payment.status.toUpperCase()}
                   </span>
                 </div>
-                {payment.status === "pending" && payment.markedByUserId !== currentUserId && (
+                {payment.status === "pending" &&
+                  (payment.markedByUserId !== currentUserId || noCounterparty) && (
                   <div className="flex gap-2 mt-3">
                     <button
                       onClick={() => handleConfirmPayment(payment.id, "confirm")}
@@ -704,11 +789,21 @@ export default function LoanDetailPage() {
                     </button>
                   </div>
                 )}
-                {payment.status === "pending" && payment.markedByUserId === currentUserId && (
-                  <p className="text-[11px] text-amber-600 font-medium mt-3">
-                    ⏳ Waiting for {isLender ? "borrower" : "lender"} to confirm
-                  </p>
-                )}
+                {payment.status === "pending" &&
+                  payment.markedByUserId === currentUserId &&
+                  !noCounterparty && (
+                    <p className="text-[11px] text-amber-600 font-medium mt-3">
+                      ⏳ Waiting for {isLender ? "borrower" : "lender"} to confirm
+                    </p>
+                  )}
+                {payment.status === "pending" &&
+                  payment.markedByUserId === currentUserId &&
+                  noCounterparty && (
+                    <p className="text-[11px] text-amber-600 font-medium mt-3">
+                      {loan.borrowerName} hasn&apos;t joined Udhaar yet, so you can confirm this
+                      yourself.
+                    </p>
+                  )}
               </div>
             ))
           )}

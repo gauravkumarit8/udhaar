@@ -18,7 +18,6 @@ import { App } from "@capacitor/app";
  */
 export function isNative(): boolean {
   if (typeof window === "undefined") return false;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const win = window as any;
   return !!(win.Capacitor?.isNativePlatform?.());
 }
@@ -162,27 +161,33 @@ export async function registerForPushNotifications(): Promise<boolean> {
   if (!isNative()) return false;
 
   try {
+    // Listeners first, then register(): the native plugin can fire the
+    // "registration" callback immediately, and the old order
+    // (register() then addListener) occasionally missed it - leaving the
+    // device never registered for push.
+    const registration = new Promise<string | null>((resolve) => {
+      PushNotifications.addListener("registration", (tokenResult) => resolve(tokenResult.value));
+      PushNotifications.addListener("registrationError", () => resolve(null));
+      // Never let a silent plugin leave this promise (and the caller) hanging.
+      setTimeout(() => resolve(null), 10_000);
+    });
+
     const perm = await PushNotifications.requestPermissions();
     if (perm.receive !== "granted") return false;
 
     await PushNotifications.register();
 
-    return new Promise((resolve) => {
-      PushNotifications.addListener("registration", async (tokenResult) => {
-        try {
-          const platform = (window as any).Capacitor?.getPlatform?.() || "android";
-          await fetch("/api/notifications/register-device", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: tokenResult.value, platform }),
-          });
-          resolve(true);
-        } catch {
-          resolve(false);
-        }
-      });
-      PushNotifications.addListener("registrationError", () => resolve(false));
+    const token = await registration;
+    if (!token) return false;
+
+    const platform = (window as any).Capacitor?.getPlatform?.() || "android";
+    const res = await fetch("/api/notifications/register-device", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, platform }),
     });
+
+    return res.ok;
   } catch {
     return false;
   }

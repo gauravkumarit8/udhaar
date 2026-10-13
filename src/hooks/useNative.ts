@@ -22,14 +22,14 @@ import {
   scheduleReminder,
 } from "@/lib/native";
 
-/** Check if running as native Capacitor app */
+/**
+ * Check if running as a native Capacitor app.
+ * The value is stable for the lifetime of the page, so it's read once on first
+ * render (lazily, so SSR still sees `false`) instead of being pushed into
+ * state from an effect.
+ */
 export function useIsNative() {
-  const [native, setNative] = useState(false);
-
-  useEffect(() => {
-    setNative(isNative());
-  }, []);
-
+  const [native] = useState(() => isNative());
   return native;
 }
 

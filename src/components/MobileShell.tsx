@@ -19,9 +19,14 @@ export default function MobileShell({
   transparentHeader = false,
   rightAction,
 }: MobileShellProps) {
-  const [isInstalled, setIsInstalled] = useState(false);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
   const isNativeApp = useIsNative();
+  const [isInstalled] = useState(
+    () =>
+      isNativeApp ||
+      (typeof window !== "undefined" &&
+        window.matchMedia("(display-mode: standalone)").matches)
+  );
 
   // Native features
   useStatusBar();
@@ -33,16 +38,12 @@ export default function MobileShell({
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
 
-    // Check if installed (PWA)
-    const isStandalone = window.matchMedia("(display-mode: standalone)").matches;
-    setIsInstalled(isStandalone || isNativeApp);
-
     // Show install banner after 5 seconds if not installed and not native
-    if (!isStandalone && !isNativeApp) {
+    if (!isInstalled && !isNativeApp) {
       const timer = setTimeout(() => setShowInstallBanner(true), 5000);
       return () => clearTimeout(timer);
     }
-  }, [isNativeApp]);
+  }, [isNativeApp, isInstalled]);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col max-w-lg mx-auto relative">

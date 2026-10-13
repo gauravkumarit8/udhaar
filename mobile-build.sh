@@ -55,7 +55,8 @@ case $PLATFORM in
 
   android)
     echo "📋 Copying web assets..."
-    npx cap copy android 2>/dev/null || npx cap add android && npx cap copy android
+    if [ ! -d "android" ]; then npx cap add android; fi
+    npx cap copy android
     
     echo "🔧 Syncing native project..."
     npx cap sync android
@@ -71,7 +72,8 @@ case $PLATFORM in
 
   ios)
     echo "📋 Copying web assets..."
-    npx cap copy ios 2>/dev/null || npx cap add ios && npx cap copy ios
+    if [ ! -d "ios" ]; then npx cap add ios; fi
+    npx cap copy ios
     
     echo "🔧 Syncing native project..."
     npx cap sync ios

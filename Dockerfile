@@ -28,9 +28,13 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
-# Copy drizzle schema for migrations if needed at runtime
+# Copy the Drizzle schema + config so `npx drizzle-kit push` can be run
+# against a fresh database (the schema lives in code, there are no SQL
+# migration files yet).
 COPY --from=builder /app/src/db ./src/db
-COPY --from=builder /app/drizzle.config.json ./
+COPY --from=builder /app/drizzle.config.ts ./
+COPY --from=builder /app/node_modules/drizzle-kit ./node_modules/drizzle-kit
+COPY --from=builder /app/node_modules/dotenv ./node_modules/dotenv
 
 USER nextjs
 

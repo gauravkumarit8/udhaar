@@ -8,33 +8,66 @@ interface User {
   id: string;
   name: string;
   mobile: string;
+  pushEnabled: boolean;
+}
+
+interface Channels {
+  push: boolean;
+  sms: boolean;
+  whatsapp: boolean;
 }
 
 export default function ProfilePage() {
   const [user, setUser] = useState<User | null>(null);
+  const [channels, setChannels] = useState<Channels>({ push: true, sms: false, whatsapp: false });
   const [loading, setLoading] = useState(true);
+  const [savingPush, setSavingPush] = useState(false);
 
   useEffect(() => {
-    async function load() {
+    void (async () => {
       try {
-        const res = await fetch("/api/auth/me");
+        const res = await fetch("/api/profile");
+        if (res.status === 401) {
+          window.location.assign("/login");
+          return;
+        }
         if (res.ok) {
           const data = await res.json();
-          if (data.user) setUser(data.user);
-          else window.location.href = "/login";
+          setUser(data.profile);
+          setChannels(data.channels);
         }
       } catch {
         // ignore
       } finally {
         setLoading(false);
       }
-    }
-    load();
+    })();
   }, []);
+
+  // The push switch is a real preference: sendPushToUser checks it before
+  // touching FCM. It previously toggled local component state and nothing else.
+  const togglePush = async () => {
+    if (!user || savingPush) return;
+    const next = !user.pushEnabled;
+    setUser({ ...user, pushEnabled: next });
+    setSavingPush(true);
+    try {
+      const res = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pushEnabled: next }),
+      });
+      if (!res.ok) setUser({ ...user, pushEnabled: !next });
+    } catch {
+      setUser({ ...user, pushEnabled: !next });
+    } finally {
+      setSavingPush(false);
+    }
+  };
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
-    window.location.href = "/login";
+    window.location.assign("/login");
   };
 
   return (
@@ -55,18 +88,38 @@ export default function ProfilePage() {
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide px-4 pt-4 pb-2">
               Notification Preferences
             </h3>
-            <SettingToggle label="Push Notifications" icon="📱" defaultOn={true} />
-            <SettingToggle label="SMS Reminders" icon="💬" defaultOn={true} />
-            <SettingToggle label="WhatsApp Reminders" icon="📲" defaultOn={false} />
+            <ToggleRow
+              label="Push Notifications"
+              icon="📱"
+              on={user?.pushEnabled ?? true}
+              disabled={!loading && !user}
+              onToggle={togglePush}
+            />
+            <ToggleRow
+              label="SMS Reminders"
+              icon="💬"
+              on={false}
+              disabled
+              hint={channels.sms ? undefined : "SMS isn't connected yet"}
+            />
+            <ToggleRow
+              label="WhatsApp Reminders"
+              icon="📲"
+              on={false}
+              disabled
+              hint="Not connected yet"
+            />
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide px-4 pt-4 pb-2">
               Reminder Schedule
             </h3>
-            <SettingToggle label="T-2 (2 days before)" icon="📅" defaultOn={true} />
-            <SettingToggle label="T-1 (1 day before)" icon="📋" defaultOn={true} />
-            <SettingToggle label="Overdue Nag Mode" icon="🔴" defaultOn={true} />
+            <p className="px-4 pb-4 text-xs text-slate-400">
+              Udhaar nudges the borrower 2 days before, 1 day before and on the due date, then daily
+              while it stays unpaid. Reminders you send from a loan page are delivered instantly as
+              push notifications.
+            </p>
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
@@ -114,35 +167,45 @@ export default function ProfilePage() {
   );
 }
 
-function SettingToggle({
+function ToggleRow({
   label,
   icon,
-  defaultOn,
+  on,
+  disabled = false,
+  hint,
+  onToggle,
 }: {
   label: string;
   icon: string;
-  defaultOn: boolean;
+  on: boolean;
+  disabled?: boolean;
+  hint?: string;
+  onToggle?: () => void;
 }) {
-  const [on, setOn] = useState(defaultOn);
-
   return (
     <div className="px-4 py-3 flex items-center justify-between border-t border-slate-50">
       <div className="flex items-center gap-3">
         <span className="text-lg">{icon}</span>
-        <span className="text-sm text-slate-700">{label}</span>
+        <span className={`text-sm ${disabled ? "text-slate-400" : "text-slate-700"}`}>{label}</span>
       </div>
-      <button
-        onClick={() => setOn(!on)}
-        className={`relative w-12 h-7 rounded-full transition-colors ${
-          on ? "bg-emerald-500" : "bg-slate-300"
-        }`}
-      >
-        <div
-          className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-            on ? "translate-x-6" : "translate-x-1"
+      <div className="flex items-center gap-2">
+        {hint && <span className="text-[10px] text-slate-400 font-medium">{hint}</span>}
+        <button
+          type="button"
+          disabled={disabled || !onToggle}
+          aria-pressed={on}
+          onClick={onToggle}
+          className={`relative w-12 h-7 rounded-full transition-colors disabled:opacity-40 ${
+            on ? "bg-emerald-500" : "bg-slate-300"
           }`}
-        />
-      </button>
+        >
+          <div
+            className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+              on ? "translate-x-6" : "translate-x-1"
+            }`}
+          />
+        </button>
+      </div>
     </div>
   );
 }

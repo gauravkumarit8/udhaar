@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { otps } from "@/db/schema";
-import { eq, desc } from "drizzle-orm";
-import { sendOtpSms } from "@/lib/sms";
+import { eq, desc, lt } from "drizzle-orm";
+import { getOtpPolicy, generateOtpCode, deliverOtp, warnOnceIfNeeded } from "@/lib/otp";
 
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds between requests per number
 
 export async function POST(req: NextRequest) {
+  const policy = getOtpPolicy();
+  warnOnceIfNeeded(policy);
+
+  // Fail closed rather than silently issuing codes nobody can receive.
+  if (policy.misconfigured) {
+    console.error(`[otp] ${policy.misconfigured}`);
+    return NextResponse.json({ error: policy.misconfigured }, { status: 503 });
+  }
+
   const { mobile } = await req.json();
 
   if (!mobile || !/^\d{10}$/.test(mobile)) {
@@ -33,8 +42,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Generate a real random 6-digit code
-  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const code = generateOtpCode(policy);
   const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 min
 
   // Invalidate previous OTPs for this mobile
@@ -45,17 +53,31 @@ export async function POST(req: NextRequest) {
 
   await db.insert(otps).values({ mobile, code, expiresAt });
 
-  const result = await sendOtpSms(mobile, code);
+  // Best-effort cleanup of long-expired rows for this number so the table
+  // doesn't grow forever (one row per OTP request, per user).
+  await db
+    .delete(otps)
+    .where(lt(otps.expiresAt, new Date(Date.now() - 24 * 60 * 60 * 1000)));
 
-  // Only echo the code back in the response when SMS delivery isn't
-  // configured (local dev) - never leak it once real delivery is live.
-  if (result.sent) {
+  const delivery = await deliverOtp(mobile, code, policy);
+
+  if (delivery.delivered) {
     return NextResponse.json({ success: true, message: "OTP sent" });
   }
 
-  return NextResponse.json({
-    success: true,
-    message: `OTP sent (dev mode - SMS not configured, code: ${code})`,
-    devCode: code,
-  });
+  // Dummy mode only. `hideCode` is false just for explicit/dev dummy mode,
+  // so the code is never echoed on a normally-configured deployment.
+  if (delivery.exposeCode) {
+    return NextResponse.json({
+      success: true,
+      dummyOtp: true,
+      message: "OTP not sent by SMS (dummy mode) - use the code below.",
+      devCode: delivery.code,
+    });
+  }
+
+  return NextResponse.json(
+    { error: "Couldn't send the OTP right now. Please try again in a moment." },
+    { status: 502 }
+  );
 }

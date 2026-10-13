@@ -1,5 +1,5 @@
 import { db } from "@/db";
-import { deviceTokens } from "@/db/schema";
+import { deviceTokens, users } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 
 // Lazily initialized so this module can be imported even when Firebase
@@ -72,6 +72,15 @@ export async function sendPushToUser(
 ): Promise<{ sent: number; failed: number }> {
   const fcm = await getMessaging();
   if (!fcm) return { sent: 0, failed: 0 };
+
+  // Honour the user's notification preference before touching FCM.
+  const [recipient] = await db
+    .select({ pushEnabled: users.pushEnabled })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (recipient && !recipient.pushEnabled) return { sent: 0, failed: 0 };
 
   const tokens = await db
     .select({ id: deviceTokens.id, token: deviceTokens.token })

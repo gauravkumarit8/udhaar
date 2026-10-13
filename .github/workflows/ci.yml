@@ -51,6 +51,12 @@ jobs:
       - name: 🔍 TypeScript check
         run: npx tsc --noEmit
 
+      - name: 🧹 Lint
+        run: npm run lint
+
+      - name: 🧪 Unit tests
+        run: npm test
+
       - name: 🏗️ Build Next.js
         run: npm run build
 

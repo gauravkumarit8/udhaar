@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { payments, installments, loans } from "@/db/schema";
 import { getSession } from "@/lib/auth";
-import { eq } from "drizzle-orm";
+import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments";
+import { closeLoanIfSettled } from "@/lib/loans";
+import { eq, and, lte, sql } from "drizzle-orm";
 
 export async function PATCH(
   req: NextRequest,
@@ -39,80 +41,117 @@ export async function PATCH(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // The person who marked the payment can't be the one who confirms/rejects it
-  if (payment.markedByUserId === session.id) {
+  // Normally the person who marked a payment can't also confirm it - the
+  // whole point of 2-side mode is that the other party signs off. But if the
+  // counterparty has no Udhaar account yet (e.g. the lender added a loan for
+  // a friend who hasn't installed the app), there is nobody else who *can*
+  // confirm, and the payment would be stuck pending forever. In that single
+  // case we let the marker confirm, and say so on the record.
+  const counterpartyId = session.id === loan.lenderId ? loan.borrowerId : loan.lenderId;
+  const selfConfirm = payment.markedByUserId === session.id && !counterpartyId;
+
+  if (payment.markedByUserId === session.id && counterpartyId) {
     return NextResponse.json(
       { error: "You can't confirm a payment you marked yourself. Ask the other party to confirm." },
       { status: 403 }
     );
   }
 
-  // Update payment status
-  await db
-    .update(payments)
-    .set({
-      status: action === "confirm" ? "confirmed" : "rejected",
-      confirmedByUserId: session.id,
-    })
-    .where(eq(payments.id, id));
+  if (action === "reject") {
+    await db
+      .update(payments)
+      .set({ status: "rejected", confirmedByUserId: session.id })
+      .where(eq(payments.id, id));
 
-  // If confirmed, update installment paid amounts
-  if (action === "confirm") {
-    const [inst] = await db
-      .select()
-      .from(installments)
-      .where(eq(installments.id, payment.installmentId))
-      .limit(1);
-
-    if (inst) {
-      const payAmount = parseFloat(payment.amount);
-      const interestRemaining = parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid);
-      const principalRemaining = parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid);
-
-      let interestPayment = 0;
-      let principalPayment = 0;
-
-      if (payment.paymentType === "interest") {
-        interestPayment = Math.min(payAmount, interestRemaining);
-      } else if (payment.paymentType === "principal") {
-        principalPayment = Math.min(payAmount, principalRemaining);
-      } else {
-        interestPayment = Math.min(payAmount, interestRemaining);
-        principalPayment = Math.min(payAmount - interestPayment, principalRemaining);
-      }
-
-      const newPrincipalPaid = (parseFloat(inst.principalPaid) + principalPayment).toFixed(2);
-      const newInterestPaid = (parseFloat(inst.interestPaid) + interestPayment).toFixed(2);
-
-      await db
-        .update(installments)
-        .set({ principalPaid: newPrincipalPaid, interestPaid: newInterestPaid })
-        .where(eq(installments.id, payment.installmentId));
-
-      // Check auto-close
-      const [result] = await db
-        .select({
-          totalPrincipal: installments.principalAmount,
-          paidPrincipal: installments.principalPaid,
-        })
-        .from(installments)
-        .where(eq(installments.loanId, payment.loanId));
-
-      // Simple check - if all installments have principalPaid >= principalAmount
-      const allInstallments = await db
-        .select()
-        .from(installments)
-        .where(eq(installments.loanId, payment.loanId));
-
-      const allPaid = allInstallments.every(
-        (i) => parseFloat(i.principalPaid) >= parseFloat(i.principalAmount)
-      );
-
-      if (allPaid) {
-        await db.update(loans).set({ status: "closed" }).where(eq(loans.id, payment.loanId));
-      }
-    }
+    return NextResponse.json({ success: true, action });
   }
 
-  return NextResponse.json({ success: true, action });
+  // ── Confirm ────────────────────────────────────────────────────────────
+  const [inst] = await db
+    .select()
+    .from(installments)
+    .where(eq(installments.id, payment.installmentId))
+    .limit(1);
+
+  if (!inst) {
+    return NextResponse.json({ error: "Installment not found" }, { status: 404 });
+  }
+
+  const { principalRemaining, interestRemaining } = remainingFor(inst);
+
+  const allocation = allocatePayment({
+    amount: parseFloat(payment.amount),
+    paymentType: payment.paymentType as PaymentType,
+    principalRemaining,
+    interestRemaining,
+  });
+
+  if (!allocation.ok) {
+    // The EMI moved on since this payment was marked (someone paid it, or an
+    // earlier pending payment was confirmed first). Reject it loudly rather
+    // than silently applying zero and leaving a "confirmed" row behind.
+    await db
+      .update(payments)
+      .set({ status: "rejected", confirmedByUserId: session.id })
+      .where(eq(payments.id, id));
+
+    return NextResponse.json(
+      {
+        error: `This payment can't be applied any more: ${allocation.error} It has been marked rejected.`,
+      },
+      { status: 409 }
+    );
+  }
+
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "confirmed",
+          confirmedByUserId: session.id,
+          notes: selfConfirm
+            ? [payment.notes, "Self-confirmed: borrower has no account yet"]
+                .filter(Boolean)
+                .join(" | ")
+            : payment.notes,
+        })
+        .where(eq(payments.id, id));
+
+      const [updated] = await tx
+        .update(installments)
+        .set({
+          principalPaid: sql`${installments.principalPaid} + ${allocation.principalPayment.toFixed(2)}::numeric`,
+          interestPaid: sql`${installments.interestPaid} + ${allocation.interestPayment.toFixed(2)}::numeric`,
+        })
+        .where(
+          and(
+            eq(installments.id, payment.installmentId),
+            lte(
+              sql`${installments.principalPaid} + ${allocation.principalPayment.toFixed(2)}::numeric`,
+              sql`${installments.principalAmount} + 0.01`
+            ),
+            lte(
+              sql`${installments.interestPaid} + ${allocation.interestPayment.toFixed(2)}::numeric`,
+              sql`${installments.interestAmount} + 0.01`
+            )
+          )
+        )
+        .returning({ id: installments.id });
+
+      if (!updated) throw new Error("PAYMENT_CONFLICT");
+
+      await closeLoanIfSettled(payment.loanId, (q) => tx.execute(q));
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === "PAYMENT_CONFLICT") {
+      return NextResponse.json(
+        { error: "This EMI was updated at the same time. Reload and try again." },
+        { status: 409 }
+      );
+    }
+    throw err;
+  }
+
+  return NextResponse.json({ success: true, action, selfConfirmed: selfConfirm });
 }

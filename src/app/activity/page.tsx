@@ -55,12 +55,26 @@ export default function ActivityPage() {
     load();
   }, []);
 
+  const [reminderNote, setReminderNote] = useState<string | null>(null);
+
   const handleRemind = async (installmentId: string) => {
-    await fetch(`/api/installments/${installmentId}/remind`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channel: "sms" }),
-    });
+    try {
+      const res = await fetch(`/api/installments/${installmentId}/remind`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: "push" }),
+      });
+      const data = await res.json();
+      setReminderNote(
+        data.delivered
+          ? "✓ Reminder delivered"
+          : data.reason || data.error || "Reminder recorded, but not delivered"
+      );
+      setTimeout(() => setReminderNote(null), 5000);
+    } catch {
+      setReminderNote("Network error - reminder not sent");
+      setTimeout(() => setReminderNote(null), 5000);
+    }
   };
 
   const overdue = dueItems.filter((d) => d.computedStatus === "overdue");
@@ -69,6 +83,11 @@ export default function ActivityPage() {
   return (
     <MobileShell title="Activity">
       <div className="px-5 pb-24">
+        {reminderNote && (
+          <div className="mb-4 bg-blue-50 border border-blue-200 rounded-2xl p-3.5 text-xs text-blue-800 animate-scale-in">
+            {reminderNote}
+          </div>
+        )}
         {/* Overdue Section */}
         {overdue.length > 0 && (
           <div className="mb-6">

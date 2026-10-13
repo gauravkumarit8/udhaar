@@ -43,6 +43,18 @@ Built with Next.js and wrapped in Capacitor for native iOS/Android deployment.
 
 ## 📲 Building the Mobile App
 
+### Important: the native app is a remote-URL shell
+
+`capacitor.config.ts` sets `server.url` to the deployed web app, and Capacitor
+loads that URL inside the native shell — the API routes, sessions and database
+all live on the server. Consequences worth knowing:
+
+- The app needs network access to that URL; there is no offline mode.
+- Changing `APP_URL` means a new mobile build (both workflows rewrite
+  `server.url` before building).
+- Feature detection still falls back to the browser implementations, so the
+  same code runs on the web.
+
 ### Prerequisites
 - **Node.js** 18+
 - **Android Studio** (for Android)

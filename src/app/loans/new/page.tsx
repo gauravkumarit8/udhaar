@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { generateInstallmentSchedule } from "@/lib/calculations";
@@ -23,21 +23,15 @@ export default function NewLoanPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [step, setStep] = useState(1); // 1: borrower, 2: loan, 3: payment
-  const [preview, setPreview] = useState<{
-    emi: number;
-    totalInterest: number;
-    totalAmount: number;
-  } | null>(null);
 
-  const calculatePreview = () => {
+  // Derived straight from the form, not from a setTimeout that read a stale
+  // closure - the preview used to lag one keystroke behind the inputs.
+  const preview = useMemo(() => {
     const principal = parseFloat(form.amount) || 0;
     const rate = chargeInterest ? parseFloat(form.interestRate) || 0 : 0;
-    const tenure = parseInt(form.tenureMonths) || 1;
+    const tenure = parseInt(form.tenureMonths) || 0;
 
-    if (principal <= 0) {
-      setPreview(null);
-      return;
-    }
+    if (principal <= 0 || tenure <= 0) return null;
 
     const schedule = generateInstallmentSchedule(
       principal,
@@ -47,22 +41,28 @@ export default function NewLoanPage() {
       form.interestRatePeriod
     );
 
-    const emi = rate === 0 ? principal / tenure : schedule[0]?.totalAmount ?? principal / tenure;
-    const totalInterest = rate === 0 ? 0 : schedule.reduce((sum, installment) => sum + installment.interestAmount, 0);
-    const totalAmount = rate === 0 ? principal : schedule.reduce((sum, installment) => sum + installment.totalAmount, 0);
+    const emi = rate === 0 ? principal / tenure : (schedule[0]?.totalAmount ?? principal / tenure);
+    const totalInterest =
+      rate === 0 ? 0 : schedule.reduce((sum, installment) => sum + installment.interestAmount, 0);
+    const totalAmount =
+      rate === 0 ? principal : schedule.reduce((sum, installment) => sum + installment.totalAmount, 0);
 
-    setPreview({
+    return {
       emi: Math.round(emi * 100) / 100,
       totalInterest: Math.round(totalInterest * 100) / 100,
       totalAmount: Math.round(totalAmount * 100) / 100,
-    });
-  };
+    };
+  }, [
+    form.amount,
+    form.interestRate,
+    form.tenureMonths,
+    form.startDate,
+    form.interestRatePeriod,
+    chargeInterest,
+  ]);
 
   const updateField = (field: string, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
-    if (["amount", "interestRate", "tenureMonths", "interestRatePeriod"].includes(field)) {
-      setTimeout(calculatePreview, 50);
-    }
   };
 
   const nextStep = () => {
@@ -242,10 +242,7 @@ export default function NewLoanPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setChargeInterest(!chargeInterest);
-                    setTimeout(calculatePreview, 50);
-                  }}
+                  onClick={() => setChargeInterest((prev) => !prev)}
                   className={`relative w-14 h-8 rounded-full transition-colors ${
                     chargeInterest ? "bg-emerald-500" : "bg-slate-300"
                   }`}
@@ -281,7 +278,6 @@ export default function NewLoanPage() {
                       type="button"
                       onClick={() => {
                         setForm((p) => ({ ...p, interestRatePeriod: "yearly" }));
-                        setTimeout(calculatePreview, 50);
                       }}
                       className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition-all tap-highlight ${
                         form.interestRatePeriod === "yearly"
@@ -295,7 +291,6 @@ export default function NewLoanPage() {
                       type="button"
                       onClick={() => {
                         setForm((p) => ({ ...p, interestRatePeriod: "monthly" }));
-                        setTimeout(calculatePreview, 50);
                       }}
                       className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition-all tap-highlight ${
                         form.interestRatePeriod === "monthly"

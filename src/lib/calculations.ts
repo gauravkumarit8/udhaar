@@ -65,57 +65,56 @@ export function generateInstallmentSchedule(
   ratePeriod: InterestRatePeriod = "yearly"
 ): InstallmentPlan[] {
   const schedule: InstallmentPlan[] = [];
+
+  if (tenureMonths <= 0) return schedule;
+
   const monthlyRate = toMonthlyRate(ratePercent, ratePeriod);
-  let remainingPrincipal = principal;
+  const emi = ratePercent === 0 ? principal / tenureMonths : calculateEMI(principal, ratePercent, tenureMonths, ratePeriod);
+
+  // Every row is rounded to paise and the final row absorbs whatever is left
+  // over, so the schedule always sums *exactly* to the principal borrowed -
+  // no ₹0.01 drift between SUM(principal_amount) and loans.amount.
+  let remainingPrincipal = roundTo2(principal);
 
   for (let i = 1; i <= tenureMonths; i++) {
     const dueDate = addMonths(startDate, i);
+    const isLast = i === tenureMonths;
+
     let interestAmount: number;
     let principalAmount: number;
 
     if (ratePercent === 0) {
       interestAmount = 0;
-      principalAmount = principal / tenureMonths;
-    } else {
+      principalAmount = isLast ? remainingPrincipal : roundTo2(principal / tenureMonths);
+    } else if (isLast) {
+      // Interest is charged on what's actually left, then the balance clears.
       interestAmount = remainingPrincipal * monthlyRate;
-      const emi = calculateEMI(principal, ratePercent, tenureMonths, ratePeriod);
-      principalAmount = emi - interestAmount;
-    }
-
-    if (i === tenureMonths) {
       principalAmount = remainingPrincipal;
-      interestAmount = ratePercent === 0 ? 0 : Math.max(0, principalAmount + interestAmount - principalAmount);
+    } else {
+      // Compute from the unrounded balance for accuracy, round for storage.
+      interestAmount = remainingPrincipal * monthlyRate;
+      principalAmount = emi - interestAmount;
     }
 
     const roundedPrincipal = roundTo2(principalAmount);
     const roundedInterest = roundTo2(interestAmount);
     const totalAmount = roundTo2(roundedPrincipal + roundedInterest);
 
-    if (i === tenureMonths) {
-      schedule.push({
-        installmentNumber: i,
-        dueDate,
-        principalAmount: roundedPrincipal,
-        interestAmount: roundedInterest,
-        totalAmount,
-        remainingPrincipal: 0,
-      });
-    } else {
-      remainingPrincipal = remainingPrincipal - principalAmount;
-      schedule.push({
-        installmentNumber: i,
-        dueDate,
-        principalAmount: roundedPrincipal,
-        interestAmount: roundedInterest,
-        totalAmount,
-        remainingPrincipal: roundTo2(remainingPrincipal),
-      });
-    }
+    remainingPrincipal = roundTo2(remainingPrincipal - roundedPrincipal);
+    if (remainingPrincipal < 0) remainingPrincipal = 0;
+
+    schedule.push({
+      installmentNumber: i,
+      dueDate,
+      principalAmount: roundedPrincipal,
+      interestAmount: roundedInterest,
+      totalAmount,
+      remainingPrincipal: isLast ? 0 : remainingPrincipal,
+    });
   }
 
   return schedule;
 }
-
 
 /**
  * Calculate total interest over the loan tenure
@@ -141,7 +140,9 @@ export function computeInstallmentStatus(
   principalPaid: number,
   interestPaid: number
 ): "paid" | "overdue" | "due_soon" | "partially_paid" | "pending" {
-  const isFullyPaid = principalPaid >= principalAmount && interestPaid >= interestAmount;
+  const EPSILON = 0.01; // a paisa of float noise shouldn't read as unpaid
+  const isFullyPaid =
+    principalPaid >= principalAmount - EPSILON && interestPaid >= interestAmount - EPSILON;
   if (isFullyPaid) return "paid";
 
   const today = new Date();
@@ -164,9 +165,23 @@ export function computeInstallmentStatus(
  * Add N months to a date string (YYYY-MM-DD)
  */
 function addMonths(dateStr: string, months: number): string {
-  const d = new Date(dateStr + "T00:00:00");
-  d.setMonth(d.getMonth() + months);
-  return d.toISOString().split("T")[0];
+  // Deliberately UTC-only arithmetic. The previous implementation used a
+  // local-time Date and `toISOString()`, which meant the schedule changed
+  // depending on the server's timezone (a host in IST produced due dates a
+  // day earlier than a host in UTC), and `setMonth` overflowed on the 29th-31st
+  // (Jan 31 + 1 month became Mar 3, silently skipping February).
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const targetIndex = month - 1 + months;
+  const targetYear = year + Math.floor(targetIndex / 12);
+  const targetMonth = ((targetIndex % 12) + 12) % 12;
+  const daysInTargetMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const targetDay = Math.min(day, daysInTargetMonth);
+
+  return [
+    String(targetYear).padStart(4, "0"),
+    String(targetMonth + 1).padStart(2, "0"),
+    String(targetDay).padStart(2, "0"),
+  ].join("-");
 }
 
 function roundTo2(value: number): number {

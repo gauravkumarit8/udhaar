@@ -3,7 +3,9 @@ services:
     name: udhaar
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build
+    # `output: standalone` does NOT copy static assets into .next/standalone,
+    # so they're staged in explicitly here (the Dockerfile does the same).
+    buildCommand: npm ci && npm run build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public
     startCommand: node .next/standalone/server.js
     healthCheckPath: /api/health
     envVars:
@@ -20,6 +22,13 @@ services:
       - key: CLOUDINARY_API_SECRET
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_KEY
+        sync: false
+      # Remove this once MSG91 is configured, or real OTPs will never be sent.
+      - key: OTP_MODE
+        value: dummy
+      - key: MSG91_AUTH_KEY
+        sync: false
+      - key: MSG91_FLOW_ID
         sync: false
 
 databases:

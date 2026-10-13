@@ -15,6 +15,22 @@ export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   name: varchar("name", { length: 100 }).notNull(),
   mobile: varchar("mobile", { length: 15 }).notNull().unique(),
+  /** Opt-out switch honoured by sendPushToUser. */
+  pushEnabled: boolean("push_enabled").default(true).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ─── Sessions ────────────────────────────────────────────────────
+// The cookie holds a random opaque token - never a user id. The token is
+// looked up here to resolve the user, so it can be revoked (logout) and it
+// leaks nothing if a client tampers with it.
+export const sessions = pgTable("sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  token: varchar("token", { length: 64 }).notNull().unique(),
+  userId: uuid("user_id")
+    .references(() => users.id, { onDelete: "cascade" })
+    .notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -61,7 +77,7 @@ export const loans = pgTable("loans", {
 export const installments = pgTable("installments", {
   id: uuid("id").defaultRandom().primaryKey(),
   loanId: uuid("loan_id")
-    .references(() => loans.id)
+    .references(() => loans.id, { onDelete: "cascade" })
     .notNull(),
   installmentNumber: integer("installment_number").notNull(),
   dueDate: date("due_date").notNull(),
@@ -81,10 +97,10 @@ export const installments = pgTable("installments", {
 export const payments = pgTable("payments", {
   id: uuid("id").defaultRandom().primaryKey(),
   installmentId: uuid("installment_id")
-    .references(() => installments.id)
+    .references(() => installments.id, { onDelete: "cascade" })
     .notNull(),
   loanId: uuid("loan_id")
-    .references(() => loans.id)
+    .references(() => loans.id, { onDelete: "cascade" })
     .notNull(),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   paymentType: varchar("payment_type", { length: 20 }).notNull(), // interest | principal | both
@@ -102,10 +118,10 @@ export const payments = pgTable("payments", {
 export const reminders = pgTable("reminders", {
   id: uuid("id").defaultRandom().primaryKey(),
   installmentId: uuid("installment_id")
-    .references(() => installments.id)
+    .references(() => installments.id, { onDelete: "cascade" })
     .notNull(),
   loanId: uuid("loan_id")
-    .references(() => loans.id)
+    .references(() => loans.id, { onDelete: "cascade" })
     .notNull(),
   channel: varchar("channel", { length: 20 }).notNull(), // push | sms | whatsapp
   message: text("message").notNull(),
@@ -117,7 +133,7 @@ export const reminders = pgTable("reminders", {
 export const deviceTokens = pgTable("device_tokens", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id")
-    .references(() => users.id)
+    .references(() => users.id, { onDelete: "cascade" })
     .notNull(),
   token: varchar("token", { length: 512 }).notNull().unique(),
   platform: varchar("platform", { length: 10 }).notNull(), // android | ios | web

@@ -1,8 +1,20 @@
 name: Build Android APK/AAB
 
 on:
+  workflow_call:
+    inputs:
+      build_type:
+        description: "Build type: debug or release"
+        required: false
+        type: string
+        default: "debug"
+      app_url:
+        description: "Deployed web app URL baked into server.url"
+        required: false
+        type: string
+        default: "https://udhaar-y94f.onrender.com"
+  # Not on every push to main - a full Android build per commit is noise.
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -25,8 +37,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      APP_URL: ${{ github.event.inputs.app_url || 'https://udhaar-y94f.onrender.com' }}
-      BUILD_TYPE: ${{ github.event.inputs.build_type || 'debug' }}
+      APP_URL: ${{ inputs.app_url || 'https://udhaar-y94f.onrender.com' }}
+      BUILD_TYPE: ${{ inputs.build_type || 'debug' }}
 
     steps:
       - name: 📥 Checkout code
