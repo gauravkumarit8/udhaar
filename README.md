@@ -112,6 +112,26 @@ reason was invisible. Now the login screen (and every other page) shows that
 `error` text, the server logs the underlying driver error, and `reference`
 ties the two together.
 
+#### "A migration is recorded as applied, but the column is missing"
+
+Symptom: `npm run db:baseline` said it baselined everything, `npm run db:migrate`
+says `migrations applied successfully!`, but `npm run check-deploy` still reports
+`missing columns: reminders.dedupe_key`.
+
+That means the database was created with `db:push` *before* that migration
+existed, and an older `db:baseline` recorded it as applied without checking.
+Two ways out:
+
+```bash
+npm run db:baseline   # re-run it: it now removes the incorrect record
+npm run db:migrate    # and this actually applies the missing migration
+
+# …or in one step, which reconciles the database directly with schema.ts:
+npm run db:push
+```
+
+Either way, finish with `npm run check-deploy` — it should print **Ready.**
+
 ### Database changes (migrations)
 
 The schema lives in `src/db/schema.ts`; the SQL in `drizzle/` is generated from
@@ -126,8 +146,13 @@ npm run db:push       # still works, but prefer migrations - they're versioned
 
 > **Already have a database from `db:push`?** Run `npm run db:baseline` once
 > before `db:migrate`. Without it, Drizzle replays the initial migration and
-> fails with `relation "users" already exists`. The baseline command records
-> the existing migrations as already applied and does nothing otherwise.
+> fails with `relation "users" already exists`.
+>
+> `db:baseline` **verifies** each migration against the database before
+> recording it: a migration is only marked as applied if its tables, columns
+> and indexes are really there. The first one that isn't stays pending, and
+> `db:migrate` applies it. It also repairs a journal that claims more than the
+> database actually has (see the troubleshooting note below).
 
 ### Option 3: Docker
 

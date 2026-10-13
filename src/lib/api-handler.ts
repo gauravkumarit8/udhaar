@@ -92,7 +92,8 @@ function classify(error: unknown): { status: number; payload: ErrorPayload } {
       status: 503,
       payload: {
         error: "The database is missing a column this version of the app needs.",
-        action: "Run npm run db:migrate against that database (see /api/health).",
+        action:
+          "Run npm run db:push against that database, or npm run db:baseline then npm run db:migrate (see /api/health).",
       },
     };
   }
