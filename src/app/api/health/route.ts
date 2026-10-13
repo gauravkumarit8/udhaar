@@ -185,7 +185,7 @@ export async function GET() {
           fix:
             schemaProblems.length === 0
               ? undefined
-              : "npm run db:migrate   (an existing database may need npm run db:baseline first)",
+              : "npm run db:push   (reconciles the database with the schema in one step; or npm run db:baseline then npm run db:migrate)",
         });
       } catch (error) {
         const { detail, fix } = explainDbError(error);

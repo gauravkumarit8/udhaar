@@ -172,8 +172,10 @@ if (databaseUrl) {
             ? `missing tables: ${missingTables.join(", ")}`
             : `missing columns: ${missingColumns.join(", ")}`
         );
-        fix("npm run db:migrate     (applies the migrations in drizzle/)");
-        fix("npm run db:baseline    (once, if the database was created with db:push)");
+        fix("npm run db:push        (reconciles the database with src/db/schema.ts right now)");
+        fix("npm run db:baseline    (once, if the database was created with db:push - it only");
+        fix("                        records migrations whose changes are actually present)");
+        fix("npm run db:migrate     (after baselining, applies anything still pending)");
         failures++;
       }
     } catch (error) {
