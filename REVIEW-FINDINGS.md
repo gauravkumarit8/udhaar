@@ -1,5 +1,18 @@
 # Udhaar — Code Review Findings
 
+> **Status:** the fixes for this review are in PR #5 on branch
+> `arena/ea943d9f-udhaar`. Quick map:
+>
+> | Fixed | Still open |
+> |-------|-----------|
+> | **C1, C2** (sessions, OTP_MODE incl. explicit dummy mode) | **M9** server-side scheduled reminders |
+> | **H1–H6** (FK 500s, payment allocation, 2-side dead-end, Render static assets, release workflows, lint/CI) | **M12** no SQL migration files (`drizzle-kit push` is the flow) |
+> | **M1–M8, M10, M11, M13, M14** | Low: unbounded amount/rate validation, public Cloudinary proof URLs, Capacitor remote-URL shell |
+>
+> `30` unit tests, `tsc` clean, `eslint` clean, `next build` green, and the
+> auth/payment flows were exercised end-to-end against a real Postgres.
+> The rest of this document is the original review, kept as written.
+
 **Reviewed:** `main` @ `4219ee8` (working branch `arena/ea943d9f-udhaar`)
 **Scope:** full repo — 39 TypeScript files / ~5.7k LOC in `src/`, 15 API routes, 7 pages, Capacitor mobile layer, 5 GitHub Actions workflows, deploy configs.
 **How it was verified:** `npm install` + `npx tsc --noEmit` + `npx next build` + `npx eslint .` run locally; the EMI engine (`src/lib/calculations.ts`) executed directly under 3 different `TZ` values and checked against closed-form EMI values; GitHub Actions run history inspected via `gh`.
