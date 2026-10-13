@@ -1,0 +1,9 @@
+
+> db:baseline
+> node scripts/baseline-migrations.mjs
+
+  removed an incorrect "applied" record: 0001_reminder_dedupe_key
+
+Still to apply: 0001_reminder_dedupe_key (columns: reminders.dedupe_key; indexes: reminders_dedupe_key_unique)
+Run "npm run db:migrate" to apply it.
+If that migration fails because some of its objects already exist, run "npm run db:push" instead - it reconciles the database with src/db/schema.ts in one step.
