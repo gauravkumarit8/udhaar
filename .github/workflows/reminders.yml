@@ -1,0 +1,89 @@
+name: Reminders sweep
+
+# The free clock for scheduled reminders (M9).
+#
+# Push notifications are sent by the app itself (Firebase Cloud Messaging, free
+# and unlimited); something just has to ask the server to look for EMIs that are
+# due soon or overdue. This workflow is that something, and it costs nothing:
+# scheduled runs use the same free Actions minutes as any other job.
+#
+# 03:30 UTC == 09:00 IST. GitHub's scheduler can be late under load, which is
+# fine for a reminder, and the server treats a repeated run as a no-op for the
+# day (see reminders.dedupe_key), so a retry can never double-notify.
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report what would be sent, without sending anything"
+        type: boolean
+        default: false
+
+# Runs unattended; it needs no repository access beyond reading this file.
+permissions:
+  contents: read
+
+concurrency:
+  group: reminders-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Remind borrowers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Run the sweep
+        env:
+          # Override with a repository variable if the app moves; the default
+          # is the current production deployment.
+          APP_URL: ${{ vars.UDHAAR_APP_URL || 'https://udhaar-y94f.onrender.com' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CRON_SECRET}" ]; then
+            echo "::error::CRON_SECRET is not set. Add it under Settings → Secrets and variables → Actions → New repository secret, with the same value as the service's CRON_SECRET."
+            exit 1
+          fi
+
+          url="${APP_URL%/}/api/reminders/run"
+          if [ -n "${DRY_RUN}" ]; then url="${url}?dryRun=1"; fi
+
+          echo "POST ${url}"
+
+          # A free Render service sleeps after 15 minutes, so the first request
+          # wakes it and can take up to a minute - retry a few times rather
+          # than reporting a failure the moment it is cold.
+          for attempt in 1 2 3 4; do
+            code=$(curl -sS --max-time 180 -o /tmp/sweep.json -w "%{http_code}" \
+              -X POST "${url}" \
+              -H "Authorization: Bearer ${CRON_SECRET}" \
+              -H "Content-Type: application/json") || code=000
+
+            echo "attempt ${attempt}: HTTP ${code}"
+            cat /tmp/sweep.json 2>/dev/null || true
+            echo
+
+            if [ "${code}" = "200" ]; then
+              echo "### Reminders sweep" >> "$GITHUB_STEP_SUMMARY"
+              echo '```json' >> "$GITHUB_STEP_SUMMARY"
+              cat /tmp/sweep.json >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            # 401 will not fix itself - fail immediately with the reason.
+            if [ "${code}" = "401" ] || [ "${code}" = "503" ]; then
+              echo "::error::The sweep was refused (HTTP ${code}). See the response above - 503 means CRON_SECRET is not set on the service, 401 means the two values differ."
+              exit 1
+            fi
+
+            sleep $((attempt * 15))
+          done
+
+          echo "::error::The sweep never succeeded - the app may be down. Check ${APP_URL}/api/health"
+          exit 1

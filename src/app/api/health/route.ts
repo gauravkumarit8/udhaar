@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
  * database host (never the password or the full connection string).
  */
 
-type Status = "ok" | "fail" | "skip";
+type Status = "ok" | "warn" | "fail" | "skip";
 
 interface Check {
   name: string;
@@ -24,6 +24,11 @@ interface Check {
   detail: string;
   fix?: string;
 }
+
+/** Columns added by a migration, so a stale schema is caught by name. */
+const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
+  { table: "reminders", column: "dedupe_key" },
+];
 
 /** The tables the app cannot run without. */
 const REQUIRED_TABLES = [
@@ -151,17 +156,36 @@ export async function GET() {
         const present = new Set(rows.map((r) => r.table_name));
         const missing = REQUIRED_TABLES.filter((t) => !present.has(t));
 
+        // Columns, not just tables: a database created before a migration can
+        // have every table and still be missing a column.
+        let missingColumns: string[] = [];
+        if (missing.length === 0) {
+          const columns = await db.execute<{ table_name: string; column_name: string }>(sql`
+            select table_name, column_name from information_schema.columns
+            where table_schema = 'public'
+          `);
+          const columnRows = (columns as unknown as { rows?: { table_name: string; column_name: string }[] }).rows ?? [];
+          const has = new Set(columnRows.map((r) => `${r.table_name}.${r.column_name}`));
+          missingColumns = REQUIRED_COLUMNS.filter((c) => !has.has(`${c.table}.${c.column}`)).map(
+            (c) => `${c.table}.${c.column}`
+          );
+        }
+
+        const schemaProblems = [...missing, ...missingColumns];
+
         checks.push({
           name: "schema",
-          status: missing.length === 0 ? "ok" : "fail",
+          status: schemaProblems.length === 0 ? "ok" : "fail",
           detail:
-            missing.length === 0
-              ? `all ${REQUIRED_TABLES.length} tables present`
-              : `missing: ${missing.join(", ")}`,
+            missing.length > 0
+              ? `missing table${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`
+              : missingColumns.length > 0
+                ? `missing column${missingColumns.length > 1 ? "s" : ""}: ${missingColumns.join(", ")}`
+                : `all ${REQUIRED_TABLES.length} tables present`,
           fix:
-            missing.length === 0
+            schemaProblems.length === 0
               ? undefined
-              : "npm run db:migrate   (or npx drizzle-kit push on an existing database)",
+              : "npm run db:migrate   (an existing database may need npm run db:baseline first)",
         });
       } catch (error) {
         const { detail, fix } = explainDbError(error);
@@ -215,6 +239,20 @@ export async function GET() {
     process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET
   );
   const push = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+
+  // 6. Scheduled reminders (M9). Not configured is a warning, not a failure:
+  // the app works, borrowers just aren't nudged automatically.
+  const cronSecret = Boolean(process.env.CRON_SECRET);
+  checks.push({
+    name: "scheduled reminders",
+    status: cronSecret ? "ok" : "warn",
+    detail: cronSecret
+      ? "CRON_SECRET is set - the sweep can be triggered by .github/workflows/reminders.yml"
+      : "CRON_SECRET is not set, so POST /api/reminders/run answers 503 and nobody is reminded automatically",
+    fix: cronSecret
+      ? undefined
+      : "Set CRON_SECRET on the service to a long random string, and add the same value as a GitHub Actions secret (see README → Scheduled reminders).",
+  });
 
   checks.push({
     name: "optional integrations",
