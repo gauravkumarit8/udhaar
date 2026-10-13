@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
+import { readApi, requestJson } from "@/lib/http";
 
 interface Reminder {
   id: string;
@@ -30,6 +31,7 @@ export default function ActivityPage() {
   const [dueItems, setDueItems] = useState<DueItem[]>([]);
   const [notifications, setNotifications] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -38,16 +40,18 @@ export default function ActivityPage() {
           fetch("/api/dashboard"),
           fetch("/api/notifications"),
         ]);
-        if (dashRes.ok) {
-          const data = await dashRes.json();
-          setDueItems(data.dueItems || []);
-        }
-        if (notifRes.ok) {
-          const data = await notifRes.json();
-          setNotifications(data.notifications || []);
-        }
+        const [dashResult, notifResult] = await Promise.all([
+          readApi<{ dueItems?: DueItem[] }>(dashRes),
+          readApi<{ notifications?: Reminder[] }>(notifRes),
+        ]);
+
+        if (dashResult.ok) setDueItems(dashResult.data?.dueItems ?? []);
+        if (notifResult.ok) setNotifications(notifResult.data?.notifications ?? []);
+
+        // A silent failure used to leave this page looking merely empty.
+        setLoadError(dashResult.error ?? notifResult.error ?? null);
       } catch {
-        // ignore
+        setLoadError("Couldn't load your activity. Check your connection and try again.");
       } finally {
         setLoading(false);
       }
@@ -59,22 +63,24 @@ export default function ActivityPage() {
 
   const handleRemind = async (installmentId: string) => {
     try {
-      const res = await fetch(`/api/installments/${installmentId}/remind`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: "push" }),
-      });
-      const data = await res.json();
-      setReminderNote(
-        data.delivered
-          ? "✓ Reminder delivered"
-          : data.reason || data.error || "Reminder recorded, but not delivered"
+      const result = await requestJson<{ delivered?: boolean; reason?: string }>(
+        `/api/installments/${installmentId}/remind`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: "push" }),
+        }
       );
-      setTimeout(() => setReminderNote(null), 5000);
+
+      setReminderNote(
+        result.ok && result.data?.delivered
+          ? "✓ Reminder delivered"
+          : result.data?.reason || result.error || "Reminder recorded, but not delivered"
+      );
     } catch {
       setReminderNote("Network error - reminder not sent");
-      setTimeout(() => setReminderNote(null), 5000);
     }
+    setTimeout(() => setReminderNote(null), 5000);
   };
 
   const overdue = dueItems.filter((d) => d.computedStatus === "overdue");
@@ -175,6 +181,19 @@ export default function ActivityPage() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* A failed load used to look like an empty page */}
+        {loadError && (
+          <div className="mb-4 bg-amber-50 border border-amber-200 rounded-2xl p-4">
+            <p className="text-sm text-amber-800">{loadError}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-2 text-xs font-semibold text-amber-900 underline"
+            >
+              Retry
+            </button>
           </div>
         )}
 

@@ -5,8 +5,10 @@ import { getSession } from "@/lib/auth";
 import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments";
 import { getOutstanding, closeLoanIfSettled } from "@/lib/loans";
 import { eq, sql, and, lte } from "drizzle-orm";
+import { toNumber, validateProofUrl, LIMITS } from "@/lib/validation";
+import { withErrors } from "@/lib/api-handler";
 
-export async function POST(
+async function handlePOST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -16,26 +18,54 @@ export async function POST(
   }
 
   const { id } = await params;
-  const body = await req.json();
-  const { amount, paymentType, proofUrl, notes } = body;
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Request body must be valid JSON" }, { status: 400 });
+  }
+
+  if (!body || typeof body !== "object") {
+    return NextResponse.json({ error: "Request body must be a JSON object" }, { status: 400 });
+  }
+
+  const { amount, paymentType, proofUrl, notes } = body as Record<string, unknown>;
 
   // paymentType: "interest" | "principal" | "both"
   if (!amount || !paymentType) {
     return NextResponse.json({ error: "Amount and payment type required" }, { status: 400 });
   }
 
-  if (!["interest", "principal", "both"].includes(paymentType)) {
+  if (!["interest", "principal", "both"].includes(String(paymentType))) {
     return NextResponse.json(
       { error: "paymentType must be one of: interest, principal, both" },
       { status: 400 }
     );
   }
 
-  const payAmount = parseFloat(amount);
+  // Strict parse: "12abc" and "abc" are rejected instead of becoming NaN.
+  const payAmount = toNumber(amount);
 
-  if (!Number.isFinite(payAmount) || payAmount <= 0) {
+  if (payAmount === null || payAmount <= 0) {
     return NextResponse.json({ error: "Amount must be a positive number" }, { status: 400 });
   }
+  if (payAmount > LIMITS.AMOUNT_MAX) {
+    return NextResponse.json(
+      { error: `Amount looks too large (max ₹${LIMITS.AMOUNT_MAX.toLocaleString("en-IN")})` },
+      { status: 400 }
+    );
+  }
+
+  // Never store what we can't safely render: a proof link is shown to the
+  // other party, so it has to be a real https image URL.
+  const proof = validateProofUrl(proofUrl);
+  if (!proof.ok) {
+    return NextResponse.json({ error: proof.error }, { status: 400 });
+  }
+
+  const cleanNotes =
+    typeof notes === "string" && notes.trim() ? notes.trim().slice(0, LIMITS.NOTES_MAX) : null;
 
   // Get installment
   const [inst] = await db.select().from(installments).where(eq(installments.id, id)).limit(1);
@@ -113,10 +143,10 @@ export async function POST(
     installmentId: id,
     loanId: inst.loanId,
     amount: allocation.applied.toFixed(2),
-    paymentType,
-    proofUrl: proofUrl || null,
+    paymentType: paymentType as PaymentType,
+    proofUrl: proof.value,
     markedByUserId: session.id,
-    notes: notes || null,
+    notes: cleanNotes,
   };
 
   // ── 2-side mode: record the claim only. The ledger moves on confirmation. ──
@@ -200,3 +230,6 @@ export async function POST(
     autoConfirmed: true,
   });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const POST = withErrors(handlePOST);

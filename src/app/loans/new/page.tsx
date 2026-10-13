@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { generateInstallmentSchedule } from "@/lib/calculations";
+import { requestJson } from "@/lib/http";
 
 export default function NewLoanPage() {
   const [form, setForm] = useState({
@@ -81,26 +82,24 @@ export default function NewLoanPage() {
   const handleSubmit = async () => {
     setError("");
     setLoading(true);
-    try {
-      const res = await fetch("/api/loans", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          interestRate: chargeInterest ? form.interestRate : "0",
-        }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        window.location.href = `/loans/${data.loan.id}`;
-      }
-    } catch {
-      setError("Something went wrong");
-    } finally {
+    const result = await requestJson<{ loan: { id: string } }>("/api/loans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...form,
+        interestRate: chargeInterest ? form.interestRate : "0",
+      }),
+    });
+
+    if (!result.ok) {
+      // Surfaces the server's own validation message ("Amount looks too
+      // large", "Borrower mobile must be exactly 10 digits", ...)
+      setError(result.error ?? "Couldn't save the loan. Try again.");
       setLoading(false);
+      return;
     }
+
+    window.location.href = `/loans/${result.data?.loan.id}`;
   };
 
   const steps = [

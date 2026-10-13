@@ -3,10 +3,11 @@ import { db } from "@/db";
 import { otps } from "@/db/schema";
 import { eq, desc, lt } from "drizzle-orm";
 import { getOtpPolicy, generateOtpCode, deliverOtp, warnOnceIfNeeded } from "@/lib/otp";
+import { withErrors } from "@/lib/api-handler";
 
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds between requests per number
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const policy = getOtpPolicy();
   warnOnceIfNeeded(policy);
 
@@ -81,3 +82,6 @@ export async function POST(req: NextRequest) {
     { status: 502 }
   );
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const POST = withErrors(handlePOST);

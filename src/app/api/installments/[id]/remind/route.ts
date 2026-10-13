@@ -6,11 +6,12 @@ import { sendPushToUser } from "@/lib/push";
 import { formatINR, formatDate, generateUPILink } from "@/lib/calculations";
 import { remainingFor } from "@/lib/payments";
 import { eq } from "drizzle-orm";
+import { withErrors } from "@/lib/api-handler";
 
 const VALID_CHANNELS = ["push", "sms", "whatsapp"] as const;
 type ReminderChannel = (typeof VALID_CHANNELS)[number];
 
-export async function POST(
+async function handlePOST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -103,3 +104,6 @@ export async function POST(
     upiLink,
   });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const POST = withErrors(handlePOST);

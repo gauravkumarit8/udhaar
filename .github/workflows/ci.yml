@@ -42,8 +42,23 @@ jobs:
       - name: 📦 Install dependencies
         run: npm ci
 
-      - name: 🗄️ Push database schema
-        run: npx drizzle-kit push
+      # The schema is built from the checked-in SQL migrations, not from a
+      # push, so CI proves the migrations actually produce a working database.
+      - name: 🗄️ Apply migrations to a fresh database
+        run: npm run db:migrate
+
+      - name: 🧭 Verify the migrations match schema.ts
+        run: |
+          npx drizzle-kit generate --name=ci_drift_check
+          if [ -n "$(git status --porcelain drizzle/)" ]; then
+            echo "::error::drizzle/ is out of date - run 'npm run db:generate' and commit the result"
+            git status --short drizzle/
+            exit 1
+          fi
+          echo "migrations are in sync with the schema"
+
+      - name: 🩺 Deployment check (the same command users run)
+        run: npm run check-deploy
 
       - name: 🔍 Type generation
         run: npx next typegen
@@ -65,3 +80,57 @@ jobs:
 
       - name: ✅ All checks passed
         run: echo "🎉 CI passed!"
+
+  migrations:
+    name: Migrations adopt an existing database
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 📦 Install dependencies
+        run: npm ci
+
+      # Databases created by `drizzle-kit push` (the documented path users
+      # followed before migrations existed) have the tables but no migration
+      # journal, so `db:migrate` alone would trip over "relation already
+      # exists". This is the exact upgrade path a real deployment takes.
+      - name: 🗄️ Build the schema the old way
+        run: npx drizzle-kit push --force
+
+      - name: 🧱 Baseline the migrations onto it
+        run: npm run db:baseline
+
+      - name: ⏭️ Migrations must now be a clean no-op
+        run: npm run db:migrate
+
+      - name: 🩺 The database must still pass the deployment check
+        run: npm run check-deploy
+
+      - name: ✅ Migration path verified
+        run: echo "🎉 A push-created database upgrades to migrations cleanly"

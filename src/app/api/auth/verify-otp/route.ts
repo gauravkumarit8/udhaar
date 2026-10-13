@@ -3,10 +3,11 @@ import { db } from "@/db";
 import { otps } from "@/db/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { setSession, getOrCreateUser } from "@/lib/auth";
+import { withErrors } from "@/lib/api-handler";
 
 const MAX_ATTEMPTS = 5;
 
-export async function POST(req: Request) {
+async function handlePOST(req: Request) {
   const { mobile, code, name } = await req.json();
 
   if (!mobile || !code) {
@@ -64,3 +65,6 @@ export async function POST(req: Request) {
 
   return NextResponse.json({ success: true, user: { id: user.id, name: user.name, mobile: user.mobile } });
 }
+
+// Any unhandled failure becomes a JSON error the UI can actually show.
+export const POST = withErrors(handlePOST);

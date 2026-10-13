@@ -44,8 +44,11 @@ npm install
 # Configure
 cp .env.example .env
 
-# Create the tables (Drizzle pushes the schema in src/db/schema.ts)
-npm run db:push
+# Create the tables (applies the SQL migrations in drizzle/)
+npm run db:migrate
+
+# Check that everything the app needs is actually in place
+npm run check-deploy
 
 # Run
 npm run dev
@@ -60,18 +63,70 @@ that speaks the normal Postgres protocol on `127.0.0.1:5432`:
 
 ```bash
 node scripts/dev-db.mjs &                       # terminal 1
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db npm run db:push
+DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db npm run db:migrate
 DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_db npm run dev
 ```
+
+> PGlite serves a **single connection at a time**. The dashboard fires two
+> requests in parallel, so a browser session against it will fail with
+> `Connection terminated unexpectedly`. Use it for one-off scripts; for a real
+> preview, run actual Postgres (`pgserver`, or the Docker compose file).
 
 ### Tests & checks
 
 ```bash
-npm test          # vitest - EMI maths, payment allocation, OTP policy
-npm run typecheck # tsc --noEmit
-npm run lint      # eslint
-npm run build     # production build
+npm test                 # vitest - EMI maths, payments, OTP policy, input validation
+npm run typecheck        # tsc --noEmit
+npm run lint             # eslint
+npm run build            # production build
+npm run check-deploy     # is the database + config actually usable?
 ```
+
+### When something is broken
+
+Two commands answer "why doesn't it work?" without reading any logs:
+
+| Command / URL | What it tells you |
+|---|---|
+| `npm run check-deploy` | Whether `DATABASE_URL` is set, the database is reachable, the schema is applied, and OTP delivery is configured - with the fix for each problem. Exits non-zero when something is wrong, so it can gate a deploy. |
+| `GET /api/health` | The same checks as JSON, for a browser or an uptime monitor. Returns **503** when unhealthy, and names the first problem plus the command that fixes it. |
+
+`/api/health` is also the path Render health-checks, so a deployment with a
+broken database reports *why* instead of a bare `{"ok":false}`.
+
+Every API route also wraps its handler (`src/lib/api-handler.ts`), so an
+unexpected failure comes back as JSON the UI can display:
+
+```json
+{
+  "error": "The server can't reach its database (the host in DATABASE_URL doesn't resolve).",
+  "action": "Open /api/health for the full check, or re-copy the database connection string.",
+  "reference": "2026-10-13T09:10:19.140Z"
+}
+```
+
+Previously a database outage produced an **empty 500**, the login screen
+flagged `res.json()` as a failure and showed "Something went wrong" — the real
+reason was invisible. Now the login screen (and every other page) shows that
+`error` text, the server logs the underlying driver error, and `reference`
+ties the two together.
+
+### Database changes (migrations)
+
+The schema lives in `src/db/schema.ts`; the SQL in `drizzle/` is generated from
+it and applied in order.
+
+```bash
+npm run db:generate   # after editing schema.ts - writes drizzle/NNNN_*.sql
+npm run db:migrate    # apply pending migrations (CI + deploy run this)
+npm run db:baseline   # one-off: adopt migrations on a database created by db:push
+npm run db:push       # still works, but prefer migrations - they're versioned
+```
+
+> **Already have a database from `db:push`?** Run `npm run db:baseline` once
+> before `db:migrate`. Without it, Drizzle replays the initial migration and
+> fails with `relation "users" already exists`. The baseline command records
+> the existing migrations as already applied and does nothing otherwise.
 
 ### Option 3: Docker
 
@@ -204,10 +259,17 @@ Triggers all three builds + creates a GitHub Release with:
   `.next/static` or `public/` into `.next/standalone`, so any start command that
   runs `node .next/standalone/server.js` must stage them first (the Dockerfile
   and `render.yaml` both do). Skipping this serves HTML with no CSS or JS.
-- **Create the tables on a fresh database.** There are no SQL migration files
-  yet — the schema lives in `src/db/schema.ts` and is applied with
-  `npx drizzle-kit push`. Run it once against every new environment (it is also
-  what CI does) before the app will work.
+- **Apply the migrations on a fresh database.** `npm run db:migrate` runs the
+  SQL in `drizzle/` (generated from `src/db/schema.ts`). CI applies them to an
+  empty Postgres, and `render.yaml` runs them on every boot — a no-op once
+  applied.
+- **Don't use Render's free Postgres for real data.** Free instances are
+  deleted 30 days after creation, with no backups: that is what silently broke
+  production login once. Use any external Postgres (Neon, Supabase, Aiven) and
+  set `DATABASE_URL` in the host's dashboard.
+- **Run `npm run check-deploy` before blaming the app.** It distinguishes a
+  missing environment variable from an unreachable database from a missing
+  schema, and prints the command that fixes each.
 - **`OTP_MODE`.** Set it deliberately on every deployment: `auto` (default)
   fails closed in production until MSG91 is configured, `dummy` opts into the
   insecure-but-testable code.
@@ -262,8 +324,13 @@ Go to **Settings → Secrets and variables → Actions**
 │   │   └── api/            # Backend routes
 │   ├── components/         # UI components
 │   ├── hooks/              # React hooks (native bridge)
-│   ├── lib/                # Business logic
+│   ├── lib/                # Business logic (calculations, payments, auth,
+│   │                       #   validation, input/http helpers)
 │   └── db/                 # Database schema
+├── drizzle/                # Generated SQL migrations + journal
+├── scripts/                # dev-db.mjs (local Postgres), check-deploy.mjs,
+│                           #   baseline-migrations.mjs
+├── tests/                  # Vitest suites
 ├── public/                 # Static assets + PWA
 ├── capacitor.config.ts     # Capacitor native config
 ├── docker-compose.yml      # Local Docker setup
