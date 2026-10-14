@@ -11,6 +11,7 @@
 > | **M9** — server-side scheduled reminders: `POST /api/reminders/run` + the free `.github/workflows/reminders.yml` clock (09:00 IST daily), `CRON_SECRET`-guarded, idempotent per EMI per day via `reminders.dedupe_key` | |
 > | **Workflow hygiene** — every action bumped off the Node 20 runtime (`checkout@v7`, `setup-node@v7`, `setup-java@v6`, artifact actions v7/v8, docker actions v4–v7, `action-gh-release@v3`, `setup-android@v4`), `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION` removed, `deploy-render` runs on main pushes and manual runs with a failing hook failing the job, the Android build's blank-WebView failure mode covered by `server.errorPath` → `public/offline.html`, and the last lint warning resolved with an explanation rather than a blanket disable | |
 > | **Notifications actually arrive** — browser push (Web Push + VAPID, `npm run generate:vapid`, `push_subscriptions` from migration 0003), an unread badge on the 🔔 tab with `users.notifications_seen_at`, an always-visible Activity feed with an empty state, and a one-tap "Turn on notifications" prompt. Before this, `registerForPushNotifications()` returned early in any browser and `build-android.yml` never wrote `google-services.json`, so *no* device on *any* platform could receive a push | |
+| **Proof privacy** — payment proofs are uploaded as private Cloudinary assets, stored as an id, and served only through `GET /api/payments/[id]/proof` (session → loan → party), which streams the bytes so no Cloudinary URL reaches a browser; legacy public URLs still redirect; `check-deploy` reports a database without the new column | |
 | **M12** — SQL migrations now exist in `drizzle/`, generated from `schema.ts`, applied by CI and by the deploy boot command; `scripts/baseline-migrations.mjs` adopts an existing `db:push` database | |
 > | **Notifications** — every money event tells the other side (`src/lib/notify.ts`): payment marked / recorded / confirmed / rejected, loan added, loan claimed at signup, loan edited (schedule rebuilt or payment details changed), loan closed; `GET /api/notifications` is scoped per person via `reminders.recipient_id` (migration 0002), and a notification can never fail the payment that caused it | |
 | Low: unbounded amount/rate/tenure validation → `src/lib/validation.ts` (NaN, negatives, `numeric(12,2)` overflow, impossible dates, 100M-month tenures all rejected; live-tested) | |
@@ -32,6 +33,19 @@
 > output on two fresh databases, and every failure mode exercised against a
 > production build (deleted DB host, refused port, empty schema, unset
 > `DATABASE_URL`).
+
+> Verification for the proof-privacy change (against a seeded local Postgres
+> with three payments - a private proof, a legacy public URL, and no proof):
+> no cookie → `401`; a logged-in stranger on both the private proof and the
+> empty payment → `404` (indistinguishable, so existence can't be probed); the
+> lender and the marking borrower → the image itself, streamed (`200`,
+> `content-type: image/png`, `cache-control: private, no-store`,
+> `x-content-type-options: nosniff`, real PNG magic bytes) with **no Cloudinary
+> URL in the headers or body**; a legacy proof → `302` to the stored URL;
+> Cloudinary unconfigured → `503` naming the three variables; proof store
+> unreachable → `502` "couldn't reach the proof store"; proof store answering
+> `401` → `502` naming the rejected credentials. `126` unit tests, `tsc` clean,
+> `eslint` 0 problems, `next build` green.
 >
 > Notifications were verified the same way — against a live server over HTTP,
 > not by reading the code: a lender adds a loan for a registered borrower; the
@@ -278,8 +292,8 @@ Verified with the real engine: ₹1,00,000 @ 12% / 12 months → schedule princi
 #### M11. Profile notification settings do nothing
 `src/app/profile/page.tsx:117-145` — `SettingToggle` is local `useState` only; nothing is persisted or read by the reminder logic, yet the UI implies real preferences (including "SMS Reminders" and "WhatsApp Reminders", which have no sender at all).
 
-#### M12. No migration story
-No `drizzle/` folder, no `drizzle-kit generate`/`migrate` anywhere; schema changes rely on someone remembering `drizzle-kit push`. `drizzle.config.json` duplicates `drizzle.config.ts` with a hard-coded localhost URL (the `.ts` file wins, so the JSON is dead config that will confuse whoever edits it next). The Dockerfile even copies `drizzle.config.json` into the image without using it. Committing generated SQL migrations and running them on deploy is the fix.
+#### M12. No migration story  ✅ fixed
+No `drizzle/` folder, no `drizzle-kit generate`/`migrate` anywhere; schema changes rely on someone remembering `drizzle-kit push`. ~~`drizzle.config.json` duplicates `drizzle.config.ts` with a hard-coded localhost URL… The Dockerfile even copies `drizzle.config.json` into the image without using it.~~ **Fixed:** the JSON config is gone, `drizzle/` holds generated SQL migrations plus the journal, CI and the Render boot command apply them, and `scripts/baseline-migrations.mjs` adopts an existing `db:push` database only after verifying each migration against the real schema.
 
 #### M13. Zero tests
 No test runner, no `test` script, no test files — and the riskiest logic in the repo is pure, side-effect-free money math (`lib/calculations.ts`) that would take an afternoon to cover with the 3 cases above (zero-rate, yearly, monthly, month-end start, rounding residual). This is the cheapest quality win available.
@@ -291,20 +305,20 @@ No test runner, no `test` script, no test files — and the riskiest logic in th
 
 ### 🔵 Low / cleanup
 
-- **`Math.random()` for OTP codes** (`send-otp/route.ts:37`) — use `crypto.randomInt(100000, 1000000)`.
-- **`otps` is never pruned** — every request inserts a row; nothing deletes expired ones. Add a cleanup (index on `mobile, created_at` would help too).
-- **Unvalidated bounds** — `amount` and `interestRate` are unbounded in `POST/PATCH /api/loans`; `numeric(12,2)` / `numeric(5,2)` overflow → 500 instead of a 400.
-- **`proofUrl` is accepted as an arbitrary string** from the client (`pay/route.ts:35`) — it's rendered as an `<img src>`; restrict to your Cloudinary host.
-- **Cloudinary proofs are public objects** — anyone holding the URL can view someone's payment screenshot. Consider signed/private delivery or an auth-gated proxy.
-- **Template leftovers:** `package.json` name is `nextjs-postgresql-template`; `src/db/index.ts:8` uses `__arenaNextJsPostgresqlPool`; `src/components/Navbar.tsx` is exported but imported nowhere (dead code); root `manifest.json` + root `sw.js` duplicate `public/`; `.dockerignore` only excludes `docker-compose.yml`, so `node_modules/` and `.next/` are shipped into the Docker build context.
-- **Docs drift:** README says "OTP: `123456`" (it's random + `devCode` now), badges still contain literal `${GITHUB_REPOSITORY}` / `YOUR_USERNAME` placeholders, and neither README nor `.env.example` mentions `MSG91_AUTH_KEY`/`MSG91_FLOW_ID` even though the code depends on them (see C2).
-- **`loans/new` preview uses `setTimeout(calculatePreview, 50)`** reading stale closure state (`new/page.tsx:64,247,284,298`) — the EMI preview can lag a keystroke behind. A `useMemo` over the form state is both simpler and correct.
-- **`payments/[id]/confirm` runs a dead query** (`confirm/route.ts:93-99` — `result` is selected and never used).
-- **`handleConfirmPayment` ignores the response** (`loans/[id]/page.tsx:309-320`) — a 403 from the "can't confirm your own payment" rule silently does nothing.
+- ~~**`Math.random()` for OTP codes** — use `crypto.randomInt(100000, 1000000)`.~~ **Fixed:** `src/lib/otp.ts` uses `crypto.randomInt`.
+- ~~**`otps` is never pruned** — every request inserts a row; nothing deletes expired ones.~~ **Fixed:** rows older than 24h are deleted on each send.
+- ~~**Unvalidated bounds** — `amount` and `interestRate` are unbounded in `POST/PATCH /api/loans`; `numeric(12,2)` / `numeric(5,2)` overflow → 500 instead of a 400.~~ **Fixed:** `src/lib/validation.ts` caps both (`LIMITS.AMOUNT_MAX`, `LIMITS.INTEREST_RATE_MAX`), rejects >2 decimal places, and both POST and PATCH go through `parseLoanInput`.
+- ~~**`proofUrl` is accepted as an arbitrary string** from the client (`pay/route.ts:35`) — it's rendered as an `<img src>`; restrict to your Cloudinary host.~~ **Fixed:** new uploads are referenced by asset id (`validateProofId` — must start `udhaar/proofs/`, no scheme/host/query/traversal), a legacy URL must still be an https image URL on the app's own Cloudinary account (`validateProofUrl`), and the id/URL is never rendered as an `<img src>` from stored data.
+- ~~**Cloudinary proofs are public objects** — anyone holding the URL can view someone's payment screenshot.~~ **Fixed:** proofs are uploaded `type: authenticated`; the database stores the asset id, and `GET /api/payments/[id]/proof` is the only way to read one - it checks the session against the loan, signs a delivery URL server-side, and streams the bytes, so the browser never receives a Cloudinary URL. A stranger gets `404`, the same answer as a payment that doesn't exist.
+- ~~**Template leftovers:** `package.json` name is `nextjs-postgresql-template`;~~ **Fixed:** the package is `udhaar`, the pool global is `__udhaarPgPool`; the dead `Navbar.tsx` and the duplicate root `manifest.json`/`sw.js` are gone. ~~`src/db/index.ts:8` uses `__arenaNextJsPostgresqlPool`~~ **Fixed:** renamed to `__udhaarPgPool`; `src/components/Navbar.tsx` is exported but imported nowhere (dead code); root `manifest.json` + root `sw.js` duplicate `public/`; `.dockerignore` only excludes `docker-compose.yml`, so `node_modules/` and `.next/` are shipped into the Docker build context.
+- ~~**Docs drift:** README says "OTP: `123456`"… badges contain literal placeholders… messages `MSG91_*` are undocumented.~~ **Fixed:** README has a full `OTP_MODE` table, no placeholder badges remain, and README + `.env.example` document `MSG91_AUTH_KEY`/`MSG91_FLOW_ID`, the VAPID pair and the `CLOUDINARY_*` variables.
+- ~~**`loans/new` preview uses `setTimeout(calculatePreview, 50)`** reading stale closure state.~~ **Fixed:** the preview is a `useMemo` over the form state.
+- ~~**`payments/[id]/confirm` runs a dead query** (`result` selected and never used).~~ **Fixed:** no such query remains in the route.
+- ~~**`handleConfirmPayment` ignores the response** — a 403 from the "can't confirm your own payment" rule silently does nothing.~~ **Fixed:** the response is read and the error is surfaced.
 - **Capacitor app is a remote-URL shell** — `capacitor.config.ts` hard-codes `server.url: "https://udhaar-y94f.onrender.com"` and `webDir: "public"` (which contains no `index.html`), so the "native app" is entirely dependent on that one deployment and has no offline story, while both build workflows rewrite the URL by regex.
 - **`mobile-build.sh` chained commands don't do what they look like**: `npx cap copy android 2>/dev/null || npx cap add android && npx cap copy android` parses as `(A || B) && C`, not "if not added, add then copy".
 - **`vercel.json` uses the legacy `@database_url` reference** while README lists four deploy targets (Docker/Render/Fly/Vercel) — pick one primary path and make it the documented, tested one.
-- **`deploy-web.yml` sets `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true`** to work around a runner issue — worth removing once the underlying action is updated.
+- ~~**`deploy-web.yml` sets `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true`** — worth removing once the underlying action is updated.~~ **Fixed in the workflow-hygiene pass:** every action is on its Node 24 release and the escape hatch is gone.
 
 ---
 

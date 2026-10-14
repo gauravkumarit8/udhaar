@@ -29,6 +29,13 @@
       "when": 1791899490081,
       "tag": "0003_web_push_and_seen",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791949882620,
+      "tag": "0004_private_proofs",
+      "breakpoints": true
     }
   ]
 }

@@ -48,6 +48,8 @@ interface Payment {
   amount: string;
   paymentType: string;
   proofUrl: string | null;
+  /** Private asset id (uploads made after proofs became private). */
+  proofPublicId: string | null;
   markedByUserId: string;
   confirmedByUserId: string | null;
   status: string;
@@ -92,7 +94,7 @@ export default function LoanDetailPage() {
   } | null>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payNotes, setPayNotes] = useState("");
-  const [payProof, setPayProof] = useState<string | null>(null);
+  const [payProofId, setPayProofId] = useState<string | null>(null);
   const [payLoading, setPayLoading] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
   const [reminderSent, setReminderSent] = useState<string | null>(null);
@@ -189,7 +191,7 @@ export default function LoanDetailPage() {
             amount: payAmount,
             paymentType: payModal.type,
             notes: payNotes || undefined,
-            proofUrl: payProof || undefined,
+            proofId: payProofId || undefined,
           }),
         }
       );
@@ -205,7 +207,7 @@ export default function LoanDetailPage() {
       setPayModal(null);
       setPayAmount("");
       setPayNotes("");
-      setPayProof(null);
+      setPayProofId(null);
       // Cancel reminders for this installment if fully paid
       if (data.applied) {
         const inst = payModal.installment;
@@ -795,6 +797,16 @@ export default function LoanDetailPage() {
                     {payment.status.toUpperCase()}
                   </span>
                 </div>
+                {(payment.proofPublicId || payment.proofUrl) && (
+                  <a
+                    href={`/api/payments/${payment.id}/proof`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 mt-3 text-xs font-semibold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl tap-highlight"
+                  >
+                    🧾 View proof
+                  </a>
+                )}
                 {payment.status === "pending" &&
                   (payment.markedByUserId !== currentUserId || noCounterparty) && (
                   <div className="flex gap-2 mt-3">
@@ -836,7 +848,7 @@ export default function LoanDetailPage() {
       {/* Pay Bottom Sheet */}
       <BottomSheet
         open={!!payModal}
-        onClose={() => { setPayModal(null); setPayProof(null); setPayError(null); }}
+        onClose={() => { setPayModal(null); setPayProofId(null); setPayError(null); }}
         title="Record Payment"
         subtitle={
           payModal
@@ -906,7 +918,7 @@ export default function LoanDetailPage() {
           </div>
 
           {/* Proof Upload */}
-          <ProofUpload onCapture={(url) => setPayProof(url)} currentProof={payProof} />
+          <ProofUpload onCapture={setPayProofId} />
 
           <div className="flex gap-3 pt-2">
             <button

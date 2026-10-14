@@ -17,8 +17,10 @@ async function handlePOST(req: NextRequest) {
   }
 
   try {
-    const url = await uploadProofImage(image);
-    return NextResponse.json({ url });
+    const proofId = await uploadProofImage(image);
+    // The id, not a URL: the asset is private, and the only way to see it is
+    // GET /api/payments/[id]/proof, which re-checks who is asking.
+    return NextResponse.json({ proofId });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Upload failed";
     // 503 for config issues (developer needs to set env vars),

@@ -28,6 +28,7 @@ const REQUIRED_COLUMNS = [
   { table: "reminders", column: "dedupe_key" },
   { table: "reminders", column: "recipient_id" },
   { table: "users", column: "notifications_seen_at" },
+  { table: "payments", column: "proof_public_id" },
 ];
 
 const REQUIRED_TABLES = [

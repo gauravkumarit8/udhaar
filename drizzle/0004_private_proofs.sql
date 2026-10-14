@@ -1,0 +1,1 @@
+ALTER TABLE "payments" ADD COLUMN "proof_public_id" text;

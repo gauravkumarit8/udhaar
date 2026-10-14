@@ -129,6 +129,15 @@ export const payments = pgTable("payments", {
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   paymentType: varchar("payment_type", { length: 20 }).notNull(), // interest | principal | both
   proofUrl: text("proof_url"),
+  /**
+   * Cloudinary public id of the proof (with its extension), for uploads made
+   * after proofs became private. Deliberately *not* a URL: the asset is
+   * uploaded as `type: authenticated`, so it cannot be fetched without a
+   * signature, and the app mints one per request in
+   * GET /api/payments/[id]/proof after checking the caller is on the loan.
+   * `proofUrl` is kept for proofs uploaded before that change.
+   */
+  proofPublicId: text("proof_public_id"),
   markedByUserId: uuid("marked_by_user_id")
     .references(() => users.id)
     .notNull(),

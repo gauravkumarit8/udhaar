@@ -26,6 +26,7 @@ export const LIMITS = {
   ACCOUNT_MAX: 50,
   PROOF_URL_MAX: 500,
   PUSH_ENDPOINT_MAX: 500, // push service URLs are long, but not this long
+  PROOF_ID_MAX: 200, // "udhaar/proofs/" + a Cloudinary id
 } as const;
 
 export interface LoanInput {
@@ -77,6 +78,33 @@ function optionalString(value: unknown, max: number, label: string): ValidationR
   const trimmed = value.trim();
   if (!trimmed) return { ok: true, value: null };
   if (trimmed.length > max) return { ok: false, error: `${label} must be ${max} characters or fewer` };
+
+  return { ok: true, value: trimmed };
+}
+
+/**
+ * Validates a payment-proof id: the Cloudinary asset id returned by
+ * `POST /api/upload`, e.g. `udhaar/proofs/xyz.jpg`.
+ *
+ * It is a path inside one folder, so it must look like one - no scheme, no
+ * host, no query string, no traversal. Anything else is rejected rather than
+ * stored and later handed to the signing code.
+ */
+export function validateProofId(value: unknown): ValidationResult<string | null> {
+  if (value === undefined || value === null || value === "") return { ok: true, value: null };
+  if (typeof value !== "string") return { ok: false, error: "proofId must be a string" };
+
+  const trimmed = value.trim();
+
+  if (trimmed.length > LIMITS.PROOF_ID_MAX) {
+    return { ok: false, error: "That proof reference is too long to be real" };
+  }
+  if (!trimmed.startsWith("udhaar/proofs/")) {
+    return { ok: false, error: "That proof reference is not one of ours" };
+  }
+  if (!/^[A-Za-z0-9/_.-]+$/.test(trimmed) || trimmed.includes("..")) {
+    return { ok: false, error: "That proof reference contains characters we don't accept" };
+  }
 
   return { ok: true, value: trimmed };
 }

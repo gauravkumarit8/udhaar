@@ -2,8 +2,9 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
+// One pool per process, reused across hot reloads in development.
 const globalForDb = globalThis as typeof globalThis & {
-  __arenaNextJsPostgresqlPool?: Pool;
+  __udhaarPgPool?: Pool;
 };
 
 let cachedDb: NodePgDatabase | null = null;
@@ -15,14 +16,14 @@ function getDbInstance(): NodePgDatabase {
     throw new Error("DATABASE_URL is required");
   }
 
-  if (!globalForDb.__arenaNextJsPostgresqlPool) {
-    globalForDb.__arenaNextJsPostgresqlPool = new Pool({
+  if (!globalForDb.__udhaarPgPool) {
+    globalForDb.__udhaarPgPool = new Pool({
       connectionString: databaseUrl,
     });
   }
 
   if (!cachedDb) {
-    cachedDb = drizzle(globalForDb.__arenaNextJsPostgresqlPool);
+    cachedDb = drizzle(globalForDb.__udhaarPgPool);
   }
 
   return cachedDb;

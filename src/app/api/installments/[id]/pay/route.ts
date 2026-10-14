@@ -5,7 +5,7 @@ import { getSession } from "@/lib/auth";
 import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments";
 import { getOutstanding, closeLoanIfSettled } from "@/lib/loans";
 import { eq, sql, and, lte } from "drizzle-orm";
-import { toNumber, validateProofUrl, LIMITS } from "@/lib/validation";
+import { toNumber, validateProofId, validateProofUrl, LIMITS } from "@/lib/validation";
 import { withErrors } from "@/lib/api-handler";
 import { notifyCounterparty, paymentNotice } from "@/lib/notify";
 
@@ -31,7 +31,7 @@ async function handlePOST(
     return NextResponse.json({ error: "Request body must be a JSON object" }, { status: 400 });
   }
 
-  const { amount, paymentType, proofUrl, notes } = body as Record<string, unknown>;
+  const { amount, paymentType, proofUrl, proofId, notes } = body as Record<string, unknown>;
 
   // paymentType: "interest" | "principal" | "both"
   if (!amount || !paymentType) {
@@ -58,8 +58,15 @@ async function handlePOST(
     );
   }
 
-  // Never store what we can't safely render: a proof link is shown to the
-  // other party, so it has to be a real https image URL.
+  // Proofs uploaded by the current app are private assets referenced by id.
+  // A URL is still accepted for proofs stored before that changed; either way
+  // it is validated rather than stored as given, because the other party ends
+  // up fetching it.
+  const proofRef = validateProofId(proofId);
+  if (!proofRef.ok) {
+    return NextResponse.json({ error: proofRef.error }, { status: 400 });
+  }
+
   const proof = validateProofUrl(proofUrl);
   if (!proof.ok) {
     return NextResponse.json({ error: proof.error }, { status: 400 });
@@ -152,6 +159,7 @@ async function handlePOST(
     amount: allocation.applied.toFixed(2),
     paymentType: paymentType as PaymentType,
     proofUrl: proof.value,
+    proofPublicId: proofRef.value,
     markedByUserId: session.id,
     notes: cleanNotes,
   };

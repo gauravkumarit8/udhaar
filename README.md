@@ -488,6 +488,35 @@ push.
 - **Phone/browser** - a real notification, if a channel above is configured and
   enabled for that device. Tapping it opens the loan it is about.
 
+## 🧾 Payment proofs are private
+
+A proof screenshot is a bank or UPI receipt - names, amounts, sometimes an
+account number. So a payment proof is visible to exactly the two people on the
+loan, and to nobody else:
+
+- **Uploads are stored privately.** `POST /api/upload` sends the image to
+  Cloudinary as an `authenticated` asset - one that cannot be fetched without a
+  signature - and returns the asset's **id**. The payment row stores that id
+  (`payments.proof_public_id`); no fetchable URL is ever written to the
+  database.
+- **Reading one goes through the app.** `GET /api/payments/[id]/proof` checks
+  the session against the loan the payment belongs to, signs a delivery URL
+  *server-side*, fetches the bytes and streams them back. Your browser never
+  sees a Cloudinary URL, so there is no link to forward, leak, or find later in
+  a log. Anyone else - logged in or not - gets the same `404` as a payment that
+  doesn't exist, so a stranger can't even probe for one.
+- **Failures say what happened** instead of rendering a broken image: `503`
+  names the missing `CLOUDINARY_*` variables, `502` reports what the proof store
+  answered (a rejected credential is called out by name).
+
+`CLOUDINARY_DELIVERY_HOST` is optional - set it only if your Cloudinary account
+serves assets from a custom domain.
+
+Proofs uploaded before this change stored a public Cloudinary URL
+(`payments.proof_url`). Those keep working: the route redirects to the stored
+URL, since that link was public already and rewriting it would need the
+original file. Re-upload is the only way to make an old proof private.
+
 ## 🚢 Deployment notes
 
 - **Static assets with `output: standalone`.** Next.js does *not* copy
@@ -496,8 +525,14 @@ push.
   and `render.yaml` both do). Skipping this serves HTML with no CSS or JS.
 - **Apply the migrations on a fresh database.** `npm run db:migrate` runs the
   SQL in `drizzle/` (generated from `src/db/schema.ts`). CI applies them to an
-  empty Postgres, and `render.yaml` runs them on every boot — a no-op once
-  applied.
+  empty Postgres, and `render.yaml` runs `db:baseline && db:migrate` on every
+  boot — a no-op once applied. The baseline step matters on a database that
+  predates the journal (created by `db:push`): it records the migrations whose
+  objects actually exist and verifies the rest, so `db:migrate` has only the
+  genuinely missing ones to apply. On a fresh database it does nothing at all.
+  A start-command change in `render.yaml` reaches an existing service on the
+  next Blueprint sync (Dashboard → Blueprints → Sync), or edit the Start Command
+  in the service's Settings directly.
 - **Don't use Render's free Postgres for real data.** Free instances are
   deleted 30 days after creation, with no backups: that is what silently broke
   production login once. Use any external Postgres (Neon, Supabase, Aiven) and
