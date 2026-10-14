@@ -30,6 +30,13 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "reminders", column: "dedupe_key" },
   { table: "reminders", column: "recipient_id" },
   { table: "users", column: "notifications_seen_at" },
+  { table: "payments", column: "proof_public_id" },
+  // Settlement (migration 0005). A database missing these still reports every
+  // table as present, so without them here the endpoint would call a schema
+  // healthy that cannot close a loan at all.
+  { table: "installments", column: "principal_waived" },
+  { table: "installments", column: "interest_waived" },
+  { table: "payments", column: "unapplied_amount" },
 ];
 
 /** The tables the app cannot run without. */

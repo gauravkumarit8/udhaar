@@ -587,6 +587,10 @@ off, so nobody is surprised later by a smaller number than the schedule showed.
   A start-command change in `render.yaml` reaches an existing service on the
   next Blueprint sync (Dashboard → Blueprints → Sync), or edit the Start Command
   in the service's Settings directly.
+  `/api/health` verifies this for you: it names any migration column that is
+  still missing (a database without migration 0005 reports `missing columns:
+  installments.principal_waived, …` and answers **503**), so "did the
+  migrations run in production?" is one web request, not a guess.
 - **Don't use Render's free Postgres for real data.** Free instances are
   deleted 30 days after creation, with no backups: that is what silently broke
   production login once. Use any external Postgres (Neon, Supabase, Aiven) and
