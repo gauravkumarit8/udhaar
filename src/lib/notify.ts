@@ -82,8 +82,9 @@ export function loanClaimedNotice(p: {
  * - `recorded`  - applied to the ledger straight away (1-side)
  * - `confirmed` - the recipient's earlier mark was accepted
  * - `rejected`  - the recipient's earlier mark was turned down
+ * - `withdrawn` - the person who marked it took it back before anyone acted
  */
-export type PaymentEvent = "marked" | "recorded" | "confirmed" | "rejected";
+export type PaymentEvent = "marked" | "recorded" | "confirmed" | "rejected" | "withdrawn";
 
 export function paymentNotice(p: {
   event: PaymentEvent;
@@ -139,6 +140,16 @@ export function paymentNotice(p: {
           ? `The ${amount} payment you marked for ${emi} was not accepted: ${p.reason}`
           : `${p.actorName} rejected the ${amount} payment you marked for ${emi}.`,
         type: "payment_rejected",
+      };
+    case "withdrawn":
+      // Nothing moved - say so plainly, or the recipient will wonder whether
+      // they missed money.
+      return {
+        title: "↩️ Payment withdrawn",
+        message:
+          `${p.actorName} withdrew the ${amount} payment they had marked for ${emi} ` +
+          `(due ${formatDate(p.dueDate)}). Nothing was recorded against it, so it is owed again.`,
+        type: "payment_withdrawn",
       };
   }
 }

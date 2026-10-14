@@ -20,10 +20,13 @@ async function handlePATCH(
   }
 
   const { id } = await params;
-  const { action } = await req.json(); // "confirm" | "reject"
+  const { action } = await req.json(); // "confirm" | "reject" | "withdraw"
 
-  if (!action || !["confirm", "reject"].includes(action)) {
-    return NextResponse.json({ error: "Action must be 'confirm' or 'reject'" }, { status: 400 });
+  if (!action || !["confirm", "reject", "withdraw"].includes(action)) {
+    return NextResponse.json(
+      { error: "Action must be 'confirm', 'reject' or 'withdraw'" },
+      { status: 400 }
+    );
   }
 
   // Get payment
@@ -68,6 +71,47 @@ async function handlePATCH(
   // outcome - unless that is the same person acting now (self-confirmation
   // on a loan whose borrower has no account).
   const markerId = payment.markedByUserId === session.id ? null : payment.markedByUserId;
+
+  if (action === "withdraw") {
+    /*
+     * Taking back your own claim.
+     *
+     * Without this, a payment marked against the wrong EMI (or for the wrong
+     * amount) blocks every later payment on the loan - `payoff` and `close`
+     * both refuse while a claim is pending, and the loan screen says so - and
+     * if the other person never opens the app it stays stuck for good. Only
+     * the person who marked it can withdraw it; the other side's action is
+     * reject, which leaves the same ledger state but says something different
+     * in the record.
+     */
+    if (payment.markedByUserId !== session.id) {
+      return NextResponse.json(
+        {
+          error:
+            "Only the person who marked this payment can withdraw it. Confirm or reject it instead.",
+        },
+        { status: 403 }
+      );
+    }
+
+    await db.update(payments).set({ status: "cancelled" }).where(eq(payments.id, id));
+
+    await notifyCounterparty({
+      userId: counterpartyId,
+      installmentId: payment.installmentId,
+      loanId: payment.loanId,
+      notice: paymentNotice({
+        event: "withdrawn",
+        actorName: session.name,
+        actorRole: session.id === loan.lenderId ? "lender" : "borrower",
+        amount: parseFloat(payment.amount),
+        installmentNumber: inst.installmentNumber,
+        dueDate: inst.dueDate,
+      }),
+    });
+
+    return NextResponse.json({ success: true, action, status: "cancelled" });
+  }
 
   if (payment.markedByUserId === session.id && counterpartyId) {
     return NextResponse.json(

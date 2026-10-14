@@ -330,6 +330,109 @@ async function main() {
     check("nothing is owed", owed(after), { principal: 0, interest: 0, total: 0 });
   }
 
+  console.log("\nA payment marked by mistake can be withdrawn, not just stuck");
+  {
+    // The dead-end this fixes: a pending claim blocks every later payment on
+    // the loan, and if the other side never acts it blocks it for good.
+    const { id, detail } = await newLoan({ confirmationMode: "2-side" });
+    const emi = detail.installments[0];
+    const emiTotal = Number(emi.totalAmount);
+
+    const marked = await call("POST", `/api/installments/${emi.id}/pay`, {
+      token: BORROWER_TOKEN,
+      body: { amount: "1000", paymentType: "both" },
+    });
+    check("the borrower marks a payment", marked.status, 200);
+    check("...which waits for the lender", marked.json.payment?.status, "pending");
+
+    const blocked = await call("POST", `/api/installments/${emi.id}/pay`, {
+      token: BORROWER_TOKEN,
+      body: { amount: emiTotal.toFixed(2), paymentType: "both" },
+    });
+    check("while the claim stands, a second payment is refused", blocked.status, 400);
+    check(
+      "...and the refusal names the claim, not the balance",
+      String(blocked.json.error).includes("awaiting confirmation"),
+      true
+    );
+
+    const pendingId = marked.json.payment.id;
+
+    check(
+      "the other side cannot withdraw it on their behalf",
+      (
+        await call("PATCH", `/api/payments/${pendingId}/confirm`, {
+          token: LENDER_TOKEN,
+          body: { action: "withdraw" },
+        })
+      ).status,
+      403
+    );
+
+    const withdrawn = await call("PATCH", `/api/payments/${pendingId}/confirm`, {
+      token: BORROWER_TOKEN,
+      body: { action: "withdraw" },
+    });
+    check("the person who marked it can withdraw it", withdrawn.status, 200);
+    check("...recorded as cancelled, not rejected", withdrawn.json.status, "cancelled");
+
+    const after = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    // The EMI itself, not the loan: the loan has other EMIs outstanding too.
+    const emiRow = after.installments.find((row) => row.id === emi.id);
+    const emiRemaining = money(
+      Number(emiRow.principalAmount) -
+        Number(emiRow.principalPaid) -
+        Number(emiRow.principalWaived) +
+        Number(emiRow.interestAmount) -
+        Number(emiRow.interestPaid) -
+        Number(emiRow.interestWaived)
+    );
+    check("the EMI is owed again", emiRemaining, money(emiTotal));
+    check(
+      "...and the claim is not counted as money",
+      after.payments.find((row) => row.id === pendingId)?.status,
+      "cancelled"
+    );
+
+    const again = await call("POST", `/api/installments/${emi.id}/pay`, {
+      token: BORROWER_TOKEN,
+      body: { amount: emiTotal.toFixed(2), paymentType: "both" },
+    });
+    check("the payment it was blocking now goes through", again.status, 200);
+
+    // Settle it, so this section does not leave an open loan behind - the
+    // account-deletion check at the end of this file looks at all of them.
+    const confirmedAgain = await call("PATCH", `/api/payments/${again.json.payment.id}/confirm`, {
+      token: LENDER_TOKEN,
+      body: { action: "confirm" },
+    });
+    check("the lender can still confirm the replacement", confirmedAgain.status, 200);
+
+    const mid = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    const claim = await call("POST", `/api/loans/${id}/payoff`, {
+      token: LENDER_TOKEN,
+      body: { amount: owed(mid).total.toFixed(2) },
+    });
+    check("the rest settles normally after a withdrawal", claim.status, 200);
+    await call("PATCH", `/api/payments/${claim.json.payment.id}/confirm`, {
+      token: BORROWER_TOKEN,
+      body: { action: "confirm" },
+    });
+    const done = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    check("...and the loan closes", done.loan.status, "closed");
+
+    check(
+      "a withdrawn claim cannot be confirmed afterwards",
+      (
+        await call("PATCH", `/api/payments/${pendingId}/confirm`, {
+          token: LENDER_TOKEN,
+          body: { action: "confirm" },
+        })
+      ).status,
+      400
+    );
+  }
+
   console.log("\nA reminder that reaches a borrower who never installed the app");
   {
     const { id, detail } = await newLoan({ amount: "6000", interestRate: "0", upiId: "test@ybl" });
@@ -610,6 +713,19 @@ async function main() {
 
   console.log("\nWhen the lender finally signs up, the debt they were owed finds them");
   {
+    /*
+     * Clear this phone's history first.
+     *
+     * The section ends by deleting this account, and deleting is refused while
+     * any of its loans is still open - so a run that dies halfway (an OTP rate
+     * limit, a dropped connection) leaves an open loan behind and *every* later
+     * run fails at the last check for a reason that has nothing to do with the
+     * code. Observed for real on 2026-10-14. Scratch database, hence raw SQL.
+     */
+    await query("DELETE FROM loans WHERE lender_mobile = $1 OR borrower_mobile = $1", [
+      "9876500077",
+    ]);
+
     // A loan the borrower recorded against a number nobody has used yet.
     const { id } = await newBorrowedLoan({
       lenderName: "Aunty Kamla",
