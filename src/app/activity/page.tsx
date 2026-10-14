@@ -108,27 +108,48 @@ export default function ActivityPage() {
   }, []);
 
   const [reminderNote, setReminderNote] = useState<string | null>(null);
+  /** Fallback when the browser blocks the WhatsApp/SMS pop-up after an await. */
+  const [reminderLink, setReminderLink] = useState<{ href: string; label: string } | null>(null);
 
-  const handleRemind = async (installmentId: string) => {
+  /**
+   * Same rule as the loan screen: WhatsApp first, because the borrower may
+   * never have installed this app. Push is attempted alongside it when they
+   * have an account, but it is no longer the only thing we can offer.
+   */
+  const handleRemind = async (installmentId: string, channel: "whatsapp" | "sms" | "push" = "whatsapp") => {
     try {
-      const result = await requestJson<{ delivered?: boolean; reason?: string }>(
-        `/api/installments/${installmentId}/remind`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel: "push" }),
-        }
-      );
+      const result = await requestJson<{
+        delivered?: boolean;
+        reason?: string;
+        share?: { whatsappUrl: string; smsUrl: string };
+      }>(`/api/installments/${installmentId}/remind`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel }),
+      });
 
-      setReminderNote(
-        result.ok && result.data?.delivered
-          ? "✓ Reminder delivered"
-          : result.data?.reason || result.error || "Reminder recorded, but not delivered"
-      );
+      if (!result.ok) {
+        setReminderNote(result.error || "Reminder not sent");
+      } else if (channel === "push") {
+        setReminderNote(
+          result.data?.delivered ? "✓ Delivered to their phone" : result.data?.reason || "Not delivered"
+        );
+      } else {
+        const url = channel === "whatsapp" ? result.data?.share?.whatsappUrl : result.data?.share?.smsUrl;
+        const appName = channel === "whatsapp" ? "WhatsApp" : "your messages";
+        const opened = url ? window.open(url, "_blank") : null;
+        setReminderNote(
+          opened ? `Reminder ready in ${appName} - press send there` : `Reminder recorded - tap below to open ${appName}`
+        );
+        setReminderLink(!opened && url ? { href: url, label: `Open ${appName}` } : null);
+      }
     } catch {
       setReminderNote("Network error - reminder not sent");
     }
-    setTimeout(() => setReminderNote(null), 5000);
+    setTimeout(() => {
+      setReminderNote(null);
+      setReminderLink(null);
+    }, 8000);
   };
 
   const overdue = dueItems.filter((d) => d.computedStatus === "overdue");
@@ -140,6 +161,16 @@ export default function ActivityPage() {
         {reminderNote && (
           <div className="mb-4 bg-blue-50 border border-blue-200 rounded-2xl p-3.5 text-xs text-blue-800 animate-scale-in">
             {reminderNote}
+            {reminderLink && (
+              <a
+                href={reminderLink.href}
+                target="_blank"
+                rel="noreferrer"
+                className="block mt-1.5 font-semibold text-blue-700 underline"
+              >
+                {reminderLink.label}
+              </a>
+            )}
           </div>
         )}
         {/* Overdue Section */}

@@ -225,6 +225,24 @@ export default function NewLoanPage() {
                 min="1"
                 className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none text-2xl font-bold"
               />
+              {/* The amounts people actually lend each other. Typing "10000"
+                  on a phone keypad is the slowest part of this screen. */}
+              <div className="flex flex-wrap gap-2 mt-2">
+                {["1000", "2000", "5000", "10000", "25000", "50000"].map((quick) => (
+                  <button
+                    key={quick}
+                    type="button"
+                    onClick={() => updateField("amount", quick)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border tap-highlight ${
+                      form.amount === quick
+                        ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                        : "border-slate-200 text-slate-500"
+                    }`}
+                  >
+                    ₹{Number(quick).toLocaleString("en-IN")}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Interest Toggle */}
@@ -235,8 +253,14 @@ export default function NewLoanPage() {
                     📊
                   </div>
                   <div>
-                    <p className="font-semibold text-slate-700 text-sm">Charge Interest</p>
-                    <p className="text-xs text-slate-400">Enable to set annual rate</p>
+                    <p className="font-semibold text-slate-700 text-sm">
+                      {chargeInterest ? "Interest is charged" : "Interest-free"}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {chargeInterest
+                        ? "Set the rate below"
+                        : "You get back exactly what you lend — the usual loan between friends and family"}
+                    </p>
                   </div>
                 </div>
                 <button
@@ -325,6 +349,30 @@ export default function NewLoanPage() {
                   min="1"
                   className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
                 />
+                {/* "Return it in 3 months" is how the borrower actually says
+                    it, so offer the durations people use. */}
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {[
+                    { months: "1", label: "1 month" },
+                    { months: "3", label: "3 months" },
+                    { months: "6", label: "6 months" },
+                    { months: "12", label: "1 year" },
+                    { months: "24", label: "2 years" },
+                  ].map((quick) => (
+                    <button
+                      key={quick.months}
+                      type="button"
+                      onClick={() => updateField("tenureMonths", quick.months)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border tap-highlight ${
+                        form.tenureMonths === quick.months
+                          ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                          : "border-slate-200 text-slate-500"
+                      }`}
+                    >
+                      {quick.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-1.5">

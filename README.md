@@ -532,6 +532,66 @@ Proofs uploaded before this change stored a public Cloudinary URL
 URL, since that link was public already and rewriting it would need the
 original file. Re-upload is the only way to make an old proof private.
 
+## 📲 Reminding someone who will never install this app
+
+The uncomfortable truth about reminders: a borrower will not install an app to
+be told they owe money. So the reminder is designed around that.
+
+- **WhatsApp is the default.** Tapping **🔔 Remind** (on a loan, or in the
+  Activity tab) opens a small sheet: WhatsApp first, then SMS, then in-app. The
+  first two open *your own* phone's app with the message already written -
+  amount, due date, and your UPI link, addressed to the borrower. You press
+  send. Nothing has to be installed on their side, and it works for someone who
+  has never heard of Udhaar.
+- **In-app notification** stays available, and is the only channel where
+  delivery is knowable: it reaches the borrower if they installed the app and
+  allowed notifications, and the app says so honestly either way.
+- **The record never overstates.** A reminder sent through your WhatsApp is
+  stored with `status: "shared"` - a message *you* sent - and is never reported
+  as "delivered". Only a push that a device accepted is. That distinction is
+  visible in the API and in the notification history, because an app that
+  claims to have reminded someone when it didn't is worse than no reminder.
+- **No provider, no cost.** Deep links (`wa.me/<number>?text=…`,
+  `sms:+91…?&body=…`) need no SMS gateway, no DLT registration, and no plan.
+  Automatic SMS stays a later upgrade on top of this.
+
+The scheduled T-2/T-1/T0 sweep still pushes to anyone with the app; for
+everyone else the lender now has a one-tap way to send it themselves.
+
+## 🆓 Most loans between people are interest-free
+
+The loan form defaults to **interest-free** - no rate, equal instalments, and
+the borrower repays exactly what was lent. That is not a simplification: in
+India the vast majority of loans from friends and family are interest-free, and
+asking for a rate first makes the app feel like a bank when the user is lending
+to their brother.
+
+Charge interest only when it is actually charged: flip the toggle and the rate
+appears. The form also offers the amounts people actually lend (₹1,000 – ₹50,000)
+and the durations they actually say ("3 months", "1 year") as one-tap chips, so
+a whole loan can be entered without the keyboard. A 0% schedule is exact - the
+instalments sum to the principal to the paisa, with the last one absorbing the
+rounding (₹1,000 over 3 months is 333.33 + 333.33 + 333.34).
+
+## 🧾 Your data, and leaving
+
+- **Download everything**: Profile → *Your data* → **Download my data**, or
+  `GET /api/account/export`. One JSON file with the profile, every loan on both
+  sides, its instalments, payments (including waivers and unapplied amounts)
+  and the notification history. No asking, no waiting.
+- **Delete your account**: Profile → *Your data* → **Delete my account**. The
+  server refuses while any loan is still open, and says why: a loan is a shared
+  record of a real debt, so erasing it mid-flight would destroy the other
+  person's evidence. Close or settle each loan (a write-off counts), then
+  delete - and the account, its loans, payments, notifications, sessions and
+  device registrations go with it.
+- **Proof images are the one exception**, and the response says so: uploaded
+  screenshots live in storage, not in the database. Their ids vanish with the
+  payment rows, so nothing can find them through Udhaar again - but if you want
+  the files themselves gone, delete them in Cloudinary (Media Library →
+  `udhaar/proofs` → select all → delete). Until proofs are configured there is
+  nothing there to delete.
+
 ## 🤝 Settling a loan
 
 People rarely pay an EMI schedule line by line - they wait until they have the
