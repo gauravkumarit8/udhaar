@@ -41,12 +41,13 @@ function check(label, got, want) {
   }
 }
 
-async function call(method, path, { token, body } = {}) {
+async function call(method, path, { token, body, headers } = {}) {
   const res = await fetch(BASE_URL + path, {
     method,
     headers: {
       ...(token ? { Cookie: `udhaar_session=${token}` } : {}),
       ...(body ? { "content-type": "application/json" } : {}),
+      ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -64,6 +65,19 @@ const money = (v) => Number(Number(v).toFixed(2));
 const LENDER_ID = "11111111-1111-1111-1111-111111111111";
 const BORROWER_ID = "22222222-2222-2222-2222-222222222222";
 const STRANGER_ID = "33333333-3333-3333-3333-333333333333";
+
+/** Read-only SQL, for the handful of checks that read what the API stores. */
+async function query(sql, params = []) {
+  const connectionString = process.env.DATABASE_URL;
+  const useSsl = !/localhost|127\.0\.0\.1/.test(connectionString ?? "");
+  const pool = new pg.Pool({ connectionString, ssl: useSsl ? { rejectUnauthorized: false } : undefined });
+  try {
+    const { rows } = await pool.query(sql, params);
+    return rows;
+  } finally {
+    await pool.end();
+  }
+}
 
 /**
  * Three accounts with sessions the script can use, so it needs no OTP flow.
@@ -99,6 +113,32 @@ async function seed() {
   } finally {
     await pool.end();
   }
+}
+
+/**
+ * The other direction: the borrower (or anyone) records "I owe ₹N to <name>"
+ * for a lender who may have no Udhaar account at all.
+ */
+async function newBorrowedLoan(overrides = {}) {
+  const { status, json } = await call("POST", "/api/loans", {
+    token: BORROWER_TOKEN,
+    body: {
+      side: "borrower",
+      lenderName: "Uncle Suresh",
+      lenderMobile: "9876500099",
+      amount: "10000",
+      interestRate: "12",
+      interestRatePeriod: "yearly",
+      tenureMonths: "3",
+      startDate: "2026-01-01",
+      confirmationMode: "1-side",
+      ...overrides,
+    },
+  });
+  if (status !== 201) throw new Error(`could not create borrowed loan: ${status} ${JSON.stringify(json)}`);
+  const id = json.loan.id;
+  const detail = await call("GET", `/api/loans/${id}`, { token: BORROWER_TOKEN });
+  return { id, loan: json.loan, detail: detail.json };
 }
 
 async function newLoan(overrides = {}) {
@@ -366,6 +406,211 @@ async function main() {
         body: { amount },
       })).status, 400);
     }
+  }
+
+  console.log("\nA borrower's own record of what they owe - and what they are not allowed to do");
+  {
+    const { id, loan, detail } = await newBorrowedLoan();
+
+    check("the borrower is recorded as the borrower", loan.borrowerId, BORROWER_ID);
+    check("the lender has no account yet, so lenderId is empty", loan.lenderId, null);
+    check("...but their name is kept", loan.lenderName, "Uncle Suresh");
+    check("...and their mobile, for when they join", loan.lenderMobile, "9876500099");
+    check("the borrower wrote the record, so they can fix it", loan.createdByUserId, BORROWER_ID);
+
+    const seen = await call("GET", "/api/loans", { token: BORROWER_TOKEN });
+    const mine = (seen.json.loans ?? []).find((l) => l.id === id);
+    check("it shows up in their own list", Boolean(mine), true);
+    check("...on the borrowing side of the screen", mine?.viewerRole, "borrower");
+
+    // The invariant: a waiver is never the borrower's to grant.
+    const writeOff = await call("POST", `/api/loans/${id}/close`, {
+      token: BORROWER_TOKEN,
+      body: { writeOff: true },
+    });
+    check("they cannot write off their own debt", writeOff.status, 403);
+    check("...and are told who can", String(writeOff.json.error).includes("Uncle Suresh"), true);
+    check("...and that it needs the other person", String(writeOff.json.error).includes("haven't joined Udhaar"), true);
+
+    const principal = money(detail.installments.reduce((sum, i) => sum + Number(i.principalAmount), 0));
+    const total = money(detail.installments.reduce((sum, i) => sum + Number(i.totalAmount), 0));
+
+    const forgive = await call("POST", `/api/loans/${id}/payoff`, {
+      token: BORROWER_TOKEN,
+      body: { amount: String(principal) },
+    });
+    check("they cannot cancel their own interest", forgive.status, 403);
+    check("...and are told the full amount instead", String(forgive.json.error).includes("full amount"), true);
+    check("...with the interest spelled out", forgive.json.interestOutstanding > 0, true);
+
+    const still = await call("GET", `/api/loans/${id}`, { token: BORROWER_TOKEN });
+    check("nothing moved on the loan", still.json.loan.status, "active");
+    check("no payment was recorded", still.json.payments.length, 0);
+
+    // Paying everything, though, is theirs to do.
+    const payAll = await call("POST", `/api/loans/${id}/payoff`, {
+      token: BORROWER_TOKEN,
+      body: { amount: String(total) },
+    });
+    check("they can pay the whole amount", payAll.status, 200);
+    check("...which settles the loan", payAll.json.settled, true);
+    check("no interest was waived to make that happen", payAll.json.waivedInterest, 0);
+
+    const closed = await call("GET", `/api/loans/${id}`, { token: BORROWER_TOKEN });
+    check("the loan reads closed", closed.json.loan.status, "closed");
+    check("nothing is owed", owed(closed.json), { principal: 0, interest: 0, total: 0 });
+    check("and the lender was not consulted", closed.json.loan.lenderId, null);
+
+    // Fixing a typo in their own entry is allowed while nobody else is on it.
+    const typo = await newBorrowedLoan({ lenderName: "Aunty Kamla", amount: "500" });
+    const fix = await call("PATCH", `/api/loans/${typo.id}`, {
+      token: BORROWER_TOKEN,
+      body: {
+        side: "borrower",
+        lenderName: "Aunty Kamla",
+        lenderMobile: "9876500099",
+        amount: "5000",
+        interestRate: "0",
+        tenureMonths: "3",
+        startDate: "2026-01-01",
+        confirmationMode: "1-side",
+      },
+    });
+    check("the author can correct their own entry", fix.status, 200);
+    check("...without flipping who owes whom", fix.json.loan.borrowerId, BORROWER_ID);
+    check("...and their lender is still the one they named", fix.json.loan.lenderName, "Aunty Kamla");
+    check("...while their own details are untouched",
+      [fix.json.loan.borrowerName, fix.json.loan.borrowerMobile], ["Settlement Test Borrower", "9876500022"]);
+    const remove = await call("DELETE", `/api/loans/${typo.id}`, { token: BORROWER_TOKEN });
+    check("...and delete it while it is only theirs", remove.status, 200);
+
+    // Once the lender is on Udhaar it is no longer the borrower's record to rewrite.
+    const claimed = await newBorrowedLoan({ lenderName: "Settlement Test Lender", lenderMobile: "9876500021" });
+    check("a lender who already has an account is attached straight away", claimed.loan.lenderId, LENDER_ID);
+    check("...so the borrower is no longer the only one on it", claimed.loan.lenderId !== null, true);
+    check("the borrower cannot delete it now",
+      (await call("DELETE", `/api/loans/${claimed.id}`, { token: BORROWER_TOKEN })).status, 403);
+    check("...nor rewrite it",
+      (await call("PATCH", `/api/loans/${claimed.id}`, {
+        token: BORROWER_TOKEN,
+        body: {
+          side: "borrower",
+          lenderName: "Settlement Test Lender",
+          lenderMobile: "9876500021",
+          amount: "1",
+          interestRate: "0",
+          tenureMonths: "3",
+          startDate: "2026-01-01",
+        },
+      })).status, 403);
+    check("the lender can still waive interest on it",
+      (await call("POST", `/api/loans/${claimed.id}/close`, { token: LENDER_TOKEN, body: { writeOff: true } })).status, 200);
+  }
+
+  console.log("\nThe nightly sweep still reaches a loan whose lender has no account");
+  {
+    // The first EMI falls one month after the start date, so starting a month
+    // and two days ago puts EMI 1 two days past due - overdue enough for the
+    // sweep to act today, but inside the nag window.
+    const startedOverdue = new Date(Date.now() - 32 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const { id } = await newBorrowedLoan({
+      lenderName: "Uncle Suresh",
+      lenderMobile: "9876500099",
+      amount: "3000",
+      interestRate: "0",
+      tenureMonths: "1",
+      startDate: startedOverdue,
+      upiId: "uncle@ybl",
+    });
+
+    const secret = process.env.CRON_SECRET;
+    check("the sweep is configured on this deployment", Boolean(secret), true);
+
+    // Re-runs must still be able to prove the sweep reaches this loan: the
+    // dedupe key makes a second sweep on the same day a no-op, so clear today's
+    // rows for this loan first. (The key itself is covered by unit tests.)
+    await query(`DELETE FROM reminders WHERE loan_id = $1`, [id]);
+
+    const sweep = await call("POST", "/api/reminders/run", {
+      headers: { "x-cron-secret": secret },
+    });
+    check("the sweep runs", sweep.status, 200);
+
+    check("it looked at installments that exist", sweep.json.checked > 0, true);
+    check("nothing was reported as delivered without a device", sweep.json.delivered, 0);
+
+    // The reminder row is the proof: a borrower-entered loan names its lender
+    // from the loan record, not from a users row that does not exist.
+    const reminderRows = await query(
+      `SELECT recipient_id, message, status FROM reminders
+        WHERE loan_id = $1 AND type = 'reminder' ORDER BY sent_at DESC`,
+      [id]
+    );
+    check("the borrower-entered loan got a reminder of its own", reminderRows.length > 0, true);
+    check("...composed with the lender's stored name",
+      String(reminderRows[0]?.message ?? "").includes("Uncle Suresh"), true);
+    check("...addressed to the borrower", reminderRows[0]?.recipient_id, BORROWER_ID);
+    check("...and it is not marked delivered", reminderRows[0]?.status, "failed");
+
+    // The borrower can see it in Activity - that is the point of recording it.
+    const activity = await call("GET", "/api/notifications", { token: BORROWER_TOKEN });
+    check("the borrower can see the reminder in their Activity",
+      (activity.json.notifications ?? []).some((n) => n.loanId === id), true);
+  }
+
+  console.log("\nWhen the lender finally signs up, the debt they were owed finds them");
+  {
+    // A loan the borrower recorded against a number nobody has used yet.
+    const { id } = await newBorrowedLoan({
+      lenderName: "Aunty Kamla",
+      lenderMobile: "9876500077",
+      amount: "4000",
+      interestRate: "0",
+      tenureMonths: "2",
+      startDate: "2026-01-01",
+      confirmationMode: "1-side",
+    });
+
+    // The real signup path: ask for an OTP, then verify it. The dummy OTP
+    // (123456) is the deployment's own testing mode, and this is exactly the
+    // flow that has to attach the loan.
+    const sent = await call("POST", "/api/auth/send-otp", { body: { mobile: "9876500077" } });
+    check("the lender can ask for an OTP", sent.status, 200);
+    check("...and in this mode the code comes back", String(sent.json.devCode ?? ""), "123456");
+
+    const verified = await call("POST", "/api/auth/verify-otp", {
+      body: { mobile: "9876500077", code: "123456", name: "Aunty Kamla" },
+    });
+    check("they can sign up", verified.status, 200);
+    const lenderSession = verified.headers["set-cookie"]
+      ?.match(/udhaar_session=([^;]+)/)?.[1];
+    check("...and get a session", Boolean(lenderSession), true);
+
+    const detail = await call("GET", `/api/loans/${id}`, { token: lenderSession });
+    check("the loan they were owed is theirs now", detail.json.loan?.lenderId !== null, true);
+    check("...without the borrower having to re-enter anything", detail.json.loan?.amount, "4000.00");
+    check("...and it shows on their lending side", detail.json.loan?.viewerRole, "lender");
+
+    const activity = await call("GET", "/api/notifications", { token: lenderSession });
+    const notices = activity.json.notifications ?? [];
+    check("they are told a debt was recorded for them",
+      notices.some((n) => n.loanId === id && n.type === "loan_added"), true);
+    check("...naming the borrower who wrote it down",
+      notices.some((n) => String(n.message).includes("Settlement Test Borrower")), true);
+
+    // Now that the lender exists, the borrower is answering to someone again:
+    // no more forgiving their own debt.
+    check("the borrower can no longer write it off",
+      (await call("POST", `/api/loans/${id}/close`, { token: BORROWER_TOKEN, body: { writeOff: true } })).status, 403);
+    check("the lender can settle it early, waiving what is left",
+      (await call("POST", `/api/loans/${id}/payoff`, { token: lenderSession, body: { amount: "4000" } })).status, 200);
+
+    // Leave the account in a state the next run can repeat: the loan is closed,
+    // so the account can go.
+    check("and the lender's account can then be deleted",
+      (await call("DELETE", "/api/account", { token: lenderSession })).status, 200);
   }
 
   console.log(

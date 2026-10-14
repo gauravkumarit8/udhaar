@@ -30,8 +30,18 @@ export const LIMITS = {
 } as const;
 
 export interface LoanInput {
+  /**
+   * Who is entering the loan. "lender" is the original flow (I lent money to
+   * someone); "borrower" is the reverse - I owe money, and I am recording it
+   * against a lender who may never have used this app.
+   */
+  side: "lender" | "borrower";
+  /** Empty when side === "borrower" - the route fills these from the session. */
   borrowerName: string;
   borrowerMobile: string;
+  /** Set only when side === "borrower". */
+  lenderName: string | null;
+  lenderMobile: string | null;
   amount: number;
   interestRate: number;
   interestRatePeriod: "monthly" | "yearly";
@@ -120,22 +130,42 @@ export function parseLoanInput(body: unknown): ValidationResult<LoanInput> {
 
   const raw = body as Record<string, unknown>;
 
-  // ── Required text ────────────────────────────────────────────────────────
-  const borrowerName = typeof raw.borrowerName === "string" ? raw.borrowerName.trim() : "";
-  if (!borrowerName) return { ok: false, error: "Borrower name is required" };
-  if (borrowerName.length > LIMITS.NAME_MAX) {
-    return { ok: false, error: `Borrower name must be ${LIMITS.NAME_MAX} characters or fewer` };
+  // Which way round is this loan? `side: "borrower"` means the person entering
+  // it is the one who owes, so the *lender's* name and number are required.
+  // Anything else keeps the original lender-entered behaviour.
+  const side: "lender" | "borrower" = raw.side === "borrower" ? "borrower" : "lender";
+  if (raw.side !== undefined && raw.side !== null && !["lender", "borrower"].includes(String(raw.side))) {
+    return { ok: false, error: 'side must be either "lender" or "borrower"' };
   }
 
-  const borrowerMobile = typeof raw.borrowerMobile === "string" ? raw.borrowerMobile.trim() : "";
-  // Must match the format enforced at login, or the borrower's account will
-  // never auto-link to this loan.
-  if (!/^\d{10}$/.test(borrowerMobile)) {
+  // ── Required text ────────────────────────────────────────────────────────
+  const counterpartyLabel = side === "borrower" ? "Lender" : "Borrower";
+  const nameField = side === "borrower" ? raw.lenderName : raw.borrowerName;
+  const mobileField = side === "borrower" ? raw.lenderMobile : raw.borrowerMobile;
+
+  const partnerName = typeof nameField === "string" ? nameField.trim() : "";
+  if (!partnerName) return { ok: false, error: `${counterpartyLabel} name is required` };
+  if (partnerName.length > LIMITS.NAME_MAX) {
     return {
       ok: false,
-      error: "Borrower mobile must be exactly 10 digits (no spaces, +91, or dashes)",
+      error: `${counterpartyLabel} name must be ${LIMITS.NAME_MAX} characters or fewer`,
     };
   }
+
+  const partnerMobileRaw = typeof mobileField === "string" ? mobileField.trim() : "";
+  // Must match the format enforced at login, or the other person's account
+  // will never auto-link to this loan.
+  if (!/^\d{10}$/.test(partnerMobileRaw)) {
+    return {
+      ok: false,
+      error: `${counterpartyLabel} mobile must be exactly 10 digits (no spaces, +91, or dashes)`,
+    };
+  }
+
+  // For a borrower-entered loan the borrower is the person asking, so the
+  // route fills these two in from the session.
+  const borrowerName = side === "borrower" ? "" : partnerName;
+  const borrowerMobile = side === "borrower" ? "" : partnerMobileRaw;
 
   // ── Amount ───────────────────────────────────────────────────────────────
   const amount = toNumber(raw.amount);
@@ -211,8 +241,11 @@ export function parseLoanInput(body: unknown): ValidationResult<LoanInput> {
   return {
     ok: true,
     value: {
+      side,
       borrowerName,
       borrowerMobile,
+      lenderName: side === "borrower" ? partnerName : null,
+      lenderMobile: side === "borrower" ? partnerMobileRaw : null,
       amount,
       interestRate,
       interestRatePeriod,

@@ -55,6 +55,27 @@ export function loanAddedNotice(p: {
 }
 
 /**
+ * A lender who just joined, about a loan a borrower had already recorded
+ * against their number. The copy leads with what they can now do, because the
+ * point of attaching the account is that *they* are the only one who can
+ * settle or forgive it.
+ */
+export function loanClaimedNotice(p: {
+  borrowerName: string;
+  amount: number;
+  firstDueAmount: number;
+}): Notice {
+  return {
+    title: "💸 A loan was already recorded for you",
+    message:
+      `${p.borrowerName} had recorded owing you ${formatINR(p.amount)} on Udhaar, and it is now ` +
+      `linked to your account. First payment of ${formatINR(p.firstDueAmount)}. ` +
+      `You can confirm payments, settle it early, or write it off.`,
+    type: "loan_added",
+  };
+}
+
+/**
  * What one side is told when the other side touches an EMI.
  *
  * - `marked`    - recorded but awaiting the recipient's confirmation (2-side)

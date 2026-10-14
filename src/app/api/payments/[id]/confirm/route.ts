@@ -7,6 +7,7 @@ import { closeLoanIfSettled, type Outstanding } from "@/lib/loans";
 import { eq, and, lte, sql } from "drizzle-orm";
 import { applyPayoff, PAYMENT_CONFLICT } from "@/lib/settle";
 import { withErrors } from "@/lib/api-handler";
+import { isLoanLender, isUnclaimedBorrowerLoan, waiverRefusal } from "@/lib/loan-access";
 import { notifyCounterparty, paymentNotice, payoffNotice } from "@/lib/notify";
 
 async function handlePATCH(
@@ -120,6 +121,46 @@ async function handlePATCH(
     });
 
     const plan = planPayoff(parseFloat(payment.amount), rows);
+
+    /*
+     * Confirming a payoff is how the lender forgives the interest a partial
+     * payment leaves behind - so on a borrower-entered loan with no lender
+     * account, there is nobody who can confirm it. It is rejected rather than
+     * left pending, because a pending claim blocks every later payment on the
+     * loan, and the borrower would have no way out of it.
+     */
+    if (plan.ok && plan.waivedInterest > 0 && !isLoanLender(loan, session.id)) {
+      await db
+        .update(payments)
+        .set({ status: "rejected", confirmedByUserId: session.id })
+        .where(eq(payments.id, id));
+
+      await notifyCounterparty({
+        userId: markerId,
+        installmentId: payment.installmentId,
+        loanId: payment.loanId,
+        notice: paymentNotice({
+          event: "rejected",
+          actorName: session.name,
+          actorRole: session.id === loan.lenderId ? "lender" : "borrower",
+          amount: parseFloat(payment.amount),
+          installmentNumber: inst.installmentNumber,
+          dueDate: inst.dueDate,
+          reason: isUnclaimedBorrowerLoan(loan)
+            ? waiverRefusal(loan)
+            : "Only the lender can waive interest.",
+        }),
+      });
+
+      return NextResponse.json(
+        {
+          error: isUnclaimedBorrowerLoan(loan)
+            ? waiverRefusal(loan)
+            : "Only the lender can waive interest. Pay the full amount instead.",
+        },
+        { status: 403 }
+      );
+    }
 
     if (!plan.ok) {
       // The ledger moved on since this was marked (someone else settled it, or

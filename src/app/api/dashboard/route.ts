@@ -3,7 +3,7 @@ import { db } from "@/db";
 import { loans, installments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { computeInstallmentStatus, daysUntil } from "@/lib/calculations";
-import { or, eq, inArray } from "drizzle-orm";
+import { or, eq, inArray, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
 async function handleGET() {
@@ -14,15 +14,17 @@ async function handleGET() {
 
   // Everything in one pass: the loans this user is party to, plus the
   // lender's name (useful when the viewer is the borrower).
+  // LEFT JOIN, and the stored name wins: a loan a borrower entered names a
+  // lender who may have no account at all, and that loan must still appear.
   const rows = await db
-    .select({ loan: loans, lenderName: users.name })
+    .select({ loan: loans, accountName: users.name })
     .from(loans)
     .leftJoin(users, eq(users.id, loans.lenderId))
     .where(or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)));
 
-  const taggedLoans = rows.map(({ loan, lenderName }) => ({
+  const taggedLoans = rows.map(({ loan, accountName }) => ({
     ...loan,
-    lenderName,
+    lenderName: loan.lenderName || accountName,
     viewerRole: loan.lenderId === session.id ? ("lender" as const) : ("borrower" as const),
   }));
 

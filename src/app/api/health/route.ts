@@ -37,6 +37,13 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "installments", column: "principal_waived" },
   { table: "installments", column: "interest_waived" },
   { table: "payments", column: "unapplied_amount" },
+  // Borrower-side entry (migration 0006). A database without these can still
+  // serve the app's original direction, but every loan query selects them -
+  // and the "I borrowed" screen writes them - so a half-migrated database has
+  // to say so rather than 500 on the first loan the borrower records.
+  { table: "loans", column: "created_by_user_id" },
+  { table: "loans", column: "lender_name" },
+  { table: "loans", column: "lender_mobile" },
 ];
 
 /** The tables the app cannot run without. */

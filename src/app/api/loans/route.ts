@@ -22,10 +22,11 @@ async function handleGET() {
     .orderBy(desc(loans.createdAt));
 
   // Tag each loan with the viewer's role so the UI can render
-  // "You lent" vs "You borrowed"
+  // "You lent" vs "You borrowed". A loan the viewer entered for a lender who
+  // has no account is still theirs, so it must not vanish from the list.
   const taggedLoans = userLoans.map((loan) => ({
     ...loan,
-    viewerRole: loan.lenderId === session.id ? "lender" : "borrower",
+    viewerRole: loan.lenderId === session.id ? ("lender" as const) : ("borrower" as const),
   }));
 
   return NextResponse.json({ loans: taggedLoans });
@@ -50,8 +51,11 @@ async function handlePOST(req: NextRequest) {
   }
 
   const {
-    borrowerName,
-    borrowerMobile,
+    side,
+    borrowerName: inputBorrowerName,
+    borrowerMobile: inputBorrowerMobile,
+    lenderName: inputLenderName,
+    lenderMobile: inputLenderMobile,
     amount: principalAmount,
     interestRate: rate,
     interestRatePeriod,
@@ -63,19 +67,44 @@ async function handlePOST(req: NextRequest) {
     confirmationMode,
   } = parsed.value;
 
-  // Resolve the borrower's user account, if they've already signed up
-  const [existingBorrower] = await db
+  /*
+   * Two directions, one table.
+   *
+   *   side "lender"   - I lent money: I am the lender, and I name the borrower.
+   *   side "borrower" - I owe money: I am the borrower, and I name the lender,
+   *                     who may never have used Udhaar (lenderId stays null
+   *                     until they sign up with that number).
+   *
+   * Either way the person asking is recorded as the author of the record, so
+   * they can fix their own typo - and only the *lender* can forgive anything.
+   */
+  const asBorrower = side === "borrower";
+
+  const borrowerName = asBorrower ? session.name : inputBorrowerName;
+  const borrowerMobile = asBorrower ? session.mobile : inputBorrowerMobile;
+  const lenderName = asBorrower ? inputLenderName : session.name;
+  const lenderMobile = asBorrower ? inputLenderMobile : session.mobile;
+
+  // Resolve the counterparty's account, if they've already signed up.
+  const counterpartyMobile = asBorrower ? lenderMobile : borrowerMobile;
+  const [existingCounterparty] = await db
     .select({ id: users.id })
     .from(users)
-    .where(eq(users.mobile, borrowerMobile))
+    .where(eq(users.mobile, counterpartyMobile!))
     .limit(1);
+
+  const existingBorrower = asBorrower ? { id: session.id } : existingCounterparty;
+  const existingLender = asBorrower ? (existingCounterparty ?? null) : { id: session.id };
 
   // Create loan
   const [loan] = await db
     .insert(loans)
     .values({
-      lenderId: session.id,
+      lenderId: existingLender?.id ?? null,
       borrowerId: existingBorrower?.id ?? null,
+      createdByUserId: session.id,
+      lenderName,
+      lenderMobile,
       borrowerName,
       borrowerMobile,
       amount: principalAmount.toFixed(2),
@@ -105,14 +134,16 @@ async function handlePOST(req: NextRequest) {
 
   const insertedInstallments = await db.insert(installments).values(installmentValues).returning();
 
-  // Tell the borrower, if they already have an account. The row is anchored
-  // to the first EMI because that is what the Activity feed links to; someone
-  // who signs up later is picked up by backfillBorrowerLoans on first login.
-  if (existingBorrower && insertedInstallments.length > 0) {
+  // Tell the other person, if they already have an account - the borrower on a
+  // loan I lent, or the lender on a loan I owe. The row is anchored to the
+  // first EMI because that is what the Activity feed links to; anyone who
+  // signs up later is picked up by the backfill helpers on first login.
+  const notifyUserId = asBorrower ? existingLender?.id : existingBorrower?.id;
+  if (notifyUserId && insertedInstallments.length > 0) {
     const firstInst = insertedInstallments[0];
 
     await notifyCounterparty({
-      userId: existingBorrower.id,
+      userId: notifyUserId,
       installmentId: firstInst.id,
       loanId: loan.id,
       notice: loanAddedNotice({

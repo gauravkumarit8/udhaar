@@ -21,6 +21,7 @@ interface DueItem {
 
 interface Loan {
   id: string;
+  lenderId: string | null;
   borrowerName: string;
   borrowerMobile: string;
   amount: string;
@@ -77,6 +78,12 @@ export default function DashboardPage() {
   });
   const haptics = useHaptics();
   usePushRegistration();
+  /*
+   * A note on loans whose lender has no account: they appear in the list like
+   * any other, tagged "NOT ON UDHAAR" (see the badge below). Before this they
+   * were filtered out, so a borrower who had only ever *borrowed* saw an empty
+   * dashboard listing nothing they owed - quietly wrong.
+   */
 
   const loadData = useCallback(async () => {
     try {
@@ -395,6 +402,11 @@ export default function DashboardPage() {
                       >
                         {loan.viewerRole === "lender" ? "LENT" : "BORROWED"}
                       </span>
+                      {loan.viewerRole === "borrower" && !loan.lenderId && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 bg-slate-100 text-slate-500">
+                          NOT ON UDHAAR
+                        </span>
+                      )}
                       <span
                         className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                           loan.status === "active"

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   loanAddedNotice,
+  loanClaimedNotice,
   loanClosedNotice,
   payoffNotice,
   loanUpdatedNotice,
@@ -32,6 +33,27 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("loanClaimedNotice", () => {
+  const base = { borrowerName: "Sneha", amount: 20000, firstDueAmount: 3400 };
+
+  it("says the debt was already written down, and by whom", () => {
+    const notice = loanClaimedNotice(base);
+
+    expect(notice.title).toBe("💸 A loan was already recorded for you");
+    expect(notice.message).toContain("Sneha had recorded owing you ₹20,000");
+    expect(notice.message).toContain("First payment of ₹3,400");
+    expect(notice.type).toBe("loan_added");
+  });
+
+  it("tells the new lender what they can now do about it", () => {
+    // Signing up should not feel like a notification with nothing behind it.
+    const message = loanClaimedNotice(base).message;
+    expect(message).toMatch(/confirm payments/);
+    expect(message).toMatch(/settle it early/);
+    expect(message).toMatch(/write it off/);
+  });
 });
 
 describe("loanAddedNotice", () => {

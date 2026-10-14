@@ -10,6 +10,8 @@ export default function NewLoanPage() {
   const [form, setForm] = useState({
     borrowerName: "",
     borrowerMobile: "",
+    lenderName: "",
+    lenderMobile: "",
     amount: "",
     interestRate: "12",
     interestRatePeriod: "yearly" as "monthly" | "yearly",
@@ -21,6 +23,13 @@ export default function NewLoanPage() {
     confirmationMode: "1-side",
   });
   const [chargeInterest, setChargeInterest] = useState(false);
+  /**
+   * Which way round the loan is: "lender" (I lent money) or "borrower" (I owe
+   * money and I am writing it down myself). Real people sit on both sides of
+   * this - the same person who lent ₹5,000 to a cousin has borrowed ₹20,000
+   * from a brother-in-law.
+   */
+  const [side, setSide] = useState<"lender" | "borrower">("lender");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [step, setStep] = useState(1); // 1: borrower, 2: loan, 3: payment
@@ -67,8 +76,12 @@ export default function NewLoanPage() {
   };
 
   const nextStep = () => {
-    if (step === 1 && (!form.borrowerName || !form.borrowerMobile || !/^\d{10}$/.test(form.borrowerMobile))) {
-      setError("Enter borrower name and valid 10-digit mobile");
+    const partnerName = side === "lender" ? form.borrowerName : form.lenderName;
+    const partnerMobile = side === "lender" ? form.borrowerMobile : form.lenderMobile;
+    const who = side === "lender" ? "borrower" : "lender";
+
+    if (step === 1 && (!partnerName || !/^\d{10}$/.test(partnerMobile))) {
+      setError(`Enter the ${who}'s name and valid 10-digit mobile`);
       return;
     }
     if (step === 2 && (!form.amount || parseFloat(form.amount) <= 0 || !form.tenureMonths)) {
@@ -87,6 +100,7 @@ export default function NewLoanPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...form,
+        side,
         interestRate: chargeInterest ? form.interestRate : "0",
       }),
     });
@@ -148,21 +162,61 @@ export default function NewLoanPage() {
           <div className="space-y-4 animate-fade-in">
             <div className="text-center mb-4">
               <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-3">
-                👤
+                {side === "lender" ? "👤" : "🙋"}
               </div>
-              <h2 className="text-xl font-bold text-slate-800">Who are you lending to?</h2>
-              <p className="text-slate-400 text-sm mt-1">We&apos;ll send them reminders automatically</p>
+              <h2 className="text-xl font-bold text-slate-800">
+                {side === "lender" ? "Who are you lending to?" : "Who did you borrow from?"}
+              </h2>
+              <p className="text-slate-400 text-sm mt-1">
+                {side === "lender"
+                  ? "We'll set the reminders up for you"
+                  : "Keep your own record of what you owe — they don't need the app"}
+              </p>
+            </div>
+
+            {/* Which side of the loan this is. Both are useful: the lender
+                tracks what's coming back, the borrower tracks what they owe. */}
+            <div className="flex gap-2">
+              {([
+                { value: "lender" as const, label: "I lent money", icon: "💰" },
+                { value: "borrower" as const, label: "I borrowed", icon: "🙋" },
+              ]).map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    setSide(option.value);
+                    setError("");
+                    if (option.value === "borrower" && !chargeInterest) {
+                      // Most loans between family and friends charge nothing -
+                      // but a loan *you* owe is more likely to carry interest,
+                      // so offer the rate rather than assuming.
+                      setChargeInterest(false);
+                    }
+                  }}
+                  className={`flex-1 py-3 rounded-2xl border text-sm font-semibold tap-highlight ${
+                    side === option.value
+                      ? "bg-emerald-50 border-emerald-500 text-emerald-700"
+                      : "border-slate-200 text-slate-500"
+                  }`}
+                >
+                  <span className="mr-1.5">{option.icon}</span>
+                  {option.label}
+                </button>
+              ))}
             </div>
 
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Friend&apos;s Name *
+                {side === "lender" ? "Friend's Name *" : "Lender's Name *"}
               </label>
               <input
                 type="text"
-                value={form.borrowerName}
-                onChange={(e) => updateField("borrowerName", e.target.value)}
-                placeholder="Rahul Sharma"
+                value={side === "lender" ? form.borrowerName : form.lenderName}
+                onChange={(e) =>
+                  updateField(side === "lender" ? "borrowerName" : "lenderName", e.target.value)
+                }
+                placeholder={side === "lender" ? "Rahul Sharma" : "Uncle Suresh"}
                 className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
               />
             </div>
@@ -176,9 +230,12 @@ export default function NewLoanPage() {
                 <div className="w-px h-6 bg-slate-200" />
                 <input
                   type="tel"
-                  value={form.borrowerMobile}
+                  value={side === "lender" ? form.borrowerMobile : form.lenderMobile}
                   onChange={(e) =>
-                    updateField("borrowerMobile", e.target.value.replace(/\D/g, "").slice(0, 10))
+                    updateField(
+                      side === "lender" ? "borrowerMobile" : "lenderMobile",
+                      e.target.value.replace(/\D/g, "").slice(0, 10)
+                    )
                   }
                   placeholder="9876543210"
                   className="w-full py-2.5 bg-transparent outline-none"
@@ -459,25 +516,29 @@ export default function NewLoanPage() {
                 🏦
               </div>
               <h2 className="text-xl font-bold text-slate-800">Payment Info</h2>
-              <p className="text-slate-400 text-sm mt-1">How should they pay you back?</p>
+              <p className="text-slate-400 text-sm mt-1">
+                {side === "lender"
+                  ? "How should they pay you back?"
+                  : "Where does the money go when you pay them back?"}
+              </p>
             </div>
 
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                UPI ID
+                {side === "lender" ? "Your UPI ID" : "Their UPI ID"}
               </label>
               <input
                 type="text"
                 value={form.upiId}
                 onChange={(e) => updateField("upiId", e.target.value)}
-                placeholder="yourname@paytm"
+                placeholder={side === "lender" ? "yourname@paytm" : "theirname@paytm"}
                 className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
               />
             </div>
 
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Account Number
+                {side === "lender" ? "Account Number" : "Their Account Number"}
               </label>
               <input
                 type="text"
@@ -522,6 +583,15 @@ export default function NewLoanPage() {
                   ? "Either party can confirm payments"
                   : "Both lender and borrower must confirm"}
               </p>
+              {side === "borrower" && (
+                // Honest about what a 2-side choice means before the lender has
+                // an account: there is nobody else to confirm, so the borrower
+                // records their own payments until the lender joins.
+                <p className="text-xs text-slate-400 mt-1.5">
+                  {form.lenderName || "Your lender"} isn&apos;t on Udhaar yet — until they join,
+                  you record your own payments.
+                </p>
+              )}
             </div>
 
             <div>
