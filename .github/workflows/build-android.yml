@@ -35,6 +35,12 @@ jobs:
   build-android:
     name: Build Android
     runs-on: ubuntu-latest
+    # The last step creates a GitHub Release for a tagged debug build. Without
+    # `contents: write` the job's token is read-only (the default on modern
+    # repositories) and that step fails with a 403 only on the one run that
+    # matters - a release.
+    permissions:
+      contents: write
 
     env:
       APP_URL: ${{ inputs.app_url || 'https://udhaar-y94f.onrender.com' }}
@@ -42,16 +48,16 @@ jobs:
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 🟢 Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
 
       - name: 🟢 Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: zulu
           java-version: 21
@@ -60,7 +66,7 @@ jobs:
         run: npm ci
 
       - name: 🗄️ Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: 📱 Add Android platform
         run: npx cap add android
@@ -120,7 +126,7 @@ jobs:
 
       - name: 📤 Upload APK artifact
         if: env.BUILD_TYPE == 'debug'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: udhaar-debug.apk
           path: android/app/build/outputs/apk/debug/*.apk
@@ -128,7 +134,7 @@ jobs:
 
       - name: 📤 Upload AAB artifact
         if: env.BUILD_TYPE == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: udhaar-release.aab
           path: android/app/build/outputs/bundle/release/*.aab
@@ -136,7 +142,7 @@ jobs:
 
       - name: 🎉 Create GitHub Release with APK
         if: startsWith(github.ref, 'refs/tags/v') && env.BUILD_TYPE == 'debug'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: android/app/build/outputs/apk/debug/*.apk
           generate_release_notes: true

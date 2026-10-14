@@ -69,6 +69,14 @@ export default function ProofUpload({ onCapture, currentProof }: ProofUploadProp
 
       {displayUrl ? (
         <div className="relative rounded-2xl overflow-hidden border border-slate-200">
+          {/* Deliberately a plain <img>. `next/image` is switched off app-wide
+              (next.config.ts → images.unoptimized) because the standalone
+              container has no image server, so it would only wrap this in an
+              extra component - and its optimizer cannot handle a `data:` URL,
+              which is what the preview is until the upload finishes. The
+              already-uploaded alternative is a Cloudinary URL, which is
+              resized at the CDN and needs no help from Next. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={displayUrl}
             alt="Payment proof"

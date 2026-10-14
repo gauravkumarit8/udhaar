@@ -8,6 +8,15 @@ on:
         required: false
         type: boolean
         default: false
+  # A manual run from the Actions tab deploys by default - this is the button
+  # to press when you want the live app updated without pushing anything.
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Trigger the Render deploy hook after building the image"
+        required: false
+        type: boolean
+        default: true
   push:
     branches: [main]
     tags: ["v*"]
@@ -15,7 +24,6 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
 jobs:
   build-and-push:
@@ -27,10 +35,10 @@ jobs:
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 🔐 Log in to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -38,7 +46,7 @@ jobs:
 
       - name: 📝 Extract metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -48,7 +56,7 @@ jobs:
             type=sha
 
       - name: 🏗️ Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -59,15 +67,33 @@ jobs:
     name: Deploy to Render
     needs: build-and-push
     runs-on: ubuntu-latest
-    # Tag builds deploy; a plain push to main only publishes the image.
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.deploy
+    # A tag, a manual run that asked for it, or any push to main.
+    #
+    # Note for whoever reads this next: Render *also* auto-deploys on a push to
+    # main when that setting is on, so with both enabled each commit queues two
+    # deploys. Keep the one you rely on (Render's is the one that still happens
+    # when Actions is down) - this job is the way to deploy from here without
+    # giving Render a deploy key, and the way to deploy a *tag*.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.deploy || github.ref == 'refs/heads/main'
     steps:
       - name: 🚀 Trigger Render Deploy
         run: |
           if [ -z "${{ secrets.RENDER_DEPLOY_HOOK }}" ]; then
-            echo "::warning::RENDER_DEPLOY_HOOK is not set - skipping the deploy trigger."
+            echo "::warning::RENDER_DEPLOY_HOOK is not set - nothing was triggered. Add it under Settings → Secrets and variables → Actions → New repository secret to deploy from here."
             exit 0
           fi
-          curl -sS -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
-        continue-on-error: true
+
+          # The old version piped the response straight out and carried
+          # continue-on-error, so a revoked hook or a bad URL still showed a
+          # green tick. Now a rejected deploy fails the job.
+          response=$(curl -sS --fail-with-body -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}") || {
+            echo "::error::Render rejected the deploy hook. Check RENDER_DEPLOY_HOOK is the current hook for the service."
+            exit 1
+          }
+
+          echo "$response"
+          deploy_id=$(echo "$response" | python3 -c "import json,sys; print(json.load(sys.stdin).get('deploy',{}).get('id',''))" 2>/dev/null || true)
+          if [ -n "$deploy_id" ]; then
+            echo "::notice::Render accepted the deploy ($deploy_id). Watch it at https://dashboard.render.com"
+          fi
 
