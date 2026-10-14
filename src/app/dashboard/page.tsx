@@ -7,7 +7,7 @@ import MobileShell from "@/components/MobileShell";
 import EnableNotifications from "@/components/EnableNotifications";
 import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
-import { DASHBOARD_CACHE_KEY } from "@/lib/client-cache";
+import { DASHBOARD_CACHE_KEY, UNREAD_EVENT } from "@/lib/client-cache";
 
 interface DueItem {
   loanId: string;
@@ -46,6 +46,8 @@ interface Loan {
 
 interface DashboardData {
   user?: { name: string; mobile: string };
+  /** Notifications not opened yet - the tab bar's badge, answered in passing. */
+  unread?: number;
   summary: {
     youWillReceive: number;
     youWillPay: number; // now computed from loans where you're the borrower
@@ -97,6 +99,18 @@ function rememberDashboard(data: DashboardData): void {
   } catch {
     // Storage unavailable (private mode, quota) - the app works, uncached.
   }
+}
+
+/**
+ * Hand the badge count to the tab bar.
+ *
+ * The dashboard's own response already contains it, so the tab bar does not
+ * have to spend a second round trip asking. BottomNav (src/components) listens
+ * for this and treats it as freshly confirmed.
+ */
+function publishUnread(count: number | undefined): void {
+  if (typeof count !== "number") return;
+  window.dispatchEvent(new CustomEvent(UNREAD_EVENT, { detail: count }));
 }
 
 function daysUntil(dateStr: string): number {
@@ -154,6 +168,7 @@ export default function DashboardPage() {
         setData(dashResult.data);
         if (dashResult.data.user) setUser(dashResult.data.user);
         rememberDashboard(dashResult.data);
+        publishUnread(dashResult.data.unread);
       } else if (dashResult.error) {
         // Previously this failed silently and the dashboard just looked empty.
         setLoadError(dashResult.error);

@@ -781,7 +781,18 @@ the app's 1600px resize, so tens of thousands fit comfortably.
   job in `deploy-web.yml` polls the deployed `/api/health` until it reports the
   commit that was just released *and* a healthy schema, and fails the workflow
   (printing the app's own `firstProblem` and the command that fixes it) if that
-  does not happen within 15 minutes. This exists because of a real outage: on
+  does not happen within 15 minutes.
+- **An app that cannot name its commit is a failure, not a warning.** Until
+  2026-10-14 the verifier printed a warning and exited **0** when the deployed
+  app answered healthy without a commit - and `/api/health` never actually put
+  the commit in its response in the first place, so *every* deploy took that
+  branch. A release merged to `main` could therefore look verified while the
+  previous build was still serving. Now: the route reports `commit` /
+  `shortCommit` (in the failing 503 body too), the image bakes the release in as
+  `GIT_COMMIT` for hosts that do not inject one themselves, and a healthy body
+  without a commit **fails** the job with the reason. If a host genuinely cannot
+  stamp a build, set `ALLOW_UNSTAMPED=1` on the job to downgrade it back to a
+  warning - deliberately explicit, so it cannot be silent. This exists because of a real outage: on
   2026-10-14 the borrower-side release went live on Render with its migration
   never applied - every loan screen answered 503 while every workflow on `main`
   was green. Run the same check by hand against any deployment:

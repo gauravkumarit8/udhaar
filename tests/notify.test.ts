@@ -144,6 +144,18 @@ describe("paymentNotice", () => {
     expect(explained.message).toContain("was not accepted:");
     expect(explained.message).toContain("more than the EMI's remaining amount");
   });
+
+  it("says nothing moved when the marker withdraws their own claim", () => {
+    const notice = paymentNotice({ ...base, event: "withdrawn", actorRole: "borrower" });
+
+    expect(notice.title).toContain("withdrawn");
+    expect(notice.message).toContain("Rahul withdrew the ₹5,000 payment");
+    expect(notice.message).toContain("EMI 3");
+    // The point of the message: the recipient must not think they were paid.
+    expect(notice.message).toContain("N" + "othing was recorded against it");
+    expect(notice.message).toContain("owed again");
+    expect(notice.type).toBe("payment_withdrawn");
+  });
 });
 
 describe("loanUpdatedNotice", () => {

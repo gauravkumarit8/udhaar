@@ -32,6 +32,8 @@ const BASE_URL = (
 const EXPECTED_SHA = (process.env.EXPECTED_SHA ?? process.env.GITHUB_SHA ?? "").trim();
 const TIMEOUT_MS = Number(process.env.TIMEOUT_MS ?? 12 * 60 * 1000);
 const POLL_MS = Number(process.env.POLL_MS ?? 15 * 1000);
+/** Escape hatch: accept a healthy deploy that cannot name its commit. */
+const ALLOW_UNSTAMPED = /^(1|true|yes)$/i.test(process.env.ALLOW_UNSTAMPED ?? "");
 
 const started = Date.now();
 
@@ -121,13 +123,21 @@ while (Date.now() - started < TIMEOUT_MS) {
   }
 
   if (!commit) {
-    say(`${word} - healthy, but the app cannot say which commit it is`);
-    console.log(
-      "\n::warning::Deployment verified healthy, but not verified as the released commit: " +
-        "the app reports no commit. Set RENDER_GIT_COMMIT (Render does this itself) or build the " +
-        "image with --build-arg GIT_SHA to close this gap."
-    );
-    process.exit(0);
+    // Healthy but anonymous. This is a failure by default: on 2026-10-14 a
+    // release reported exactly this and the tick went green while the app was
+    // still serving the previous build - the release was never verified at all.
+    const why =
+      "the app is healthy but cannot say which commit it is running. " +
+      "Set RENDER_GIT_COMMIT (Render does this itself on services it builds) or build the " +
+      "image with --build-arg GIT_SHA, which the Dockerfile now bakes in as GIT_COMMIT. " +
+      "Until the deployed app can name its commit, no deploy can be told apart from the one before it.";
+    if (ALLOW_UNSTAMPED) {
+      say(`${word} - healthy, but the app cannot say which commit it is`);
+      console.log(`\n::warning::ALLOW_UNSTAMPED=1 - ${why}`);
+      console.log("\n✓ the deployed app reports healthy (commit unverified)");
+      process.exit(0);
+    }
+    fail(`${word} - ${why}`);
   }
 
   if (commit.startsWith(EXPECTED_SHA) || EXPECTED_SHA.startsWith(commit)) {

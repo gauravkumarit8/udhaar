@@ -186,7 +186,7 @@ export const payments = pgTable("payments", {
     .references(() => users.id)
     .notNull(),
   confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
-  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending | confirmed | rejected
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending | confirmed | rejected | cancelled
   /**
    * Money received but not applied to anything (`paymentType: "payoff"` only):
    * the borrower rounded up, or sent more than the loan still owed. Recorded

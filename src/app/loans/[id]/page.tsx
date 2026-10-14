@@ -9,6 +9,7 @@ import ProofUpload from "@/components/ProofUpload";
 import ShareButton from "@/components/ShareButton";
 import { useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
+import { UNREAD_EVENT } from "@/lib/client-cache";
 import { summarizeSettlement } from "@/lib/payments";
 
 interface Loan {
@@ -173,6 +174,8 @@ export default function LoanDetailPage() {
           loan: Loan;
           installments: Installment[];
           payments: Payment[];
+          /** Carried so the tab bar need not ask again - see UNREAD_EVENT. */
+          unread?: number;
         }>(`/api/loans/${loanId}`);
 
         if (opts.redirectOn401 && result.status === 401) {
@@ -184,6 +187,9 @@ export default function LoanDetailPage() {
           setInstallments(result.data.installments);
           setPayments(result.data.payments);
           setLoadError(null);
+          if (typeof result.data.unread === "number") {
+            window.dispatchEvent(new CustomEvent(UNREAD_EVENT, { detail: result.data.unread }));
+          }
         } else if (result.error) {
           setLoadError(result.error);
         }
@@ -493,7 +499,10 @@ export default function LoanDetailPage() {
     }
   };
 
-  const handleConfirmPayment = async (paymentId: string, action: "confirm" | "reject") => {
+  const handleConfirmPayment = async (
+    paymentId: string,
+    action: "confirm" | "reject" | "withdraw"
+  ) => {
     try {
       const result = await requestJson(`/api/payments/${paymentId}/confirm`, {
         method: "PATCH",
@@ -1058,9 +1067,20 @@ export default function LoanDetailPage() {
                 {payment.status === "pending" &&
                   payment.markedByUserId === currentUserId &&
                   !noCounterparty && (
-                    <p className="text-[11px] text-amber-600 font-medium mt-3">
-                      ⏳ Waiting for {isLender ? "borrower" : "lender"} to confirm
-                    </p>
+                    /* Marked by mistake? Take it back rather than waiting for
+                       the other side to act - a pending claim blocks every
+                       later payment on the loan. */
+                    <div className="flex items-center justify-between gap-2 mt-3">
+                      <p className="text-[11px] text-amber-600 font-medium">
+                        ⏳ Waiting for {isLender ? "borrower" : "lender"} to confirm
+                      </p>
+                      <button
+                        onClick={() => handleConfirmPayment(payment.id, "withdraw")}
+                        className="shrink-0 text-[11px] font-semibold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl tap-highlight active:bg-slate-200"
+                      >
+                        Withdraw
+                      </button>
+                    </div>
                   )}
                 {payment.status === "pending" &&
                   payment.markedByUserId === currentUserId &&

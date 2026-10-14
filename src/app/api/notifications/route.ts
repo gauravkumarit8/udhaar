@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { reminders, loans, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
+import { countUnreadNotifications } from "@/lib/unread-count";
 import { and, eq, isNull, or, desc, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
@@ -23,22 +24,8 @@ async function handleGET(req: NextRequest) {
   const summaryOnly = new URL(req.url).searchParams.get("summary") === "1";
 
   if (summaryOnly) {
-    // `users` is joined so "seen since" costs nothing extra.
-    const [counted] = await db
-      .select({ unread: sql<number>`count(*)::int` })
-      .from(reminders)
-      .innerJoin(loans, eq(loans.id, reminders.loanId))
-      .innerJoin(users, eq(users.id, session.id))
-      .where(
-        and(
-          or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)),
-          or(eq(reminders.recipientId, session.id), isNull(reminders.recipientId)),
-          sql`${users.notificationsSeenAt} is null or ${reminders.sentAt} > ${users.notificationsSeenAt}`
-        )
-      );
-
     return NextResponse.json(
-      { unread: counted?.unread ?? 0 },
+      { unread: await countUnreadNotifications(session.id) },
       { headers: { "cache-control": "no-store" } }
     );
   }
@@ -84,20 +71,7 @@ async function handleGET(req: NextRequest) {
    * `users`-joined trick as the summary path above, so this screen also costs
    * one query fewer than it did.
    */
-  const [counted] = await db
-    .select({ unread: sql<number>`count(*)::int` })
-    .from(reminders)
-    .innerJoin(loans, eq(loans.id, reminders.loanId))
-    .innerJoin(users, eq(users.id, session.id))
-    .where(
-      and(
-        or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)),
-        or(eq(reminders.recipientId, session.id), isNull(reminders.recipientId)),
-        sql`${users.notificationsSeenAt} is null or ${reminders.sentAt} > ${users.notificationsSeenAt}`
-      )
-    );
-
-  const unreadCount = counted?.unread ?? 0;
+  const unreadCount = await countUnreadNotifications(session.id);
 
   const notifications = rows.map((r) => ({
     id: r.id,
