@@ -40,12 +40,24 @@ async function handleGET(
    */
   const noCounterparty = hasNoCounterparty(loan, session.id);
 
-  // Get installments with computed status
-  const rawInstallments = await db
-    .select()
-    .from(installments)
-    .where(eq(installments.loanId, id))
-    .orderBy(installments.installmentNumber);
+  /*
+   * The schedule and the payment history are independent - two queries the
+   * screen has to wait for either way, so they wait *together*. Against a
+   * database in another region that is one round trip's latency saved on every
+   * loan screen, and this is the screen people open to do something.
+   */
+  const [rawInstallments, loanPayments] = await Promise.all([
+    db
+      .select()
+      .from(installments)
+      .where(eq(installments.loanId, id))
+      .orderBy(installments.installmentNumber),
+    db
+      .select()
+      .from(payments)
+      .where(eq(payments.loanId, id))
+      .orderBy(payments.createdAt),
+  ]);
 
   const enrichedInstallments = rawInstallments.map((inst) => ({
     ...inst,
@@ -60,13 +72,6 @@ async function handleGET(
       parseFloat(inst.interestPaid) + parseFloat(inst.interestWaived)
     ),
   }));
-
-  // Get payments for this loan
-  const loanPayments = await db
-    .select()
-    .from(payments)
-    .where(eq(payments.loanId, id))
-    .orderBy(payments.createdAt);
 
   return NextResponse.json({
     loan: { ...loan, viewerRole, noCounterparty, isLender: viewerRole === "lender" },

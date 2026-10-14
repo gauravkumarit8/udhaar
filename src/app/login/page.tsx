@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { requestJson } from "@/lib/http";
+import { clearClientCaches } from "@/lib/client-cache";
 
 export default function LoginPage() {
   const [step, setStep] = useState<"mobile" | "otp">("mobile");
@@ -80,6 +81,8 @@ export default function LoginPage() {
       return;
     }
 
+    // A new session never inherits the previous one's cached screens.
+    clearClientCaches();
     window.location.assign("/dashboard");
   };
 

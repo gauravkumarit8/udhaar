@@ -6,14 +6,17 @@ services:
     # `output: standalone` does NOT copy static assets into .next/standalone,
     # so they're staged in explicitly here (the Dockerfile does the same).
     buildCommand: npm ci && npm run build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public
-    # Migrations run on every boot and are a no-op once applied. `db:baseline`
-    # goes first so a database that predates the migration journal (created by
-    # `db:push`) is adopted instead of replaying the initial migration; on a
-    # fresh database it does nothing and `db:migrate` creates everything. If the
-    # database is unreachable the app still starts, so /api/health can explain
-    # what is wrong instead of the deploy failing with no visible reason.
-    # (Render's free tier has no preDeployCommand.)
-    startCommand: (npm run db:baseline && npm run db:migrate) || echo "migration check failed - see /api/health"; node .next/standalone/server.js
+    # Migrations run on every boot and are a no-op once applied:
+    # scripts/migrate-at-boot.mjs is the same two steps this used to spell out
+    # (`npm run db:baseline`, which adopts a database that predates the journal,
+    # then `npm run db:migrate`), in one script the Docker image also runs - so
+    # there is a single migration path whether the host starts a container or
+    # runs the server directly. If the database is unreachable the app still
+    # starts, so /api/health can explain what is wrong instead of the deploy
+    # failing with no visible reason. (Render's free tier has no
+    # preDeployCommand.) deploy-web.yml's verify-production job is what turns a
+    # silent miss into a red build.
+    startCommand: node scripts/migrate-at-boot.mjs || echo "migration check failed - see /api/health"; node .next/standalone/server.js
     healthCheckPath: /api/health
     envVars:
       # Set in the Render dashboard (Neon/Supabase/Aiven or any external

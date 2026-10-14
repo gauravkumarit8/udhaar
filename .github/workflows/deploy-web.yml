@@ -62,6 +62,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamped into the image (and reported by /api/health) so a running
+          # deployment can be told apart from the one before it.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
 
   deploy-render:
     name: Deploy to Render
@@ -99,3 +103,34 @@ jobs:
             echo "::notice::Render accepted the deploy ($deploy_id). Watch it at https://dashboard.render.com"
           fi
 
+  verify-production:
+    name: Verify the deploy is live and healthy
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    # "The workflow went green" used to mean "the image was built and Render was
+    # told". It did not mean the new code was answering, let alone that the
+    # database behind it had the columns that code selects - on 2026-10-14 the
+    # borrower-side release was live with its migration unapplied, and every
+    # loan screen answered 503 while the runs above were green.
+    #
+    # So the release is not finished until the deployed app says it is running
+    # *this* commit and that it is healthy, which is what this job asks. It
+    # polls, because a host takes minutes to roll a container over.
+    #
+    # Deliberately not `needs: deploy-render`: that job is skipped on main (the
+    # host deploys itself), and a skipped need would skip this too.
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v7
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: 🩺 Ask the deployed app what it is running
+        env:
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL || 'https://udhaar-y94f.onrender.com' }}
+          EXPECTED_SHA: ${{ github.sha }}
+          TIMEOUT_MS: "900000"
+        run: node scripts/verify-deployment.mjs

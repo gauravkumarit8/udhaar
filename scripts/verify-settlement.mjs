@@ -560,6 +560,54 @@ async function main() {
       (activity.json.notifications ?? []).some((n) => n.loanId === id), true);
   }
 
+  console.log("\nThe dashboard lists the next payment per loan, not every EMI");
+  {
+    // A loan with an overdue EMI, a second overdue one, and five upcoming: the
+    // list must show one line for it, not seven.
+    const startedLongAgo = new Date(Date.now() - 5 * 31 * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const { id } = await newLoan({
+      amount: "7000",
+      interestRate: "0",
+      tenureMonths: "7",
+      startDate: startedLongAgo,
+    });
+    const detail = await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN });
+    const unpaid = detail.json.installments.filter(
+      (i) => Number(i.principalPaid) + Number(i.interestPaid) === 0
+    );
+    check("the loan has several installments outstanding", unpaid.length >= 5, true);
+
+    const board = await call("GET", "/api/dashboard", { token: LENDER_TOKEN });
+    const rows = (board.json.dueItems ?? []).filter((item) => item.loanId === id);
+    check("the dashboard shows it once", rows.length, 1);
+    check("...on its earliest unpaid installment", rows[0]?.installmentId, unpaid[0].id);
+    check("...which is the one that is overdue", (rows[0]?.daysUntilDue ?? 1) < 0, true);
+    check("...with the rest of the arrears summarised, not repeated",
+      rows[0]?.moreOverdueCount >= 1 && rows[0]?.moreOverdueAmount > 0, true);
+    check("...and no installment row is repeated for the same loan",
+      new Set((board.json.dueItems ?? []).map((i) => i.loanId)).size,
+      (board.json.dueItems ?? []).length);
+
+    // The money still adds up over everything outstanding, not just the row.
+    const stated = board.json.summary.overdueAmount;
+    const actual = unpaid
+      .filter((i) => new Date(`${i.dueDate}T00:00:00Z`) < new Date())
+      .reduce((sum, i) => sum + Number(i.totalAmount), 0);
+    check("the overdue total still counts every overdue EMI",
+      money(Number(stated)) >= money(actual), true);
+
+    // The dashboard carries the viewer, so the page needs no second request.
+    check("the payload names the viewer once", board.json.user?.mobile, "9876500021");
+
+    // The badge and the feed must agree about what is unread.
+    const badge = await call("GET", "/api/notifications?summary=1", { token: BORROWER_TOKEN });
+    const feed = await call("GET", "/api/notifications", { token: BORROWER_TOKEN });
+    check("the badge count is a number", typeof badge.json.unread, "number");
+    check("...and matches the feed's own count", badge.json.unread, feed.json.unread);
+  }
+
   console.log("\nWhen the lender finally signs up, the debt they were owed finds them");
   {
     // A loan the borrower recorded against a number nobody has used yet.

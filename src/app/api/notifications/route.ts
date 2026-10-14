@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { reminders, loans, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
-import { and, eq, isNull, or, desc, gt } from "drizzle-orm";
+import { and, eq, isNull, or, desc, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
 async function handleGET(req: NextRequest) {
@@ -11,9 +11,37 @@ async function handleGET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // The bottom-nav badge asks for the count alone: same filter, one row back,
-  // so polling it on every screen stays cheap.
+  /*
+   * The bottom-nav badge asks for the count alone - and it asks on every screen
+   * mount, so it is the most frequently run request in the app. This used to
+   * fall through the *whole* feed query (30 rows, joined twice) plus a second
+   * query for "seen at" and a third for the rows to count, then throw all of it
+   * away and return a single number: four database round trips to render one
+   * digit. Against a remote database that was the slowest thing on every
+   * screen. Now it is one query after the session.
+   */
   const summaryOnly = new URL(req.url).searchParams.get("summary") === "1";
+
+  if (summaryOnly) {
+    // `users` is joined so "seen since" costs nothing extra.
+    const [counted] = await db
+      .select({ unread: sql<number>`count(*)::int` })
+      .from(reminders)
+      .innerJoin(loans, eq(loans.id, reminders.loanId))
+      .innerJoin(users, eq(users.id, session.id))
+      .where(
+        and(
+          or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)),
+          or(eq(reminders.recipientId, session.id), isNull(reminders.recipientId)),
+          sql`${users.notificationsSeenAt} is null or ${reminders.sentAt} > ${users.notificationsSeenAt}`
+        )
+      );
+
+    return NextResponse.json(
+      { unread: counted?.unread ?? 0 },
+      { headers: { "cache-control": "no-store" } }
+    );
+  }
 
   // Only the notifications *addressed to* this user: the copy is written in
   // the second person ("your loan", "for you"), so showing the other side's
@@ -47,33 +75,29 @@ async function handleGET(req: NextRequest) {
     .orderBy(desc(reminders.sentAt))
     .limit(30);
 
-  // "Unread" is everything addressed to the viewer since they last opened the
-  // Activity screen - measured on the server, so the badge is the same on
-  // every device and survives a reinstall.
-  const [seen] = await db
-    .select({ seenAt: users.notificationsSeenAt })
-    .from(users)
-    .where(eq(users.id, session.id))
-    .limit(1);
-
-  const unread = await db
-    .select({ id: reminders.id })
+  /*
+   * "Unread" is everything addressed to the viewer since they last opened the
+   * Activity screen - measured on the server, so the badge is the same on
+   * every device and survives a reinstall.
+   *
+   * The count comes from the database as a count, and uses the same
+   * `users`-joined trick as the summary path above, so this screen also costs
+   * one query fewer than it did.
+   */
+  const [counted] = await db
+    .select({ unread: sql<number>`count(*)::int` })
     .from(reminders)
     .innerJoin(loans, eq(loans.id, reminders.loanId))
+    .innerJoin(users, eq(users.id, session.id))
     .where(
       and(
         or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)),
         or(eq(reminders.recipientId, session.id), isNull(reminders.recipientId)),
-        seen?.seenAt ? gt(reminders.sentAt, seen.seenAt) : undefined
+        sql`${users.notificationsSeenAt} is null or ${reminders.sentAt} > ${users.notificationsSeenAt}`
       )
     );
 
-  if (summaryOnly) {
-    return NextResponse.json(
-      { unread: unread.length },
-      { headers: { "cache-control": "no-store" } }
-    );
-  }
+  const unreadCount = counted?.unread ?? 0;
 
   const notifications = rows.map((r) => ({
     id: r.id,
@@ -88,7 +112,7 @@ async function handleGET(req: NextRequest) {
   }));
 
   return NextResponse.json(
-    { notifications, unread: unread.length },
+    { notifications, unread: unreadCount },
     { headers: { "cache-control": "no-store" } }
   );
 }

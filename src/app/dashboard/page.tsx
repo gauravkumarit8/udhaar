@@ -7,16 +7,25 @@ import MobileShell from "@/components/MobileShell";
 import EnableNotifications from "@/components/EnableNotifications";
 import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
+import { DASHBOARD_CACHE_KEY } from "@/lib/client-cache";
 
 interface DueItem {
   loanId: string;
   borrowerName: string;
   lenderName: string | null;
   installmentId: string;
+  installmentNumber: number;
   dueDate: string;
   amount: number;
   computedStatus: string;
   viewerRole: "lender" | "borrower";
+  /** Further installments on the same loan that are also overdue. */
+  moreOverdueCount: number;
+  moreOverdueAmount: number;
+  /** Days until this one is due; negative when it is late. */
+  daysUntilDue: number;
+  /** More than one installment unpaid on this loan (so the row can say so). */
+  installmentsOutstanding?: number;
 }
 
 interface Loan {
@@ -36,6 +45,7 @@ interface Loan {
 }
 
 interface DashboardData {
+  user?: { name: string; mobile: string };
   summary: {
     youWillReceive: number;
     youWillPay: number; // now computed from loans where you're the borrower
@@ -58,6 +68,37 @@ function formatINR(amount: number): string {
   }).format(amount);
 }
 
+/**
+ * The dashboard, remembered on this device.
+ *
+ * sessionStorage and not localStorage: this is money, and a shared phone should
+ * not show yesterday's balances to whoever opens it next after the tab is
+ * closed. The server is always asked anyway - this is the first paint only.
+ */
+function readCachedDashboard(): DashboardData | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(DASHBOARD_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { at?: number; data?: DashboardData };
+    // Ten minutes is long enough to cover a wander through the app and short
+    // enough that a stale balance cannot be mistaken for the current one if
+    // the request fails.
+    if (!parsed?.data || !parsed.at || Date.now() - parsed.at > 10 * 60 * 1000) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function rememberDashboard(data: DashboardData): void {
+  try {
+    sessionStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ at: Date.now(), data }));
+  } catch {
+    // Storage unavailable (private mode, quota) - the app works, uncached.
+  }
+}
+
 function daysUntil(dateStr: string): number {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -66,8 +107,20 @@ function daysUntil(dateStr: string): number {
 }
 
 export default function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [user, setUser] = useState<{ name: string; mobile: string } | null>(null);
+  /*
+   * Start from what this device showed last time, then replace it when the
+   * server answers.
+   *
+   * Home is the screen every session begins on, and it used to be blank for as
+   * long as two round trips to a database in another region took. The figures
+   * are the same ones the server is about to send - the request still runs, and
+   * whatever comes back wins - so this costs nothing but makes the app feel
+   * like it opened, rather than like it is thinking about opening.
+   */
+  const [data, setData] = useState<DashboardData | null>(() => readCachedDashboard());
+  const [user, setUser] = useState<{ name: string; mobile: string } | null>(
+    () => readCachedDashboard()?.user ?? null
+  );
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [greeting] = useState(() => {
@@ -87,20 +140,20 @@ export default function DashboardPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [dashResult, meResult] = await Promise.all([
-        requestJson<DashboardData>("/api/dashboard"),
-        requestJson<{ user: { name: string; mobile: string } }>("/api/auth/me"),
-      ]);
+      // One request. The payload carries the viewer's name, so the second call
+      // to /api/auth/me - a whole extra round trip to the database before the
+      // greeting could render - is gone.
+      const dashResult = await requestJson<DashboardData>("/api/dashboard");
 
-      if (meResult.status === 401) {
+      if (dashResult.status === 401) {
         window.location.assign("/login");
         return;
       }
 
-      if (meResult.ok && meResult.data?.user) setUser(meResult.data.user);
-
       if (dashResult.ok && dashResult.data) {
         setData(dashResult.data);
+        if (dashResult.data.user) setUser(dashResult.data.user);
+        rememberDashboard(dashResult.data);
       } else if (dashResult.error) {
         // Previously this failed silently and the dashboard just looked empty.
         setLoadError(dashResult.error);
@@ -249,8 +302,13 @@ export default function DashboardPage() {
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-bold text-slate-800">Upcoming & Overdue</h2>
-            {dueItems.length > 3 && (
-              <span className="text-xs text-emerald-600 font-semibold">{dueItems.length} items</span>
+            {/* One line per loan - the next payment on each - so this counts
+                loans. It used to count installments, which is how one loan with
+                ten EMIs could read as "10 items". */}
+            {dueItems.length > 1 && (
+              <span className="text-xs text-emerald-600 font-semibold">
+                {dueItems.length} loans
+              </span>
             )}
           </div>
 
@@ -269,8 +327,8 @@ export default function DashboardPage() {
           ) : (
             <div className="space-y-2.5">
               {dueItems.slice(0, 5).map((item, idx) => {
-                const days = daysUntil(item.dueDate);
-                const isOverdue = item.computedStatus === "overdue";
+                const days = item.daysUntilDue ?? daysUntil(item.dueDate);
+                const isOverdue = item.computedStatus === "overdue" || days < 0;
                 const isDueSoon = item.computedStatus === "due_soon";
                 const displayName =
                   item.viewerRole === "lender" ? item.borrowerName : item.lenderName || "Lender";
@@ -285,7 +343,8 @@ export default function DashboardPage() {
 
                 return (
                   <a
-                    key={idx}
+                    /* one row per loan now, so the loan id is the stable key */
+                    key={item.loanId}
                     href={`/loans/${item.loanId}`}
                     className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex items-center gap-3.5 tap-highlight active:bg-slate-50 transition-all"
                   >
@@ -336,6 +395,12 @@ export default function DashboardPage() {
                         >
                           {dayLabel}
                         </span>
+                        {item.moreOverdueCount > 0 && (
+                          <span className="text-xs font-semibold text-red-600 truncate">
+                            · {item.moreOverdueCount} more overdue{" "}
+                            {formatINR(item.moreOverdueAmount)}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="text-right shrink-0">
@@ -343,7 +408,13 @@ export default function DashboardPage() {
                         {formatINR(item.amount)}
                       </p>
                       <p className="text-xs text-slate-400">
-                        {isOverdue ? "Overdue" : isDueSoon ? "Due soon" : "Upcoming"}
+                        {isOverdue
+                          ? item.moreOverdueCount > 0
+                            ? "Overdue + more"
+                            : "Overdue"
+                          : isDueSoon
+                            ? "Due soon"
+                            : "Upcoming"}
                       </p>
                     </div>
                   </a>

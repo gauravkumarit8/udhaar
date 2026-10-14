@@ -277,6 +277,41 @@ npx cap open android
 
 ---
 
+## 📋 What the home screen lists
+
+The **Upcoming & Overdue** list shows **one row per loan** - the earliest payment
+still owed on it - not one row per EMI. A loan with ten installments used to
+produce ten near-identical rows ("23 items" on a two-loan account); now it shows
+the next one, and anything else already late on the same loan is summarised on
+that line (`· 2 more overdue ₹4,240`). The counter beside the heading counts
+loans for the same reason.
+
+Money is unaffected by the collapse: the header totals still add up **every**
+unpaid installment, and the per-loan figure on each row is the next payment only.
+The rule lives in `src/lib/due-items.ts` (`pickNextDuePerLoan`) with unit tests in
+`tests/due-items.test.ts`, so the list and the totals can't drift apart.
+
+### Why it is quick on a slow connection
+
+The database is usually in another region, so every query round-trip is felt.
+
+- `/api/dashboard` is **one** joined query (loans ⋈ users ⋈ installments) that also
+  returns the signed-in person, so the page makes one request instead of two.
+- `/api/notifications?summary=1` (the bottom-bar badge) is a single `count(*)`
+  joined on `users`; the unread count in the feed comes from SQL too.
+- `/api/loans/[id]` fetches installments and payments **in parallel**.
+- The bank of hot-path indexes is `drizzle/0007_hot_path_indexes.sql`, and the
+  connection pool keeps connections alive between requests.
+- The dashboard and the badge paint from `sessionStorage` (`src/lib/client-cache.ts`)
+  while the fresh copy is on its way - cleared on sign-in and sign-out, so a shared
+  phone never flashes the previous person's balances.
+
+Measured warm against a 40 ms-per-round-trip proxy: dashboard **137 → 96 ms**
+(3,078 → 1,084 bytes), badge **183 → 93 ms**, loan detail **181 → 139 ms**,
+notifications **178 → 134 ms**.
+
+---
+
 ## 🔄 GitHub Actions Workflows
 
 ### CI (every PR)
@@ -742,6 +777,29 @@ the app's 1600px resize, so tens of thousands fit comfortably.
 
 ## 🚢 Deployment notes
 
+- **A deploy is not finished until the app says it is.** The `verify-production`
+  job in `deploy-web.yml` polls the deployed `/api/health` until it reports the
+  commit that was just released *and* a healthy schema, and fails the workflow
+  (printing the app's own `firstProblem` and the command that fixes it) if that
+  does not happen within 15 minutes. This exists because of a real outage: on
+  2026-10-14 the borrower-side release went live on Render with its migration
+  never applied - every loan screen answered 503 while every workflow on `main`
+  was green. Run the same check by hand against any deployment:
+
+  ```powershell
+  $env:PRODUCTION_URL="https://udhaar-y94f.onrender.com"
+  npm run verify:deployment
+  ```
+
+  It needs no secrets: `/api/health` is public and deliberately vague about
+  everything except what is broken.
+- **Every start path applies its own migrations.** `render.yaml`'s start command
+  runs `scripts/migrate-at-boot.mjs` before the server, and the Docker image does
+  the same through `docker-entrypoint.sh` (the image used to start with a bare
+  `node server.js`, which is how a container can serve new code against an old
+  schema). Both run the baseline check and then `db:migrate`, are no-ops once
+  applied, and *report* rather than block: a database that is behind leaves the
+  app running with `/api/health` naming the missing column.
 - **Static assets with `output: standalone`.** Next.js does *not* copy
   `.next/static` or `public/` into `.next/standalone`, so any start command that
   runs `node .next/standalone/server.js` must stage them first (the Dockerfile
@@ -768,7 +826,30 @@ the app's 1600px resize, so tens of thousands fit comfortably.
   `/api/health` verifies this for you: it names any migration column that is
   still missing (a database without migration 0005 reports `missing columns:
   installments.principal_waived, …` and answers **503**), so "did the
-  migrations run in production?" is one web request, not a guess.
+  migrations run in production?" is one web request, not a guess. It also
+  reports the commit the app is running (`commit` / `shortCommit`, from
+  `RENDER_GIT_COMMIT`, `GITHUB_SHA`, the image's `GIT_SHA` build arg or
+  `GIT_COMMIT`), which is how the verification job tells the new container apart
+  from the old one.
+
+  **If a release ever goes out ahead of its migration** - the app answers, but
+  the loan screens say *"The database is missing a column this version of the
+  app needs"* - apply it from anywhere using the database URL (Render dashboard
+  → service → Environment → `DATABASE_URL`; never paste it into a chat or a
+  commit):
+
+  ```powershell
+  cd C:\Users\gaura\OneDrive\Desktop\learn\udhaar
+  git pull
+  $env:DATABASE_URL="postgresql://…from the host's dashboard…"
+  npm run db:baseline
+  npm run db:migrate
+  npm run check-deploy      # should end with "Ready."
+  ```
+
+  Then confirm from the outside: with `PRODUCTION_URL` set,
+  `npm run verify:deployment` should print **"✓ the released commit is live and
+  healthy"**.
 - **Don't use Render's free Postgres for real data.** Free instances are
   deleted 30 days after creation, with no backups: that is what silently broke
   production login once. Use any external Postgres (Neon, Supabase, Aiven) and

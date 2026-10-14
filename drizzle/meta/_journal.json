@@ -50,6 +50,13 @@
       "when": 1791967848608,
       "tag": "0006_borrower_side_loans",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791972516067,
+      "tag": "0007_hot_path_indexes",
+      "breakpoints": true
     }
   ]
 }
