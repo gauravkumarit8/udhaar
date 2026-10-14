@@ -654,6 +654,10 @@ the app's 1600px resize, so tens of thousands fit comfortably.
   with it off, pushing to `main` would deploy nothing. The Docker image still
   builds on every `main` push, since a `main`-tagged image is an artifact
   people pull; building is not deploying.
+  `/api/health` verifies this for you: it names any migration column that is
+  still missing (a database without migration 0005 reports `missing columns:
+  installments.principal_waived, …` and answers **503**), so "did the
+  migrations run in production?" is one web request, not a guess.
 - **Don't use Render's free Postgres for real data.** Free instances are
   deleted 30 days after creation, with no backups: that is what silently broke
   production login once. Use any external Postgres (Neon, Supabase, Aiven) and

@@ -31,6 +31,11 @@ const REQUIRED_COLUMNS = [
   { table: "reminders", column: "recipient_id" },
   { table: "users", column: "notifications_seen_at" },
   { table: "payments", column: "proof_public_id" },
+  // Settlement (migration 0005): without these, closing a loan or settling it
+  // in full fails with a database error, so a stale schema must say so here.
+  { table: "installments", column: "principal_waived" },
+  { table: "installments", column: "interest_waived" },
+  { table: "payments", column: "unapplied_amount" },
 ];
 
 const REQUIRED_TABLES = [
