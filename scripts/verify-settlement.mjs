@@ -818,6 +818,104 @@ async function main() {
     check("the probe loans are cleaned up", n, 0);
   }
 
+  console.log("\nThe loan list searches, filters, and answers in pages");
+  {
+    const everything = (await call("GET", "/api/loans?limit=200", { token: LENDER_TOKEN })).json;
+    check("the list reports how many there are", typeof everything.total, "number");
+    check("...and whether a page is all of it", typeof everything.hasMore, "boolean");
+
+    const sample = everything.loans[0];
+    const firstName = sample.borrowerName.split(" ")[0];
+    const byName = (
+      await call("GET", `/api/loans?limit=200&q=${encodeURIComponent(firstName)}`, {
+        token: LENDER_TOKEN,
+      })
+    ).json;
+    check("a search by name finds that loan", byName.loans.some((l) => l.id === sample.id), true);
+    check("...and never claims more results than the account has", byName.total <= everything.total, true);
+
+    // The important one: `%` is an operator in a LIKE pattern, not text, so a
+    // search for it must find nothing rather than every loan on the account.
+    const percent = (
+      await call("GET", "/api/loans?limit=200&q=%25", { token: LENDER_TOKEN })
+    ).json;
+    check("a search for '%' looks for a percent sign, not everything", percent.total, 0);
+    const underscore = (
+      await call("GET", "/api/loans?limit=200&q=_", { token: LENDER_TOKEN })
+    ).json;
+    check("...and so does '_'", underscore.total, 0);
+
+    const nothing = (
+      await call("GET", "/api/loans?limit=200&q=zzznotaloan", { token: LENDER_TOKEN })
+    ).json;
+    check("a search that matches nothing returns nothing", nothing.total, 0);
+
+    const running = (
+      await call("GET", "/api/loans?limit=200&status=active", { token: LENDER_TOKEN })
+    ).json;
+    check("filtering to running loans returns only running loans",
+      running.loans.every((l) => l.status === "active"), true);
+    check("...and counts what it filtered", running.total <= everything.total, true);
+
+    const closed = (
+      await call("GET", "/api/loans?limit=200&status=closed", { token: LENDER_TOKEN })
+    ).json;
+    check("filtering to closed loans returns no running ones",
+      closed.loans.every((l) => l.status !== "active"), true);
+
+    const borrowed = (
+      await call("GET", "/api/loans?limit=200&role=borrower", { token: LENDER_TOKEN })
+    ).json;
+    check("filtering to the borrowed side returns only borrowed loans",
+      borrowed.loans.every((l) => l.viewerRole === "borrower"), true);
+
+    const nonsense = (
+      await call("GET", "/api/loans?limit=200&status=deleted&role=cosigner", { token: LENDER_TOKEN })
+    ).json;
+    check("an unknown filter is ignored, not obeyed", nonsense.total, everything.total);
+  }
+
+  console.log("\nA loan can be printed out as a statement");
+  {
+    // A fresh three-month loan: a schedule to print, and a ledger to add to.
+    const { id } = await newLoan({
+      amount: "6000",
+      interestRate: "12",
+      tenureMonths: "3",
+      startDate: "2026-01-01",
+    });
+
+    const sheet = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    check("the statement has every EMI on it", sheet.installments.length, 3);
+    check("...each with a status the sheet can print",
+      sheet.installments.every((i) => typeof i.computedStatus === "string"), true);
+    check("...the loan's own terms",
+      [typeof sheet.loan.startDate, typeof sheet.loan.interestRate, sheet.loan.tenureMonths],
+      ["string", "string", 3]);
+    check("...which side the reader is on", sheet.loan.viewerRole, "lender");
+    check("...and an empty ledger to start", sheet.payments.length, 0);
+
+    // Pay something, and the receipt has to show up on the sheet.
+    const paid = await call("POST", `/api/installments/${sheet.installments[0].id}/pay`, {
+      token: LENDER_TOKEN,
+      body: { amount: "1", paymentType: "both", notes: "statement check" },
+    });
+    check("a payment can be recorded", paid.status, 200); // this route answers 200, not 201
+
+    const after = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    const entry = after.payments[after.payments.length - 1];
+    check("it appears in the statement's ledger", after.payments.length, 1);
+    check("...with its amount", Number(entry?.amount), 1);
+    check("...its note", entry?.notes, "statement check");
+    check("...and a status (pending until the other side confirms)", typeof entry?.status, "string");
+    check("...and the EMI it was paid against", Boolean(entry?.installmentId), true);
+
+    // The counterparty sees the same sheet, from their side of it.
+    const theirSheet = (await call("GET", `/api/loans/${id}`, { token: BORROWER_TOKEN })).json;
+    check("the borrower can open the same statement", theirSheet.installments.length, 3);
+    check("...and it is labelled from their side", theirSheet.loan.viewerRole, "borrower");
+  }
+
   console.log("\nWhen the lender finally signs up, the debt they were owed finds them");
   {
     /*

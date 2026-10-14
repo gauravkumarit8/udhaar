@@ -248,12 +248,38 @@ npx cap open android
 # Then in Android Studio: Build → Build APK
 ```
 
+Or from CI: **Actions → Build Android APK/AAB → Run workflow** (it also runs on
+a `v*` tag). It is deliberately *not* wired to every push to `main`.
+
+Worth knowing before rebuilding: because the app loads the hosted site, a rebuild
+does **not** change any screen in the app - the screens come from the deployment
+and update the moment it does. A rebuild changes the shell only:
+
+- the offline page shown when the site cannot be reached (`public/offline.html`),
+- splash screen / status bar / icon settings,
+- **push notifications** - the Firebase `google-services.json` has to be in the
+  project for FCM registration to work, and it is added from the
+  `ANDROID_GOOGLE_SERVICES_JSON` secret. Without that secret the build succeeds
+  and push silently does nothing.
+
+So: rebuild when the shell changed or when push was newly configured, not to ship
+a feature.
+
 ### Build iOS IPA
 
 ```bash
 ./mobile-build.sh ios
 # Then in Xcode: Product → Archive
 ```
+
+**No iOS build has ever succeeded on CI.** The last runs fail at *Install Apple
+Certificate* with the signing secrets unset or invalid, so nothing after that
+step runs. An iOS build needs a paid Apple Developer account, a distribution
+certificate (`.p12`) and a provisioning profile; add them as
+`IOS_P12_BASE64`, `IOS_P12_PASSWORD`, `IOS_PROVISION_PROFILE_BASE64` and
+`APPLE_TEAM_ID` (see *GitHub Secrets* below) - or run it locally from Xcode with
+your own signing team. Until then the iOS job is a red X on every tag, which is
+worth knowing rather than rediscovering.
 
 ---
 
@@ -317,6 +343,26 @@ against new, same data:
 The seven summary figures are identical to the last paisa (checked by diffing the
 two payloads, and by the harness folding the raw rows itself:
 `npm run verify:settlement`).
+
+### Searching a long history
+
+The list screen (`/loans`) is where the dashboard's "see all" goes, and it is
+searchable: `GET /api/loans?q=&status=&role=` filters server-side, so a search
+only sees what it should rather than whatever pages happen to be loaded. The
+search text is normalised and its LIKE wildcards are escaped
+(`src/lib/loan-search.ts`, with tests) - searching for `%` looks for a percent
+sign and finds nothing, instead of matching every loan on the account - and it
+is always passed as a query parameter, never spliced into SQL.
+
+### A statement you can hand over
+
+`/loans/[id]/statement` is the whole record on one sheet: the schedule with each
+EMI's paid/waived/balance, the payment ledger, and the totals. It prints (or
+saves as PDF) with the app chrome hidden, and *Share* turns it into a
+WhatsApp-sized summary - plus a per-payment receipt. The arithmetic lives in
+`src/lib/loan-statement.ts` and is unit-tested, including the rule that matters
+most: **waived money is not owed**, so a written-off or early-settled loan reads
+as settled rather than as a lingering balance.
 
 ### Why it is quick on a slow connection
 

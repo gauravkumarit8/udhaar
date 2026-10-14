@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db, rawRows } from "@/db";
+import { db } from "@/db";
 import { loans, installments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { generateInstallmentSchedule } from "@/lib/calculations";
@@ -8,7 +8,13 @@ import { parseLoanInput } from "@/lib/validation";
 import { countUnreadNotifications } from "@/lib/unread-count";
 import { parsePaging } from "@/lib/paging";
 import { activeLoansFirst } from "@/lib/loan-order";
-import { eq, or, sql } from "drizzle-orm";
+import {
+  loanRoleCondition,
+  loanSearchCondition,
+  loanStatusCondition,
+  parseLoanQuery,
+} from "@/lib/loan-search";
+import { and, eq, or, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
 /**
@@ -29,18 +35,41 @@ async function handleGET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { limit, offset } = parsePaging(new URL(req.url).searchParams);
+  const params = new URL(req.url).searchParams;
+  const { limit, offset } = parsePaging(params);
+  const { q, status, role } = parseLoanQuery(params);
+
+  /*
+   * One set of conditions, used by the count and by the page.
+   *
+   * They have to be the same set, or the screen says "showing 20 of 143" while
+   * the filter above it is narrowing something else - the count is what the
+   * person reads to decide whether their search found anything.
+   */
+  const conditions = [
+    or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)),
+    loanRoleCondition(role, session.id),
+    loanStatusCondition(status),
+    loanSearchCondition(q),
+  ].filter((clause): clause is NonNullable<typeof clause> => clause !== undefined);
+
+  const where = and(...conditions);
 
   const [totalRows, userLoans, unread] = await Promise.all([
-    rawRows<{ total: string }>(sql`
-      select count(*) as total from loans l
-      where l.lender_id = ${session.id} or l.borrower_id = ${session.id}
-    `),
+    // The count needs the same join as the page: the search can match the
+    // counterparty's account name, which only lives on `users`. Built with the
+    // same `where` fragment, in the query builder rather than in hand-written
+    // SQL, so the aliases and the conditions can never drift apart.
+    db
+      .select({ total: sql<string>`count(*)` })
+      .from(loans)
+      .leftJoin(users, eq(users.id, loans.lenderId))
+      .where(where),
     db
       .select({ loan: loans, accountName: users.name })
       .from(loans)
       .leftJoin(users, eq(users.id, loans.lenderId))
-      .where(or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)))
+      .where(where)
       .orderBy(...activeLoansFirst())
       .limit(limit)
       .offset(offset),
@@ -66,6 +95,8 @@ async function handleGET(req: NextRequest) {
     offset,
     hasMore: offset + taggedLoans.length < total,
     unread,
+    // Echoed back so the screen can show what it is actually filtering by.
+    query: { q, status, role },
   });
 }
 
