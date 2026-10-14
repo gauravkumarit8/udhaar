@@ -9,7 +9,8 @@
  *   2. the database is reachable
  *   3. the schema is applied (all 8 tables)
  *   4. OTP delivery is configured in a way that lets people log in
- *   5. optional integrations (payment proofs, push)
+ *   5. optional integrations (payment proofs - including whether the Cloudinary
+ *      credentials actually work, not merely whether they are set - and push)
  *   6. notification channels (native FCM, browser Web Push)
  *
  * Usage:
@@ -22,6 +23,7 @@
  */
 import "dotenv/config";
 import pg from "pg";
+import { verifyCloudinaryCredentials } from "./lib/cloudinary-check.mjs";
 
 /** Columns added by a later migration - a stale schema is caught by name. */
 const REQUIRED_COLUMNS = [
@@ -235,9 +237,29 @@ const cloudinary = Boolean(
 const firebase = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
 
 console.log("");
-cloudinary
-  ? ok("payment proofs", "Cloudinary configured")
-  : warn("payment proofs", "Cloudinary not configured — proof uploads return 503");
+if (!cloudinary) {
+  warn("payment proofs", "Cloudinary not configured — proof uploads return 503");
+} else {
+  // Configured is not the same as working: a rotated secret still looks
+  // "configured" here and only fails when a borrower submits a proof.
+  const result = await verifyCloudinaryCredentials({
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    apiSecret: process.env.CLOUDINARY_API_SECRET,
+  });
+  const label = "payment proofs";
+  const detail = result.raw ? `${result.detail} — Cloudinary said: ${result.raw}` : result.detail;
+
+  if (result.level === "ok") ok(label, detail);
+  else if (result.level === "fail") {
+    bad(label, detail);
+    if (result.hint) fix(result.hint);
+    failures++;
+  } else {
+    warn(label, detail);
+    if (result.hint) fix(result.hint);
+  }
+}
 firebase
   ? ok("push (app)", "Firebase configured")
   : warn("push (app)", "Firebase not configured — the native app can't be notified");

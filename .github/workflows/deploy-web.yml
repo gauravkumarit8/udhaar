@@ -67,14 +67,16 @@ jobs:
     name: Deploy to Render
     needs: build-and-push
     runs-on: ubuntu-latest
-    # A tag, a manual run that asked for it, or any push to main.
+    # RENDER OWNS DEPLOYS ON MAIN. Its own auto-deploy fires on every push to
+    # main; this job deliberately does not, because running both meant each
+    # commit queued two deploys of the same code. What is left here is what
+    # Render cannot do by itself: deploy a *tag* (a release), and a button for
+    # "deploy now" from the Actions tab without pushing anything.
     #
-    # Note for whoever reads this next: Render *also* auto-deploys on a push to
-    # main when that setting is on, so with both enabled each commit queues two
-    # deploys. Keep the one you rely on (Render's is the one that still happens
-    # when Actions is down) - this job is the way to deploy from here without
-    # giving Render a deploy key, and the way to deploy a *tag*.
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.deploy || github.ref == 'refs/heads/main'
+    # Related, not repeated here: the image build above still runs on every
+    # push to main, since a `main`-tagged image is an artifact people pull -
+    # building is not deploying.
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.deploy
     steps:
       - name: 🚀 Trigger Render Deploy
         run: |
