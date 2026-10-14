@@ -40,12 +40,15 @@ async function handleGET(
 
   const enrichedInstallments = rawInstallments.map((inst) => ({
     ...inst,
+    // Waived money is settled money: an EMI the lender wrote off must read as
+    // finished rather than sitting there OVERDUE for ever. The row itself still
+    // shows what was paid and what was written off, so the two never blur.
     computedStatus: computeInstallmentStatus(
       inst.dueDate,
       parseFloat(inst.principalAmount),
       parseFloat(inst.interestAmount),
-      parseFloat(inst.principalPaid),
-      parseFloat(inst.interestPaid)
+      parseFloat(inst.principalPaid) + parseFloat(inst.principalWaived),
+      parseFloat(inst.interestPaid) + parseFloat(inst.interestWaived)
     ),
   }));
 

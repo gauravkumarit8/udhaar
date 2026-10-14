@@ -144,23 +144,84 @@ export function loanUpdatedNotice(p: {
   };
 }
 
-/** "Gaurav closed the loan of ₹5,000." */
+/**
+ * "Gaurav closed the loan of ₹5,000."
+ *
+ * Closing a loan forgives whatever interest the schedule still showed (see
+ * `waiveRemaining`), so the tail reports that instead of leaving a number that
+ * reads as though it were still owed.
+ */
 export function loanClosedNotice(p: {
   actorName: string;
   amount: number;
-  /** Reported rather than hidden: a closed loan can still owe interest. */
-  interestOutstanding?: number;
+  /** Interest forgiven by the close. */
+  interestWaived?: number;
+  /** Outstanding balance the lender gave up on (a write-off). */
+  principalWaived?: number;
 }): Notice {
+  const waived = (p.interestWaived ?? 0) + (p.principalWaived ?? 0);
   const tail =
-    p.interestOutstanding && p.interestOutstanding > 0.01
-      ? ` ${formatINR(p.interestOutstanding)} interest is still unpaid.`
-      : "";
+    waived > 0.01 ? ` ${formatINR(waived)} was written off.` : "";
 
   return {
     title: "🎉 Loan closed",
     message: `${p.actorName} closed the loan of ${formatINR(p.amount)}.${tail}`,
     type: "loan_closed",
   };
+}
+
+/**
+ * What one side is told when the other side settles the whole loan in one go.
+ *
+ * - `marked`   - a claim waiting for the recipient's confirmation (2-side)
+ * - `recorded` - applied straight away, but only part of the loan
+ * - `settled`  - applied straight away and the loan is now closed
+ */
+export type PayoffEvent = "marked" | "recorded" | "settled";
+
+export function payoffNotice(p: {
+  event: PayoffEvent;
+  /** Who did the thing - never the recipient. */
+  actorName: string;
+  amount: number;
+  /** Interest forgiven because the loan settled early. */
+  waivedInterest?: number;
+  /** Still outstanding, when this was only a part payment. */
+  remaining?: number;
+}): Notice {
+  const amount = formatINR(p.amount);
+  const waived =
+    p.waivedInterest && p.waivedInterest > 0.01
+      ? ` ${formatINR(p.waivedInterest)} interest was waived.`
+      : "";
+
+  switch (p.event) {
+    case "marked":
+      return {
+        title: "🎉 Full payoff to confirm",
+        message:
+          `${p.actorName} recorded a payoff of ${amount} that settles the loan.${waived} ` +
+          `Confirm it once the money reaches you.`,
+        type: "payment_marked",
+      };
+    case "settled":
+      return {
+        title: "🎉 Loan settled",
+        message: `${p.actorName} settled the whole loan with ${amount}.${waived}`,
+        type: "loan_closed",
+      };
+    case "recorded":
+    default:
+      return {
+        title: "✅ Payoff recorded",
+        message:
+          `${p.actorName} recorded ${amount} against the loan.` +
+          (p.remaining && p.remaining > 0.01
+            ? ` ${formatINR(p.remaining)} is still outstanding.`
+            : ""),
+        type: "payment_recorded",
+      };
+  }
 }
 
 export interface NotifyResult {

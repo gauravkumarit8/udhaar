@@ -17,7 +17,9 @@ People in India lend money to friends and family, but tracking it is awkward. Ud
 - ✅ **Mark payments** — partial interest/principal payments with proof upload
 - ✅ **UPI deep links** — one-tap pay buttons inside reminders
 - ✅ **1-side or 2-side confirmation** — flexible payment verification
-- ✅ **Auto-close loan** — when principal is fully repaid
+- ✅ **Settle in full** — one payment clears the whole loan, not one EMI at a time
+- ✅ **Close & write off** — give up on a balance without pretending it was paid
+- ✅ **Auto-close loan** — when the loan is fully settled
 
 ---
 
@@ -80,6 +82,19 @@ npm run typecheck        # tsc --noEmit
 npm run lint             # eslint
 npm run build            # production build
 npm run check-deploy     # is the database + config actually usable?
+npm run verify:settlement # drives the real routes on a running server (needs a scratch DB)
+```
+
+`verify:settlement` is the check that would have caught the "can't close a paid-up
+loan" bug: it seeds three users and a session each, then settles loans over HTTP
+- full payment, early settlement, overpayment, part payment, write-off, 2-side
+confirmation, permissions and rejected amounts. Start `npm run dev` first, and
+point both the server and the script at the same **scratch** database:
+
+```powershell
+$env:DATABASE_URL = "postgresql://user:pass@host/scratch"
+npm run dev                                          # other terminal
+npm run verify:settlement                            # 41 checks, exit 1 on failure
 ```
 
 ### When something is broken
@@ -516,6 +531,45 @@ Proofs uploaded before this change stored a public Cloudinary URL
 (`payments.proof_url`). Those keep working: the route redirects to the stored
 URL, since that link was public already and rewriting it would need the
 original file. Re-upload is the only way to make an old proof private.
+
+## 🤝 Settling a loan
+
+People rarely pay an EMI schedule line by line - they wait until they have the
+money and clear the whole thing in one transfer. Two actions cover that, and
+both are on the loan screen for anyone on the loan:
+
+### Settle in full
+
+`POST /api/loans/[id]/payoff` applies **one** payment across the whole schedule,
+oldest EMI first (interest before principal inside each EMI, so interest is
+never skipped and left behind). What happens next depends on how much arrived:
+
+| Amount received | What the app does |
+|-----------------|-------------------|
+| the **principal**, or more | loan is **settled**: unpaid interest is recorded as **waived** (early settlement), never as paid |
+| more than what is owed | the loan is settled and the excess is kept on the payment as `unapplied_amount` - "₹500 received, not applied to the loan" |
+| less than the principal | an ordinary part payment: EMIs fill up oldest-first, nothing is waived |
+
+The sheet defaults to the principal - that is the early-settlement deal - with a
+second button to pay the interest too, and it asks before saving an overpayment.
+
+Waived interest is *not* money the borrower paid. It is stored separately
+(`installments.interest_waived` / `principal_waived`) and shown as
+"₹240.80 written off", so a settled loan never reads as though it was fully
+repaid, and the reminders stop chasing it.
+
+### Close & write off
+
+`POST /api/loans/[id]/close` with `{writeOff: true}` closes a loan that will
+never be repaid, recording the unpaid balance as written off. Without
+`writeOff`, closing still requires the principal to be paid - the response says
+so and points at the write-off option instead of failing vaguely. Both paths
+refuse to act while a payment claim is still pending (the other person could
+confirm it a second later), and closing an already-closed loan is a quiet
+success, so a double tap changes nothing.
+
+The borrower is told either way; the message says what was waived or written
+off, so nobody is surprised later by a smaller number than the schedule showed.
 
 ## 🚢 Deployment notes
 

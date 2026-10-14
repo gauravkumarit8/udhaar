@@ -9,6 +9,7 @@ import ProofUpload from "@/components/ProofUpload";
 import ShareButton from "@/components/ShareButton";
 import { useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
+import { summarizeSettlement } from "@/lib/payments";
 
 interface Loan {
   id: string;
@@ -39,6 +40,9 @@ interface Installment {
   totalAmount: string;
   principalPaid: string;
   interestPaid: string;
+  /** Forgiven by the lender: a write-off, or the interest left at settlement. */
+  principalWaived: string;
+  interestWaived: string;
   computedStatus: string;
 }
 
@@ -54,6 +58,8 @@ interface Payment {
   confirmedByUserId: string | null;
   status: string;
   notes: string | null;
+  /** Received but not applied to anything (payoffs that were rounded up). */
+  unappliedAmount: string;
   createdAt: string;
 }
 
@@ -105,6 +111,16 @@ export default function LoanDetailPage() {
   } | null>(null);
   const [activeTab, setActiveTab] = useState<"schedule" | "payments">("schedule");
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  // "Settle in full" - one payment for the whole loan, which is how people
+  // actually clear a loan: a single transfer, not one per EMI.
+  const [payoffOpen, setPayoffOpen] = useState(false);
+  const [payoffAmount, setPayoffAmount] = useState("");
+  const [payoffNotes, setPayoffNotes] = useState("");
+  const [payoffProofId, setPayoffProofId] = useState<string | null>(null);
+  const [payoffError, setPayoffError] = useState<string | null>(null);
+  const [payoffLoading, setPayoffLoading] = useState(false);
+  const [payoffMessage, setPayoffMessage] = useState<string | null>(null);
+  const [acceptExtra, setAcceptExtra] = useState(false);
   const [showUPI, setShowUPI] = useState(false);
   const [editForm, setEditForm] = useState<{
     borrowerName: string;
@@ -274,17 +290,96 @@ export default function LoanDetailPage() {
     }
   };
 
+  /**
+   * Closing is two different things and the button says which one it is:
+   * settling a loan that is paid up, or deliberately giving up on the balance.
+   */
   const handleCloseLoan = async () => {
-    if (!confirm("Close this loan? All principal must be paid.")) return;
+    const writeOff = principalOutstanding > 0.01;
+
+    const question = writeOff
+      ? `Close this loan and write off ${formatINR(loanOutstanding)}?\n\n` +
+        `The unpaid balance is recorded as written off (not as paid), the loan stops ` +
+        `reminding, and ${loan?.borrowerName ?? "the borrower"} is told. This cannot be undone.`
+      : "Close this loan? Reminders stop and no further payments can be recorded.";
+
+    if (!confirm(question)) return;
+
     try {
-      const result = await requestJson(`/api/loans/${loanId}/close`, { method: "POST" });
+      const result = await requestJson(`/api/loans/${loanId}/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(writeOff ? { writeOff: true } : {}),
+      });
       if (!result.ok) {
         alert(result.error ?? "Couldn't close the loan.");
-      } else {
-        await loadData();
+        haptics.notification("error");
+        return;
       }
+      haptics.notification("success");
+      await loadData();
     } catch {
       alert("Network error - the loan wasn't closed.");
+    }
+  };
+
+  /** Record one payment that settles the whole loan. */
+  const handlePayoff = async () => {
+    const amountNum = parseFloat(payoffAmount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      setPayoffError("Enter an amount greater than 0");
+      return;
+    }
+
+    const extra = Math.round((amountNum - loanOutstanding) * 100) / 100;
+    if (extra > 0.01 && !acceptExtra) {
+      setPayoffError(
+        `That is ${formatINR(extra)} more than this loan still owes. ` +
+          `Tick the box below to record the extra as received but not applied.`
+      );
+      return;
+    }
+
+    setPayoffError(null);
+    setPayoffLoading(true);
+    try {
+      const result = await requestJson<{ message?: string; awaitingConfirmation?: boolean }>(
+        `/api/loans/${loanId}/payoff`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: payoffAmount,
+            notes: payoffNotes || undefined,
+            proofId: payoffProofId || undefined,
+          }),
+        }
+      );
+
+      if (!result.ok) {
+        setPayoffError(result.error ?? "Couldn't record the payoff. Try again.");
+        haptics.notification("error");
+        return;
+      }
+
+      haptics.notification("success");
+      setPayoffMessage(
+        result.data?.message ??
+          (result.data?.awaitingConfirmation
+            ? "Payoff recorded - waiting for the other person to confirm."
+            : "Payoff recorded.")
+      );
+      setPayoffOpen(false);
+      setPayoffAmount("");
+      setPayoffNotes("");
+      setPayoffProofId(null);
+      setAcceptExtra(false);
+      await loadData();
+    } catch {
+      setPayoffError("Network error - couldn't reach the server. Try again.");
+      haptics.notification("error");
+    } finally {
+      setPayoffLoading(false);
     }
   };
 
@@ -423,13 +518,21 @@ export default function LoanDetailPage() {
   const progressPercent = installments.length > 0
     ? Math.round((paidInstallments / installments.length) * 100)
     : 0;
-  const totalPrincipalPaid = installments.reduce((sum, i) => sum + parseFloat(i.principalPaid), 0);
-  const totalPrincipal = installments.reduce((sum, i) => sum + parseFloat(i.principalAmount), 0);
-  const principalProgressPercent = totalPrincipal > 0 ? Math.round((totalPrincipalPaid / totalPrincipal) * 100) : 0;
-
-  const totalInterest = installments.reduce((sum, i) => sum + parseFloat(i.interestAmount), 0);
-  const totalInterestPaid = installments.reduce((sum, i) => sum + parseFloat(i.interestPaid), 0);
-  const interestOutstanding = Math.max(0, Math.round((totalInterest - totalInterestPaid) * 100) / 100);
+  // All of this is derived in one tested place (summarizeSettlement) rather
+  // than inline: waivers must be netted out everywhere, consistently.
+  const summary = summarizeSettlement(installments, loan.status);
+  const {
+    principalTotal: totalPrincipal,
+    principalPaid: totalPrincipalPaid,
+    principalOutstanding,
+    interestOutstanding,
+    loanOutstanding,
+    totalWaived,
+    principalWaived: totalPrincipalWaived,
+    interestWaived: totalInterestWaived,
+    principalProgressPercent,
+    canSettleInFull,
+  } = summary;
 
   const upiLink = loan.upiId
     ? `upi://pay?pa=${loan.upiId}&pn=${encodeURIComponent(loan.borrowerName)}`
@@ -507,6 +610,18 @@ export default function LoanDetailPage() {
           </div>
         </div>
 
+        {payoffMessage && (
+          <div className="mt-3 bg-white/15 border border-white/25 rounded-xl px-3 py-2 flex items-start gap-2">
+            <p className="text-[11px] text-white font-medium flex-1">{payoffMessage}</p>
+            <button
+              onClick={() => setPayoffMessage(null)}
+              className="text-[11px] font-bold text-emerald-100 shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Progress */}
         <div>
           <div className="flex justify-between text-xs text-emerald-200 mb-1.5">
@@ -524,11 +639,16 @@ export default function LoanDetailPage() {
           </p>
         </div>
 
-        {loan.status === "closed" && interestOutstanding > 0 && (
+        {loan.status === "closed" && totalWaived > 0.01 && (
           <div className="mt-3 bg-amber-400/20 border border-amber-200/40 rounded-xl px-3 py-2">
             <p className="text-[11px] text-amber-50 font-medium">
-              ⚠️ Closed with {formatINR(interestOutstanding)} interest still unpaid — the loan was
-              settled on principal only.
+              ⚖️ Closed with {formatINR(totalWaived)} written off
+              {totalPrincipalWaived > 0.01 && totalInterestWaived > 0.01
+                ? ` (${formatINR(totalPrincipalWaived)} principal, ${formatINR(totalInterestWaived)} interest)`
+                : totalPrincipalWaived > 0.01
+                  ? " (principal)"
+                  : " (interest)"}
+              .
             </p>
           </div>
         )}
@@ -543,12 +663,26 @@ export default function LoanDetailPage() {
               📱 Pay via UPI
             </a>
           )}
+          {canSettleInFull && (
+            <button
+              onClick={() => {
+                haptics.tap();
+                setPayoffOpen(true);
+                setPayoffAmount(loanOutstanding.toFixed(2));
+                setPayoffError(null);
+                setAcceptExtra(false);
+              }}
+              className="flex-1 bg-white text-emerald-700 font-semibold py-2.5 rounded-2xl text-sm tap-highlight active:bg-emerald-50 transition"
+            >
+              💸 Settle in full
+            </button>
+          )}
           {isLender && loan.status === "active" && (
             <button
               onClick={handleCloseLoan}
               className="flex-1 bg-emerald-500/40 text-white font-semibold py-2.5 rounded-2xl text-sm tap-highlight active:bg-emerald-500/60 transition"
             >
-              🔒 Close Loan
+              {principalOutstanding > 0.01 ? "🔒 Close & write off" : "🔒 Close Loan"}
             </button>
           )}
         </div>
@@ -617,9 +751,18 @@ export default function LoanDetailPage() {
           )}
           {installments.map((inst) => {
             const days = daysUntil(inst.dueDate);
-            const principalRemaining = parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid);
-            const interestRemaining = parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid);
-            const totalRemaining = principalRemaining + interestRemaining;
+            const waived =
+              parseFloat(inst.principalWaived || "0") + parseFloat(inst.interestWaived || "0");
+            const principalRemaining =
+              parseFloat(inst.principalAmount) -
+              parseFloat(inst.principalPaid) -
+              parseFloat(inst.principalWaived || "0");
+            const interestRemaining =
+              parseFloat(inst.interestAmount) -
+              parseFloat(inst.interestPaid) -
+              parseFloat(inst.interestWaived || "0");
+            const totalRemaining = Math.max(0, principalRemaining) + Math.max(0, interestRemaining);
+            // "Settled" covers both: money received, and money the lender gave up.
             const isPaid = inst.computedStatus === "paid";
             const isOverdue = inst.computedStatus === "overdue";
             const isDueSoon = inst.computedStatus === "due_soon";
@@ -641,7 +784,7 @@ export default function LoanDetailPage() {
             };
 
             const statusLabel: Record<string, string> = {
-              paid: "PAID ✓",
+              paid: waived > 0 ? "SETTLED" : "PAID ✓",
               overdue: "OVERDUE",
               due_soon: days === 0 ? "TODAY" : `${days}d`,
               partially_paid: "PARTIAL",
@@ -691,6 +834,11 @@ export default function LoanDetailPage() {
                             <span className="text-emerald-600"> (₹{parseFloat(inst.principalPaid).toLocaleString("en-IN")} paid)</span>
                           )}
                         </p>
+                        {waived > 0 && (
+                          <p className="text-xs text-amber-600 font-medium">
+                            ⚖️ ₹{waived.toLocaleString("en-IN")} written off
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -773,7 +921,7 @@ export default function LoanDetailPage() {
                     <p className="font-bold text-slate-800">
                       {formatINR(parseFloat(payment.amount))}
                       <span className="text-xs text-slate-400 font-normal ml-1.5">
-                        {payment.paymentType}
+                        {payment.paymentType === "payoff" ? "full settlement" : payment.paymentType}
                       </span>
                     </p>
                     <p className="text-xs text-slate-400 mt-0.5">
@@ -797,6 +945,12 @@ export default function LoanDetailPage() {
                     {payment.status.toUpperCase()}
                   </span>
                 </div>
+                {parseFloat(payment.unappliedAmount || "0") > 0.01 && (
+                  <p className="text-[11px] text-amber-600 font-medium mt-2">
+                    ₹{parseFloat(payment.unappliedAmount).toFixed(2)} was received but not applied to
+                    this loan.
+                  </p>
+                )}
                 {(payment.proofPublicId || payment.proofUrl) && (
                   <a
                     href={`/api/payments/${payment.id}/proof`}
@@ -844,6 +998,127 @@ export default function LoanDetailPage() {
           )}
         </div>
       )}
+
+      {/* Settle in full - one payment for the whole loan */}
+      <BottomSheet
+        open={payoffOpen}
+        onClose={() => { setPayoffOpen(false); setPayoffProofId(null); setPayoffError(null); }}
+        title="Settle in full"
+        subtitle={`${formatINR(principalOutstanding)} principal + ${formatINR(interestOutstanding)} interest outstanding`}
+      >
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => {
+                setPayoffAmount(principalOutstanding.toFixed(2));
+                setPayoffError(null);
+              }}
+              className={`py-3 px-3 rounded-2xl border text-left tap-highlight ${
+                Math.abs(parseFloat(payoffAmount || "0") - principalOutstanding) < 0.005
+                  ? "bg-emerald-50 border-emerald-500"
+                  : "border-slate-200"
+              }`}
+            >
+              <div className="text-sm font-bold text-slate-800">
+                {formatINR(principalOutstanding)}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                Settle the principal
+                {interestOutstanding > 0.01 ? ` · waives ${formatINR(interestOutstanding)} interest` : ""}
+              </div>
+            </button>
+            <button
+              onClick={() => {
+                setPayoffAmount(loanOutstanding.toFixed(2));
+                setPayoffError(null);
+              }}
+              className={`py-3 px-3 rounded-2xl border text-left tap-highlight ${
+                Math.abs(parseFloat(payoffAmount || "0") - loanOutstanding) < 0.005
+                  ? "bg-emerald-50 border-emerald-500"
+                  : "border-slate-200"
+              }`}
+            >
+              <div className="text-sm font-bold text-slate-800">{formatINR(loanOutstanding)}</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                Pay everything, interest included
+              </div>
+            </button>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+              Amount received (₹)
+            </label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={payoffAmount}
+              onChange={(e) => {
+                setPayoffAmount(e.target.value);
+                setPayoffError(null);
+                setAcceptExtra(false);
+              }}
+              className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-2xl font-bold"
+              autoFocus
+            />
+            {payoffError && (
+              <p className="text-xs text-red-500 font-medium mt-1.5">{payoffError}</p>
+            )}
+          </div>
+
+          {parseFloat(payoffAmount || "0") - loanOutstanding > 0.01 && (
+            <label className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-2xl p-3">
+              <input
+                type="checkbox"
+                checked={acceptExtra}
+                onChange={(e) => {
+                  setAcceptExtra(e.target.checked);
+                  setPayoffError(null);
+                }}
+                className="mt-0.5 w-4 h-4 accent-emerald-600"
+              />
+              <span className="text-[11px] text-amber-800 font-medium">
+                {formatINR(parseFloat(payoffAmount) - loanOutstanding)} more arrived than the loan
+                owes. It will be recorded as received but not applied, so the history matches the
+                bank statement.
+              </span>
+            </label>
+          )}
+
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+              Notes (optional)
+            </label>
+            <input
+              type="text"
+              value={payoffNotes}
+              onChange={(e) => setPayoffNotes(e.target.value)}
+              placeholder="Cleared the balance by UPI..."
+              className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+            />
+          </div>
+
+          {/* Proof Upload */}
+          <ProofUpload onCapture={setPayoffProofId} />
+
+          <div className="flex gap-3 pt-2">
+            <button
+              onClick={() => setPayoffOpen(false)}
+              className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-600 font-semibold tap-highlight"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handlePayoff}
+              disabled={payoffLoading || !payoffAmount}
+              className="flex-[2] bg-emerald-600 active:bg-emerald-800 disabled:bg-slate-200 text-white font-bold py-3.5 rounded-2xl tap-highlight"
+            >
+              {payoffLoading ? "Recording..." : "Settle loan ✓"}
+            </button>
+          </div>
+        </div>
+      </BottomSheet>
 
       {/* Pay Bottom Sheet */}
       <BottomSheet

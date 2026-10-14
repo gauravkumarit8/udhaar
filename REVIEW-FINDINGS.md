@@ -12,6 +12,7 @@
 > | **Workflow hygiene** — every action bumped off the Node 20 runtime (`checkout@v7`, `setup-node@v7`, `setup-java@v6`, artifact actions v7/v8, docker actions v4–v7, `action-gh-release@v3`, `setup-android@v4`), `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION` removed, `deploy-render` runs on main pushes and manual runs with a failing hook failing the job, the Android build's blank-WebView failure mode covered by `server.errorPath` → `public/offline.html`, and the last lint warning resolved with an explanation rather than a blanket disable | |
 > | **Notifications actually arrive** — browser push (Web Push + VAPID, `npm run generate:vapid`, `push_subscriptions` from migration 0003), an unread badge on the 🔔 tab with `users.notifications_seen_at`, an always-visible Activity feed with an empty state, and a one-tap "Turn on notifications" prompt. Before this, `registerForPushNotifications()` returned early in any browser and `build-android.yml` never wrote `google-services.json`, so *no* device on *any* platform could receive a push | |
 | **Proof privacy** — payment proofs are uploaded as private Cloudinary assets, stored as an id, and served only through `GET /api/payments/[id]/proof` (session → loan → party), which streams the bytes so no Cloudinary URL reaches a browser; legacy public URLs still redirect; `check-deploy` reports a database without the new column | |
+| **Settlement** — a loan can be cleared in one payment, settled early with the unpaid interest waived, or closed as a write-off; overpayments are recorded as received but not applied. Waived money is never counted as paid, and settled/written-off EMIs stop being reminded or shown as overdue | |
 | **M12** — SQL migrations now exist in `drizzle/`, generated from `schema.ts`, applied by CI and by the deploy boot command; `scripts/baseline-migrations.mjs` adopts an existing `db:push` database | |
 > | **Notifications** — every money event tells the other side (`src/lib/notify.ts`): payment marked / recorded / confirmed / rejected, loan added, loan claimed at signup, loan edited (schedule rebuilt or payment details changed), loan closed; `GET /api/notifications` is scoped per person via `reminders.recipient_id` (migration 0002), and a notification can never fail the payment that caused it | |
 | Low: unbounded amount/rate/tenure validation → `src/lib/validation.ts` (NaN, negatives, `numeric(12,2)` overflow, impossible dates, 100M-month tenures all rejected; live-tested) | |
@@ -265,8 +266,21 @@ Verified with the real engine: ₹1,00,000 @ 12% / 12 months → schedule princi
 #### M3. "Due This Week" on the dashboard actually means "everything overdue, ever"
 `src/app/api/dashboard/route.ts:92-99` — `return diff <= 7;` has no lower bound, so an EMI 8 months overdue is counted in "Due This Week (both sides)". Fix: `diff >= 0 && diff <= 7` and surface overdue as its own number.
 
-#### M4. A loan can be closed with interest unpaid
+#### M4. A loan can be closed with interest unpaid  ✅ fixed
 `loans/[id]/close/route.ts:40-47` and `pay/route.ts:132-145` only compare **principal**, while `computeInstallmentStatus` requires principal *and* interest (`calculations.ts:144`). So the app will happily close a loan and still render an EMI as "overdue"/unpaid. Decide which rule wins and make both paths agree (and cancel pending reminders on close).
+**Fixed:** one rule governs everything now - *waived money is settled money, and
+nothing is ever recorded as paid that was not received*. `POST /api/loans/[id]/close`
+requires the principal unless it is given `{writeOff: true}`, in which case the
+unpaid balance is written to `installments.principal_waived` /
+`interest_waived` and shown as "₹X written off"; `POST /api/loans/[id]/payoff`
+settles the whole schedule in one payment, waiving unpaid interest when the
+principal is covered and keeping any excess as `payments.unapplied_amount`; the
+schedule, the totals and the reminder sweep all net waivers out, so a settled or
+written-off EMI reads as finished and is never chased again. Verified against a
+seeded database: settle (principal / principal + interest / overpaid / short),
+write-off, 2-side confirmation, a stranger, a second payoff on a closed loan, and
+a sweep that is silent for both settled and written-off loans while still chasing
+an unpaid one.
 
 #### M5. The service worker caches authenticated API JSON
 `public/sw.js:29-39` — the fetch handler caches *every* GET response, including `/api/dashboard`, `/api/loans`, `/api/auth/me`, and serves the cache when offline. On a shared device that means the previous user's loan data survives logout; and cached API responses can be served as if fresh. Fix: bypass `event.request.url.includes("/api/")`, or use a network-first/stale-while-revalidate strategy with an explicit user-scoped cache that's purged on logout. (Note the identical `sw.js` at the repo root is dead weight — only `public/` is served.)

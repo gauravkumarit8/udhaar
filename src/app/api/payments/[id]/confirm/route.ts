@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { payments, installments, loans } from "@/db/schema";
 import { getSession } from "@/lib/auth";
-import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments";
-import { closeLoanIfSettled } from "@/lib/loans";
+import { allocatePayment, planPayoff, remainingFor, type PaymentType } from "@/lib/payments";
+import { closeLoanIfSettled, type Outstanding } from "@/lib/loans";
 import { eq, and, lte, sql } from "drizzle-orm";
+import { applyPayoff, PAYMENT_CONFLICT } from "@/lib/settle";
 import { withErrors } from "@/lib/api-handler";
-import { notifyCounterparty, paymentNotice } from "@/lib/notify";
+import { notifyCounterparty, paymentNotice, payoffNotice } from "@/lib/notify";
 
 async function handlePATCH(
   req: NextRequest,
@@ -98,6 +99,130 @@ async function handlePATCH(
   }
 
   // ── Confirm ────────────────────────────────────────────────────────────
+
+  // A payoff is one payment covering the whole loan (see /api/loans/[id]/payoff).
+  // It hangs off a single EMI row but is settled across all of them, and it is
+  // the lender's confirmation that forgives any interest left.
+  if (payment.paymentType === "payoff") {
+    const schedule = await db
+      .select()
+      .from(installments)
+      .where(eq(installments.loanId, payment.loanId))
+      .orderBy(installments.installmentNumber);
+
+    const rows = schedule.map((row) => {
+      const remaining = remainingFor(row);
+      return {
+        installmentNumber: row.installmentNumber,
+        principalRemaining: remaining.principalRemaining,
+        interestRemaining: remaining.interestRemaining,
+      };
+    });
+
+    const plan = planPayoff(parseFloat(payment.amount), rows);
+
+    if (!plan.ok) {
+      // The ledger moved on since this was marked (someone else settled it, or
+      // the claim was overtaken). Reject it loudly rather than confirming a row
+      // that moved no money.
+      await db
+        .update(payments)
+        .set({ status: "rejected", confirmedByUserId: session.id })
+        .where(eq(payments.id, id));
+
+      await notifyCounterparty({
+        userId: markerId,
+        installmentId: payment.installmentId,
+        loanId: payment.loanId,
+        notice: paymentNotice({
+          event: "rejected",
+          actorName: session.name,
+          actorRole: session.id === loan.lenderId ? "lender" : "borrower",
+          amount: parseFloat(payment.amount),
+          installmentNumber: inst.installmentNumber,
+          dueDate: inst.dueDate,
+          reason: `${plan.error} It was marked rejected.`,
+        }),
+      });
+
+      return NextResponse.json(
+        { error: `This payoff can't be applied any more: ${plan.error} It has been marked rejected.` },
+        { status: 409 }
+      );
+    }
+
+    let outcome: {
+      closed: boolean;
+      waivedInterest: number;
+      waivedPrincipal: number;
+      applied: number;
+      outstanding: Outstanding;
+    };
+
+    try {
+      outcome = await db.transaction(async (tx) => {
+        await tx
+          .update(payments)
+          .set({
+            status: "confirmed",
+            confirmedByUserId: session.id,
+            // Re-stated from the ledger as it stands right now.
+            unappliedAmount: plan.unapplied.toFixed(2),
+            notes: selfConfirm
+              ? [payment.notes, "Self-confirmed: borrower has no account yet"]
+                  .filter(Boolean)
+                  .join(" | ")
+              : payment.notes,
+          })
+          .where(eq(payments.id, id));
+
+        return applyPayoff(
+          payment.loanId,
+          plan,
+          schedule.map((row) => ({ id: row.id, installmentNumber: row.installmentNumber })),
+          (q) => tx.execute(q)
+        );
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === PAYMENT_CONFLICT) {
+        return NextResponse.json(
+          { error: "This loan was updated at the same time. Reload and try again." },
+          { status: 409 }
+        );
+      }
+      throw err;
+    }
+
+    await notifyCounterparty({
+      userId: markerId,
+      installmentId: payment.installmentId,
+      loanId: payment.loanId,
+      notice: payoffNotice({
+        event: outcome.closed ? "settled" : "recorded",
+        actorName: session.name,
+        amount: parseFloat(payment.amount),
+        waivedInterest: outcome.waivedInterest,
+        remaining: outcome.outstanding.principal + outcome.outstanding.interest,
+      }),
+    });
+
+    return NextResponse.json({
+      success: true,
+      action: "confirm",
+      selfConfirmed: selfConfirm,
+      loanSettled: outcome.closed,
+      applied: outcome.applied,
+      waivedInterest: outcome.waivedInterest,
+      waivedPrincipal: outcome.waivedPrincipal,
+      // Reported so the UI can say the extra was received but not applied.
+      unapplied: plan.unapplied,
+      remaining: {
+        principal: outcome.outstanding.principal,
+        interest: outcome.outstanding.interest,
+      },
+    });
+  }
+
   const { principalRemaining, interestRemaining } = remainingFor(inst);
 
   const allocation = allocatePayment({

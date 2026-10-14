@@ -114,6 +114,18 @@ export const installments = pgTable("installments", {
   interestPaid: numeric("interest_paid", { precision: 12, scale: 2 })
     .notNull()
     .default("0"),
+  /**
+   * Money the lender gave up on this EMI, kept separate from what was actually
+   * received so "paid" never lies. Two things land here: the interest left on
+   * a loan when it is settled early (the app's settlement rule), and the whole
+   * outstanding balance when a lender closes a loan as a write-off.
+   */
+  principalWaived: numeric("principal_waived", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
+  interestWaived: numeric("interest_waived", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
@@ -127,7 +139,7 @@ export const payments = pgTable("payments", {
     .references(() => loans.id, { onDelete: "cascade" })
     .notNull(),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
-  paymentType: varchar("payment_type", { length: 20 }).notNull(), // interest | principal | both
+  paymentType: varchar("payment_type", { length: 20 }).notNull(), // interest | principal | both | payoff
   proofUrl: text("proof_url"),
   /**
    * Cloudinary public id of the proof (with its extension), for uploads made
@@ -143,6 +155,14 @@ export const payments = pgTable("payments", {
     .notNull(),
   confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
   status: varchar("status", { length: 20 }).notNull().default("pending"), // pending | confirmed | rejected
+  /**
+   * Money received but not applied to anything (`paymentType: "payoff"` only):
+   * the borrower rounded up, or sent more than the loan still owed. Recorded
+   * rather than swallowed, so the audit trail matches the bank statement.
+   */
+  unappliedAmount: numeric("unapplied_amount", { precision: 12, scale: 2 })
+    .notNull()
+    .default("0"),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -174,7 +194,7 @@ export const reminders = pgTable("reminders", {
    * those are shown to both sides of the loan, which is what used to happen.
    */
   recipientId: uuid("recipient_id").references(() => users.id, { onDelete: "cascade" }),
-  /** loan_added | payment_marked | payment_recorded | … | reminder. */
+  /** loan_added | payment_marked | payment_recorded | loan_closed | … | reminder. */
   type: varchar("type", { length: 24 }),
 }, (table) => [uniqueIndex("reminders_dedupe_key_unique").on(table.dedupeKey)]);
 
