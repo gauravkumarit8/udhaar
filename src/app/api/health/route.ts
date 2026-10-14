@@ -1,5 +1,6 @@
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
+import { resolveBuildInfo } from "@/lib/build-info";
 
 export const dynamic = "force-dynamic";
 

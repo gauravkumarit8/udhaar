@@ -16,7 +16,8 @@
     "db:studio": "drizzle-kit studio",
     "check-deploy": "node scripts/check-deploy.mjs",
     "generate:vapid": "node scripts/generate-vapid-keys.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:deployment": "node scripts/verify-deployment.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.1",
