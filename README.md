@@ -277,6 +277,41 @@ npx cap open android
 
 ---
 
+## 📋 What the home screen lists
+
+The **Upcoming & Overdue** list shows **one row per loan** - the earliest payment
+still owed on it - not one row per EMI. A loan with ten installments used to
+produce ten near-identical rows ("23 items" on a two-loan account); now it shows
+the next one, and anything else already late on the same loan is summarised on
+that line (`· 2 more overdue ₹4,240`). The counter beside the heading counts
+loans for the same reason.
+
+Money is unaffected by the collapse: the header totals still add up **every**
+unpaid installment, and the per-loan figure on each row is the next payment only.
+The rule lives in `src/lib/due-items.ts` (`pickNextDuePerLoan`) with unit tests in
+`tests/due-items.test.ts`, so the list and the totals can't drift apart.
+
+### Why it is quick on a slow connection
+
+The database is usually in another region, so every query round-trip is felt.
+
+- `/api/dashboard` is **one** joined query (loans ⋈ users ⋈ installments) that also
+  returns the signed-in person, so the page makes one request instead of two.
+- `/api/notifications?summary=1` (the bottom-bar badge) is a single `count(*)`
+  joined on `users`; the unread count in the feed comes from SQL too.
+- `/api/loans/[id]` fetches installments and payments **in parallel**.
+- The bank of hot-path indexes is `drizzle/0007_hot_path_indexes.sql`, and the
+  connection pool keeps connections alive between requests.
+- The dashboard and the badge paint from `sessionStorage` (`src/lib/client-cache.ts`)
+  while the fresh copy is on its way - cleared on sign-in and sign-out, so a shared
+  phone never flashes the previous person's balances.
+
+Measured warm against a 40 ms-per-round-trip proxy: dashboard **137 → 96 ms**
+(3,078 → 1,084 bytes), badge **183 → 93 ms**, loan detail **181 → 139 ms**,
+notifications **178 → 134 ms**.
+
+---
+
 ## 🔄 GitHub Actions Workflows
 
 ### CI (every PR)

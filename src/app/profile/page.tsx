@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { requestJson } from "@/lib/http";
+import { clearClientCaches } from "@/lib/client-cache";
 import {
   browserPushState,
   disableBrowserPush,
@@ -146,6 +147,8 @@ export default function ProfilePage() {
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
+    // Whatever this device was showing belongs to the person leaving.
+    clearClientCaches();
     window.location.assign("/login");
   };
 

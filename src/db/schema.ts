@@ -2,6 +2,7 @@ import {
   pgTable,
   uuid,
   varchar,
+  index,
   uniqueIndex,
   numeric,
   integer,
@@ -111,7 +112,18 @@ export const loans = pgTable("loans", {
     .notNull()
     .default("1-side"), // 1-side | 2-side
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  /*
+   * The dashboard, the loans list and the reminder sweep all filter on "loans
+   * this person is on", and every loan screen filters by id. Postgres indexes
+   * primary keys but nothing else, so these were sequential scans of the whole
+   * table - invisible at ten loans, not at ten thousand.
+   */
+  index("loans_lender_id_idx").on(table.lenderId),
+  index("loans_borrower_id_idx").on(table.borrowerId),
+  // The one lookup that decides whether a debt finds its owner at signup.
+  index("loans_lender_mobile_idx").on(table.lenderMobile),
+]);
 
 // ─── Installments ────────────────────────────────────────────────
 export const installments = pgTable("installments", {
@@ -143,7 +155,11 @@ export const installments = pgTable("installments", {
     .notNull()
     .default("0"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  // Every installment query is "for this loan" - including the join the
+  // dashboard now does in one round trip.
+  index("installments_loan_id_idx").on(table.loanId),
+]);
 
 // ─── Payments (audit trail) ─────────────────────────────────────
 export const payments = pgTable("payments", {
@@ -181,7 +197,11 @@ export const payments = pgTable("payments", {
     .default("0"),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [
+  // The payment history on a loan screen, and the "confirm or reject" lookup.
+  index("payments_loan_id_idx").on(table.loanId),
+  index("payments_status_idx").on(table.status),
+]);
 
 // ─── Reminders ──────────────────────────────────────────────────
 export const reminders = pgTable("reminders", {
@@ -212,7 +232,12 @@ export const reminders = pgTable("reminders", {
   recipientId: uuid("recipient_id").references(() => users.id, { onDelete: "cascade" }),
   /** loan_added | payment_marked | payment_recorded | loan_closed | … | reminder. */
   type: varchar("type", { length: 24 }),
-}, (table) => [uniqueIndex("reminders_dedupe_key_unique").on(table.dedupeKey)]);
+}, (table) => [
+  uniqueIndex("reminders_dedupe_key_unique").on(table.dedupeKey),
+  // The Activity feed and the badge filter by recipient and by loan.
+  index("reminders_recipient_id_idx").on(table.recipientId),
+  index("reminders_loan_id_idx").on(table.loanId),
+]);
 
 // ─── Device Tokens (for push notifications via FCM) ─────────────
 export const deviceTokens = pgTable("device_tokens", {
@@ -223,4 +248,4 @@ export const deviceTokens = pgTable("device_tokens", {
   token: varchar("token", { length: 512 }).notNull().unique(),
   platform: varchar("platform", { length: 10 }).notNull(), // android | ios | web
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => [index("device_tokens_user_id_idx").on(table.userId)]);

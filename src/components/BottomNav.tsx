@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useHaptics } from "@/hooks/useNative";
+import { UNREAD_CACHE_KEY } from "@/lib/client-cache";
 
 const tabs = [
   { href: "/dashboard", label: "Home", icon: "home" },
@@ -20,8 +21,29 @@ const tabs = [
  * reasonable thing to say even when one existed. The count lives on the
  * server (users.notifications_seen_at), so it is the same on every device.
  */
+/** The last count this device saw, so the badge paints before the request returns. */
+function rememberUnread(count: number): void {
+  try {
+    sessionStorage.setItem(UNREAD_CACHE_KEY, String(count));
+  } catch {
+    // Private mode, storage full - the badge just isn't pre-painted.
+  }
+}
+
 function useUnreadCount(): number {
-  const [unread, setUnread] = useState(0);
+  // Starts from what this device last saw: a badge that appears instantly and
+  // corrects itself a moment later beats a badge that appears late. The tab bar
+  // is on every screen and remounts on each navigation, so without this the
+  // count flickered away and back every time somebody changed tabs.
+  const [unread, setUnread] = useState(() => {
+    if (typeof window === "undefined") return 0;
+    try {
+      const cached = Number(sessionStorage.getItem(UNREAD_CACHE_KEY));
+      return Number.isFinite(cached) && cached > 0 ? cached : 0;
+    } catch {
+      return 0;
+    }
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -31,7 +53,10 @@ function useUnreadCount(): number {
         const res = await fetch("/api/notifications?summary=1", { cache: "no-store" });
         if (!res.ok) return;
         const data = await res.json();
-        if (!cancelled) setUnread(typeof data?.unread === "number" ? data.unread : 0);
+        if (cancelled) return;
+        const count = typeof data?.unread === "number" ? data.unread : 0;
+        setUnread(count);
+        rememberUnread(count);
       } catch {
         // Offline or logged out - leave the last known count alone.
       }
@@ -42,7 +67,10 @@ function useUnreadCount(): number {
     const onFocus = () => void load();
     // Opening the Activity screen clears the badge immediately instead of
     // waiting for the next poll.
-    const onSeen = () => setUnread(0);
+    const onSeen = () => {
+      setUnread(0);
+      rememberUnread(0);
+    };
 
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);

@@ -19,6 +19,19 @@ function getDbInstance(): NodePgDatabase {
   if (!globalForDb.__udhaarPgPool) {
     globalForDb.__udhaarPgPool = new Pool({
       connectionString: databaseUrl,
+      /*
+       * TCP keepalive on every pooled connection, and an idle timeout shorter
+       * than a typical phone's sleep.
+       *
+       * The app is usually idle between visits; without keepalive a pooled
+       * connection can be dead by the time somebody opens a screen, and the
+       * first query then pays for a reconnect (TLS handshake included, and on
+       * Neon a possibly suspended compute) before it does any work. This is
+       * the cheap half of "why is the first tap slow".
+       */
+      keepAlive: true,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
     });
   }
 
