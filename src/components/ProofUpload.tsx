@@ -18,6 +18,15 @@ export default function ProofUpload({ onCapture }: ProofUploadProps) {
   const [localPreview, setLocalPreview] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Proofs are an optional integration. When the deployment has no storage
+   * configured the upload answers 503, and the message it carries is written
+   * for whoever runs the server ("set CLOUDINARY_…"). Showing that to someone
+   * who is halfway through recording a payment tells them nothing they can act
+   * on, so the borrower gets the useful half instead: the money can still be
+   * recorded without a screenshot.
+   */
+  const [unavailable, setUnavailable] = useState(false);
 
   async function uploadAndNotify(dataUrl: string) {
     setError(null);
@@ -30,6 +39,15 @@ export default function ProofUpload({ onCapture }: ProofUploadProps) {
         body: JSON.stringify({ image: dataUrl }),
       });
       const data = await res.json();
+      if (res.status === 503) {
+        // Worth a console line for whoever is debugging the deployment, but
+        // not worth showing to the person making the payment.
+        console.warn("[proof] storage is not configured:", data.error);
+        setUnavailable(true);
+        setLocalPreview(null);
+        clear();
+        return;
+      }
       if (!res.ok) throw new Error(data.error || "Upload failed");
       onCapture(data.proofId);
     } catch (err) {
@@ -100,6 +118,13 @@ export default function ProofUpload({ onCapture }: ProofUploadProps) {
               ✕
             </button>
           )}
+        </div>
+      ) : unavailable ? (
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3">
+          <p className="text-xs text-slate-500 font-medium">
+            Proof uploads aren&apos;t switched on for this app yet — you can still record the
+            payment without a screenshot.
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-2">

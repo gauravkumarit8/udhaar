@@ -571,6 +571,64 @@ success, so a double tap changes nothing.
 The borrower is told either way; the message says what was waived or written
 off, so nobody is surprised later by a smaller number than the schedule showed.
 
+## 🔐 Turning on proof uploads (Cloudinary, free)
+
+Proofs are **optional**: with nothing configured the app still records payments,
+and a screenshot upload answers `503` naming the missing variables instead of
+failing mysteriously. Switching them on takes about five minutes:
+
+1. Create a free account at <https://cloudinary.com/users/register/free>
+   (no card required).
+2. Open **Dashboard → Product Environment Credentials** (same values under
+   *Settings → API Keys*) and copy three things: **Cloud name**, **API Key**,
+   **API Secret**.
+
+   > The API secret is *not* your account password. It is the 20-odd character
+   > string next to the API key, and it can be rotated there - if you ever
+   > rotate it, update it everywhere you set it below.
+
+3. Set the three variables. Locally, put them in `.env`. On a host, add them as
+   environment variables (`render.yaml` already declares all three, so on Render
+   they are simply blank values waiting in the dashboard).
+
+   ```powershell
+   # .env  (or Render → your service → Environment)
+   CLOUDINARY_CLOUD_NAME=your-cloud
+   CLOUDINARY_API_KEY=123456789012345
+   CLOUDINARY_API_SECRET=abcdefghijklmnopqrstuvwxyz
+   ```
+
+4. **Verify before trusting it.** This is the step that catches a typo now
+   rather than mid-payment:
+
+   ```powershell
+   npm run check-deploy
+   # ✓ payment proofs  credentials work — a signed request to cloud "your-cloud" was accepted
+   ```
+
+   It makes one read-only, signed request to Cloudinary, so it distinguishes
+   *"credentials are fine"* from the two mistakes people actually make:
+
+   | What you did | What the check says |
+   |---|---|
+   | pasted an old/rotated API secret | `✗ Cloudinary rejected the credentials (401)` + how to re-copy them |
+   | typed the account email or API key as the cloud name | `✗ no Cloudinary cloud named "…" (404)` + which value to use instead |
+   | configured nothing at all | `! Cloudinary not configured — proof uploads return 503` (not a failure) |
+
+   On a deployment the same answer is one request away: `/api/health` reports
+   `payment proofs: configured` (or `not configured (uploads and proof views
+   return 503)`).
+
+5. **Prove it end to end**: open a loan → **Record Payment** → attach a
+   screenshot → save, then tap **🧾 View proof**. The image is stored privately
+   and streamed back through the app; there is no public link (see the section
+   above).
+
+`CLOUDINARY_DELIVERY_HOST` is optional - set it only if your account serves
+assets from a custom domain or a proxy. The free plan (25 monthly credits,
+managed storage) is far more than proofs need: each one is a ~100 KB JPEG after
+the app's 1600px resize, so tens of thousands fit comfortably.
+
 ## 🚢 Deployment notes
 
 - **Static assets with `output: standalone`.** Next.js does *not* copy
@@ -587,6 +645,19 @@ off, so nobody is surprised later by a smaller number than the schedule showed.
   A start-command change in `render.yaml` reaches an existing service on the
   next Blueprint sync (Dashboard → Blueprints → Sync), or edit the Start Command
   in the service's Settings directly.
+- **Render owns deploys on `main`.** Render's own **Auto-Deploy** is the single
+  main-branch path - one push, one deploy. The `deploy-render` job in
+  `deploy-web.yml` deliberately does *not* cover `main` any more (it did, and
+  each commit queued two deploys of identical code); it is reserved for what
+  Render cannot do itself: deploy a `v*` **tag** (a release) or a manual run
+  from the Actions tab. Keep Auto-Deploy **on** in the service's Settings -
+  with it off, pushing to `main` would deploy nothing. The Docker image still
+  builds on every `main` push, since a `main`-tagged image is an artifact
+  people pull; building is not deploying.
+  `/api/health` verifies this for you: it names any migration column that is
+  still missing (a database without migration 0005 reports `missing columns:
+  installments.principal_waived, …` and answers **503**), so "did the
+  migrations run in production?" is one web request, not a guess.
 - **Don't use Render's free Postgres for real data.** Free instances are
   deleted 30 days after creation, with no backups: that is what silently broke
   production login once. Use any external Postgres (Neon, Supabase, Aiven) and
