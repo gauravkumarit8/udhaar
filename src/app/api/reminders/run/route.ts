@@ -90,13 +90,16 @@ async function handlePOST(req: NextRequest) {
       principalWaived: installments.principalWaived,
       interestWaived: installments.interestWaived,
       borrowerId: loans.borrowerId,
-      lenderName: users.name,
+      // Stored name first, account name as the fallback: a borrower-entered
+      // loan names a lender who may never sign up, and those reminders - the
+      // borrower's own nudge to pay - are exactly the ones worth sending.
+      lenderName: sql<string>`coalesce(${loans.lenderName}, ${users.name})`.as("lender_name"),
       lenderUpiId: loans.upiId,
       borrowerName: loans.borrowerName,
     })
     .from(installments)
     .innerJoin(loans, eq(loans.id, installments.loanId))
-    .innerJoin(users, eq(users.id, loans.lenderId))
+    .leftJoin(users, eq(users.id, loans.lenderId))
     .where(
       and(
         eq(loans.status, "active"),

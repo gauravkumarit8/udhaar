@@ -72,12 +72,28 @@ export const otps = pgTable("otps", {
 // ─── Loans ───────────────────────────────────────────────────────
 export const loans = pgTable("loans", {
   id: uuid("id").defaultRandom().primaryKey(),
-  lenderId: uuid("lender_id")
-    .references(() => users.id)
-    .notNull(),
+  /**
+   * The lender's account, when they have one.
+   *
+   * Nullable because a borrower can record a loan themselves - "I owe my
+   * uncle ₹5,000" - naming a lender who has never used Udhaar. The name and
+   * mobile are stored either way (`lenderName` / `lenderMobile`), and the
+   * account is attached later by `backfillLenderLoans` the first time someone
+   * signs up with that number.
+   */
+  lenderId: uuid("lender_id").references(() => users.id),
   borrowerId: uuid("borrower_id").references(() => users.id),
   borrowerName: varchar("borrower_name", { length: 100 }).notNull(),
   borrowerMobile: varchar("borrower_mobile", { length: 15 }).notNull(),
+  /**
+   * Who typed this in. Separate from the parties because a loan entered by the
+   * borrower has no lender account yet, and *someone* has to be able to fix a
+   * typo in their own record.
+   */
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  /** The lender as named by whoever entered the loan (or copied from their account). */
+  lenderName: varchar("lender_name", { length: 100 }),
+  lenderMobile: varchar("lender_mobile", { length: 15 }),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   interestRate: numeric("interest_rate", { precision: 5, scale: 2 })
     .notNull()

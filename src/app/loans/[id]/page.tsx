@@ -13,8 +13,12 @@ import { summarizeSettlement } from "@/lib/payments";
 
 interface Loan {
   id: string;
-  lenderId: string;
+  /** Null when the borrower entered the loan and the lender has no account. */
+  lenderId: string | null;
   borrowerId: string | null;
+  lenderName: string | null;
+  lenderMobile: string | null;
+  createdByUserId: string | null;
   borrowerName: string;
   borrowerMobile: string;
   amount: string;
@@ -29,6 +33,9 @@ interface Loan {
   confirmationMode: string;
   createdAt: string;
   viewerRole: "lender" | "borrower";
+  /** The server's verdict: nobody on the other side to countersign. */
+  noCounterparty?: boolean;
+  isLender?: boolean;
 }
 
 interface Installment {
@@ -551,10 +558,25 @@ export default function LoanDetailPage() {
   const isLender = loan.viewerRole === "lender";
   const currentUserId = isLender ? loan.lenderId : loan.borrowerId;
   // In 2-side mode a payment normally needs the *other* party to confirm it.
-  // If the borrower never joined Udhaar there is no other party, so the
-  // marker has to be able to confirm their own payment or it would sit
-  // pending forever.
-  const noCounterparty = isLender && !loan.borrowerId;
+  // When that party has no account - the borrower never joined, or the lender
+  // on a loan the borrower entered never joined - the marker must be able to
+  // confirm their own payment, or it would sit pending forever.
+  const noCounterparty = loan.noCounterparty ?? (isLender ? !loan.borrowerId : !loan.lenderId);
+  // Who the loan is *with*, from this viewer's side.
+  const counterpartyName = isLender ? loan.borrowerName : loan.lenderName || "the lender";
+  // Whoever typed the loan in may fix it, while nobody else depends on it.
+  const mayManageRecord =
+    loan.createdByUserId === currentUserId && (isLender || !loan.lenderId);
+  /**
+   * Can this viewer settle by paying the principal and have the rest waived?
+   *
+   * The lender always can. A borrower can *only* when the lender is on Udhaar
+   * to be asked (in 2-side mode their confirmation is the signature; in
+   * 1-side they chose to trust the other person's word). On a loan the
+   * borrower entered for a lender who never joined, nobody can grant a
+   * waiver, so the borrower pays what they owe in full.
+   */
+  const canWaiveOnSettle = isLender || Boolean(loan.lenderId);
 
   const paidInstallments = installments.filter((i) => i.computedStatus === "paid").length;
   const progressPercent = installments.length > 0
@@ -1137,7 +1159,8 @@ export default function LoanDetailPage() {
         subtitle={`${formatINR(principalOutstanding)} principal + ${formatINR(interestOutstanding)} interest outstanding`}
       >
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-2">
+          <div className={`grid gap-2 ${canWaiveOnSettle ? "grid-cols-2" : "grid-cols-1"}`}>
+            {canWaiveOnSettle && (
             <button
               onClick={() => {
                 setPayoffAmount(principalOutstanding.toFixed(2));
@@ -1153,10 +1176,19 @@ export default function LoanDetailPage() {
                 {formatINR(principalOutstanding)}
               </div>
               <div className="text-[11px] text-slate-500 mt-0.5">
-                Settle the principal
-                {interestOutstanding > 0.01 ? ` · waives ${formatINR(interestOutstanding)} interest` : ""}
+                {canWaiveOnSettle ? (
+                  <>
+                    Settle the principal
+                    {interestOutstanding > 0.01
+                      ? ` · waives ${formatINR(interestOutstanding)} interest`
+                      : ""}
+                  </>
+                ) : (
+                  <>Only {counterpartyName} can waive interest — pay the full amount</>
+                )}
               </div>
             </button>
+            )}
             <button
               onClick={() => {
                 setPayoffAmount(loanOutstanding.toFixed(2));
@@ -1343,8 +1375,8 @@ export default function LoanDetailPage() {
         </div>
       </BottomSheet>
 
-      {/* Edit/Delete - lender only */}
-      {isLender && (
+      {/* Edit/Delete - whoever entered the record, while it is only theirs */}
+      {mayManageRecord && (
         <div className="fixed left-0 right-0 z-40 px-3" style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}>
           <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur-xl">
             <div className="grid grid-cols-2 gap-2">

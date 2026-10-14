@@ -5,6 +5,7 @@ import { getSession } from "@/lib/auth";
 import { computeInstallmentStatus, generateInstallmentSchedule } from "@/lib/calculations";
 import { and, eq } from "drizzle-orm";
 import { parseLoanInput } from "@/lib/validation";
+import { hasNoCounterparty, isLoanAuthor, isLoanLender, isLoanParty, loanRole } from "@/lib/loan-access";
 import { withErrors } from "@/lib/api-handler";
 import { loanAddedNotice, loanUpdatedNotice, notifyCounterparty } from "@/lib/notify";
 
@@ -24,12 +25,20 @@ async function handleGET(
     return NextResponse.json({ error: "Loan not found" }, { status: 404 });
   }
 
-  // Only the lender or the linked borrower may view this loan
-  if (loan.lenderId !== session.id && loan.borrowerId !== session.id) {
+  // A party to the loan, or whoever typed it in.
+  if (!isLoanParty(loan, session.id)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const viewerRole = loan.lenderId === session.id ? "lender" : "borrower";
+  const viewerRole = loanRole(loan, session.id);
+  /**
+   * Is there nobody on the other side to countersign?
+   *
+   * For a loan I lent, that is "the borrower hasn't joined". For one I owe -
+   * which only I could have entered - it is "the lender has no account", and
+   * the screen has to say so instead of offering them a button that 403s.
+   */
+  const noCounterparty = hasNoCounterparty(loan, session.id);
 
   // Get installments with computed status
   const rawInstallments = await db
@@ -60,7 +69,7 @@ async function handleGET(
     .orderBy(payments.createdAt);
 
   return NextResponse.json({
-    loan: { ...loan, viewerRole },
+    loan: { ...loan, viewerRole, noCounterparty, isLender: viewerRole === "lender" },
     installments: enrichedInstallments,
     payments: loanPayments,
   });
@@ -82,8 +91,28 @@ async function handlePATCH(
     return NextResponse.json({ error: "Loan not found" }, { status: 404 });
   }
 
-  if (loan.lenderId !== session.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  /*
+   * Who may change the record itself?
+   *
+   *   - Whoever typed it in (so a borrower who entered "I owe ₹5,000" can fix
+   *     a typo in their own entry).
+   *   - But only while nobody else is relying on it: once the lender has an
+   *     account, the loan is shared and only they can rewrite or remove it.
+   *
+   * Money is a different question - waiving and writing off live in the close
+   * and payoff routes and stay lender-only, always.
+   */
+  const mayManageRecord = isLoanAuthor(loan, session.id) && (isLoanLender(loan, session.id) || !loan.lenderId);
+
+  if (!mayManageRecord) {
+    return NextResponse.json(
+      {
+        error: loan.lenderId
+          ? "This loan is shared with its lender now, so only they can change it."
+          : "Forbidden",
+      },
+      { status: 403 }
+    );
   }
 
   let body: unknown;
@@ -163,15 +192,48 @@ async function handlePATCH(
     }
   }
 
-  // Re-resolve the borrower's account if the mobile number changed (or was
-  // never linked in the first place) - otherwise fixing a typo'd number
-  // would leave the loan permanently invisible to the borrower.
+  /*
+   * Which way round is the loan *already*? An edit must not flip a debt
+   * somebody owes into one they are owed; it only corrects the details. So the
+   * direction is read off the stored row, not off the request body - and the
+   * name and number being edited are the other person's, whichever side that
+   * happens to be.
+   */
+  const storedAsBorrower =
+    Boolean(loan.borrowerId) && loan.createdByUserId === loan.borrowerId && !loan.lenderId;
+  const editAsBorrower = storedAsBorrower || (parsed.value.side === "borrower" && !loan.lenderId);
+
+  const partnerName = editAsBorrower ? (parsed.value.lenderName ?? "") : parsed.value.borrowerName;
+  const partnerMobile = editAsBorrower
+    ? (parsed.value.lenderMobile ?? "")
+    : parsed.value.borrowerMobile;
+
+  // Re-resolve the other side's account if the mobile number changed (or was
+  // never linked in the first place) - otherwise fixing a typo'd number would
+  // leave the loan permanently invisible to them, for ever.
   let borrowerId = loan.borrowerId;
-  if (borrowerMobile !== loan.borrowerMobile) {
+  let lenderId = loan.lenderId;
+  let lenderName = loan.lenderName;
+  let lenderMobile = loan.lenderMobile;
+
+  if (editAsBorrower) {
+    lenderName = partnerName;
+    lenderMobile = partnerMobile;
+    if (partnerMobile !== loan.lenderMobile || !loan.lenderId) {
+      const [matchedLender] = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.mobile, partnerMobile))
+        .limit(1);
+      lenderId = matchedLender?.id ?? null;
+    }
+    // The borrower is the person editing: their own name and number stand.
+    borrowerId = loan.borrowerId ?? session.id;
+  } else if (partnerMobile !== loan.borrowerMobile || !loan.borrowerId) {
     const [matchedBorrower] = await db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.mobile, borrowerMobile))
+      .where(eq(users.mobile, partnerMobile))
       .limit(1);
     borrowerId = matchedBorrower?.id ?? null;
   }
@@ -181,8 +243,13 @@ async function handlePATCH(
       .update(loans)
       .set({
         borrowerId,
-        borrowerName,
-        borrowerMobile,
+        lenderId,
+        lenderName,
+        lenderMobile,
+        // On a borrower-entered loan these two stay as the borrower typed
+        // them; the partner fields above are the lender's.
+        borrowerName: editAsBorrower ? loan.borrowerName : partnerName,
+        borrowerMobile: editAsBorrower ? loan.borrowerMobile : partnerMobile,
         amount: principalAmount.toFixed(2),
         interestRate: rate.toFixed(2),
         interestRatePeriod: ratePeriod,
@@ -233,16 +300,21 @@ async function handlePATCH(
 
   const paymentDetailsChanged =
     loan.upiId !== (upiId || null) || loan.accountNumber !== (accountNumber || null);
-  // A loan that only now found its owner (the mobile number was corrected, or
-  // the person just signed up) is news to them - same notice as a new loan,
-  // because that is what it is from their side.
-  const linkedNow = borrowerId !== loan.borrowerId;
+  /*
+   * A loan that only now found its owner (the mobile number was corrected, or
+   * the person just signed up) is news to them - same notice as a new loan,
+   * because that is what it is from their side. Either side can be the one
+   * that just appeared: the borrower on a loan I lent, or the lender on a loan
+   * I owed and entered myself.
+   */
+  const linkedNow = borrowerId !== loan.borrowerId || lenderId !== loan.lenderId;
+  const notifyUserId = editAsBorrower ? lenderId : borrowerId;
   const worthTelling = linkedNow || scheduleChanged || paymentDetailsChanged;
 
-  if (firstInst && borrowerId && worthTelling) {
+  if (firstInst && notifyUserId && worthTelling) {
 
     await notifyCounterparty({
-      userId: borrowerId,
+      userId: notifyUserId,
       installmentId: firstInst.id,
       loanId: id,
       notice: linkedNow
@@ -283,8 +355,17 @@ async function handleDELETE(
     return NextResponse.json({ error: "Loan not found" }, { status: 404 });
   }
 
-  if (loan.lenderId !== session.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const mayDeleteRecord = isLoanAuthor(loan, session.id) && (isLoanLender(loan, session.id) || !loan.lenderId);
+
+  if (!mayDeleteRecord) {
+    return NextResponse.json(
+      {
+        error: loan.lenderId
+          ? "This loan is shared with its lender now, so only they can delete it."
+          : "Forbidden",
+      },
+      { status: 403 }
+    );
   }
 
   await db.delete(reminders).where(eq(reminders.loanId, id));

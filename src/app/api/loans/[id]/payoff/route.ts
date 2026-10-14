@@ -7,7 +7,9 @@ import { notifyCounterparty, payoffNotice } from "@/lib/notify";
 import { applyPayoff, PAYMENT_CONFLICT } from "@/lib/settle";
 import { toNumber, validateProofId, validateProofUrl, LIMITS } from "@/lib/validation";
 import { withErrors } from "@/lib/api-handler";
+import { isLoanLender, isUnclaimedBorrowerLoan, loanRole, waiverRefusal } from "@/lib/loan-access";
 import { and, eq } from "drizzle-orm";
+import { formatINR } from "@/lib/calculations";
 
 /**
  * Records one payment that settles a whole loan - what actually happens when
@@ -87,7 +89,7 @@ async function handlePOST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const actorRole = loan.lenderId === session.id ? "lender" : "borrower";
+  const actorRole = loanRole(loan, session.id);
   const counterpartyId = actorRole === "lender" ? loan.borrowerId : loan.lenderId;
 
   const schedule = await db
@@ -118,6 +120,30 @@ async function handlePOST(
   const plan = planPayoff(paidAmount, rows);
   if (!plan.ok) {
     return NextResponse.json({ error: plan.error }, { status: 400 });
+  }
+
+  /*
+   * The invariant this whole file protects: **a waiver is never the borrower's
+   * to grant when the lender cannot be asked.**
+   *
+   * Paying the principal settles a loan and forgives the interest left on it -
+   * which is fine when the two people share a loan on Udhaar: the lender chose
+   * the confirmation mode, and a 2-side claim still needs their signature.
+   *
+   * On a loan *the borrower entered*, though, the lender may have no account
+   * at all. There nobody could ever grant the waiver, so the borrower paying
+   * the principal alone would be cancelling their own interest by typing a
+   * smaller number. They can still pay *everything* (amount = total owed), and
+   * they can still pay part of it; what they cannot do is forgive.
+   */
+  if (plan.waivedInterest > 0 && !isLoanLender(loan, session.id) && isUnclaimedBorrowerLoan(loan)) {
+    return NextResponse.json(
+      {
+        error: waiverRefusal(loan),
+        interestOutstanding: plan.waivedInterest,
+      },
+      { status: 403 }
+    );
   }
 
   // In 2-side mode the ledger only moves on confirmation, so a second claim on

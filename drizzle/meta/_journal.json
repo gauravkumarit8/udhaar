@@ -43,6 +43,13 @@
       "when": 1791952495176,
       "tag": "0005_settlement_and_writeoffs",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791967848608,
+      "tag": "0006_borrower_side_loans",
+      "breakpoints": true
     }
   ]
 }

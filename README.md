@@ -12,6 +12,7 @@
 
 People in India lend money to friends and family, but tracking it is awkward. Udhaar solves this:
 
+- ✅ **Both directions** — record a loan you lent, or one you owe (naming a lender who has never used the app; their account attaches when they sign up)
 - ✅ **Add loans** with interest (monthly or yearly rate) and auto-generate EMI schedule
 - ✅ **Smart reminders** — T-2, T-1, T0 notifications + 7-day overdue nag mode
 - ✅ **Mark payments** — partial interest/principal payments with proof upload
@@ -403,6 +404,7 @@ always, and on their phone whenever the app is installed and push is configured
 | --- | --- | --- |
 | A loan is added for them | the borrower | "Gaurav added a loan of ₹5,000 for you … first payment of ₹1,000 due on 15 Oct 2026." |
 | They sign up after a loan was recorded | the borrower | the same notice, the first time they log in |
+| A borrower records a debt to them | the lender, once they join | "Sneha had recorded owing you ₹20,000 on Udhaar, and it is now linked to your account." |
 | A payment is marked (2-side loan) | whoever has to confirm it | "Rahul marked ₹1,000 as paid for EMI 1 (due 15 Nov). Confirm it once the money reaches you." |
 | A payment is recorded (1-side loan) | the other side | "Gaurav recorded a payment of ₹1,000 for EMI 1." — plus "the loan is settled 🎉" when it was the last one |
 | A payment is confirmed | the person who marked it | "Gaurav confirmed your ₹1,000 payment for EMI 1." |
@@ -426,7 +428,9 @@ Three rules keep it predictable:
 
 A borrower who has no Udhaar account yet is not forgotten: their notifications
 are delivered the moment they sign up (`backfillBorrowerLoans` links the loans
-recorded against their mobile number, and announces them).
+recorded against their mobile number, and announces them). The same is true in
+the other direction: a **lender** who was named in a debt someone else recorded
+is linked and told about it by `backfillLenderLoans` on first login.
 
 Not covered, deliberately: **deleting a loan** notifies nobody, because the
 notification rows belong to the loan and go with it — and a payment "reminder"
@@ -630,6 +634,53 @@ success, so a double tap changes nothing.
 
 The borrower is told either way; the message says what was waived or written
 off, so nobody is surprised later by a smaller number than the schedule showed.
+
+## 🙋 The other direction: recording what *you* owe
+
+The app started from the lender's side ("I lent ₹5,000 to Rahul"), which left
+out half of real life: the same person who lent ₹5,000 has usually borrowed
+something themselves. `POST /api/loans` now takes a `side`:
+
+| `side` | Who is asking | Named in the form | Whose account links later |
+| --- | --- | --- | --- |
+| `"lender"` (default) | the person lending | the borrower | the borrower, on signup (`backfillBorrowerLoans`) |
+| `"borrower"` | the person who owes | the lender | the lender, on signup (`backfillLenderLoans`) |
+
+A borrower-entered loan is a **real loan row** with the same schedule, reminders
+and settlement rules - the only difference is that `loans.lender_id` stays
+`NULL` until the lender signs up with the mobile number that was recorded. Until
+then the loan shows a **NOT ON UDHAAR** tag, and the borrower's own reminders
+(paid by WhatsApp/SMS share) still work, because the message names the lender
+from the loan record rather than from a user row.
+
+### Who is allowed to forgive a debt
+
+This is the rule the whole feature is built around, and it is enforced on the
+server, not in the UI:
+
+> **A waiver is never the borrower's to grant.** Closing a loan writes off what
+> is left, and settling in full forgives unpaid interest. Neither can be done by
+> a borrower on a loan whose lender has no account - there is nobody who could
+> grant it, so the borrower pays what they owe in full, and the refusal names
+> the lender and says what to do instead.
+
+| Action | Borrower-entered loan, lender not on Udhaar | Once the lender joins |
+| --- | --- | --- |
+| pay part of what is owed | ✅ | ✅ |
+| pay the whole amount | ✅ | ✅ |
+| pay the principal and have the rest waived | ❌ refused, with the lender's name | ✅ (the lender chose the confirmation mode) |
+| close / write off the loan | ❌ always lender-only | ✅ lender only |
+| correct a typo in the entry | ✅ (they typed it) | ❌ now a shared record |
+| delete the entry | ✅ while nobody else relies on it | ❌ |
+
+The roles are computed in one place, `src/lib/loan-access.ts`, and every route
+that touches a loan or a payment goes through it.
+
+> Requires `drizzle/0006_borrower_side_loans.sql` - run `npm run db:migrate`.
+> It makes `loans.lender_id` nullable and adds `created_by_user_id`,
+> `lender_name` and `lender_mobile`, backfilling the name and number of every
+> existing loan from its lender's account. `npm run verify:settlement` covers the
+> whole flow, including a lender signing up and the debt finding them.
 
 ## 🔐 Turning on proof uploads (Cloudinary, free)
 

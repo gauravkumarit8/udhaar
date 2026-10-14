@@ -5,6 +5,7 @@ import { getSession } from "@/lib/auth";
 import { getOutstanding, waiveRemaining } from "@/lib/loans";
 import { and, eq } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
+import { isLoanLender, isUnclaimedBorrowerLoan, waiverRefusal } from "@/lib/loan-access";
 import { loanClosedNotice, notifyCounterparty } from "@/lib/notify";
 
 /**
@@ -49,8 +50,17 @@ async function handlePOST(
   }
 
   // Only the lender can close a loan - and only the lender can give up money.
-  if (loan.lenderId !== session.id) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!isLoanLender(loan, session.id)) {
+    // Refusing is the point: closing a loan forgives whatever is left, and a
+    // borrower must never be able to forgive their own debt. Say who can.
+    return NextResponse.json(
+      {
+        error: isUnclaimedBorrowerLoan(loan)
+          ? waiverRefusal(loan)
+          : "Only the lender can close this loan.",
+      },
+      { status: 403 }
+    );
   }
 
   const outstanding = await getOutstanding(id);

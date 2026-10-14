@@ -9,6 +9,20 @@ import {
 } from "@/lib/validation";
 import { readApi, requestJson } from "@/lib/http";
 
+/** The same body, for the other direction: "I owe this money". */
+function validBorrowedLoan(overrides: Record<string, unknown> = {}) {
+  return {
+    side: "borrower",
+    lenderName: "Uncle Suresh",
+    lenderMobile: "9876543211",
+    amount: "20000",
+    interestRate: "0",
+    tenureMonths: "6",
+    startDate: "2026-07-15",
+    ...overrides,
+  };
+}
+
 /** A valid create-loan body, so each test only changes what it's testing. */
 function validLoan(overrides: Record<string, unknown> = {}) {
   return {
@@ -266,5 +280,70 @@ describe("validateProofId", () => {
     expect(validateProofId(42).ok).toBe(false);
     expect(validateProofId({}).ok).toBe(false);
     expect(validateProofId("udhaar/proofs/" + "a".repeat(LIMITS.PROOF_ID_MAX)).ok).toBe(false);
+  });
+});
+
+describe("parseLoanInput, the borrower's side", () => {
+  it("reads the lender's details when the borrower is entering the loan", () => {
+    const result = parseLoanInput(validBorrowedLoan());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.side).toBe("borrower");
+    expect(result.value.lenderName).toBe("Uncle Suresh");
+    expect(result.value.lenderMobile).toBe("9876543211");
+    // The borrower is the person asking, so the route fills these from the
+    // session rather than trusting the body.
+    expect(result.value.borrowerName).toBe("");
+    expect(result.value.borrowerMobile).toBe("");
+  });
+
+  it("defaults to the original direction when no side is sent", () => {
+    const result = parseLoanInput(validLoan());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.side).toBe("lender");
+    expect(result.value.lenderName).toBeNull();
+    expect(result.value.lenderMobile).toBeNull();
+  });
+
+  it("rejects a side that is neither direction", () => {
+    const result = parseLoanInput(validLoan({ side: "both" }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("lender");
+  });
+
+  it("insists on the lender's name, not the borrower's, in this direction", () => {
+    // Borrower details in a borrower-entered body are not a substitute: if the
+    // lender is unnamed there is nobody to attach the debt to later.
+    const result = parseLoanInput(
+      validBorrowedLoan({ lenderName: "", borrowerName: "Me Myself" })
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("Lender name is required");
+  });
+
+  it("checks the lender's mobile, because that is how their account links", () => {
+    expect(parseLoanInput(validBorrowedLoan({ lenderMobile: "+91 98765 43211" })).ok).toBe(false);
+    expect(parseLoanInput(validBorrowedLoan({ lenderMobile: "987654321" })).ok).toBe(false);
+    expect(parseLoanInput(validBorrowedLoan({ lenderMobile: "98765432110" })).ok).toBe(false);
+    expect(parseLoanInput(validBorrowedLoan({ lenderMobile: "9876543211" })).ok).toBe(true);
+  });
+
+  it("applies the same money rules in both directions", () => {
+    for (const bad of [{ amount: "0" }, { amount: "abc" }, { interestRate: "-1" }, { tenureMonths: "0" }]) {
+      expect(parseLoanInput(validBorrowedLoan(bad)).ok).toBe(false);
+      expect(parseLoanInput(validLoan(bad)).ok).toBe(false);
+    }
+  });
+
+  it("trims the name it stores", () => {
+    const result = parseLoanInput(validBorrowedLoan({ lenderName: "  Aunty Kamla  " }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.lenderName).toBe("Aunty Kamla");
   });
 });

@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { db } from "@/db";
 import { users, sessions, loans, installments } from "@/db/schema";
 import { eq, and, isNull, lt } from "drizzle-orm";
-import { loanAddedNotice, notifyCounterparty } from "@/lib/notify";
+import { loanAddedNotice, loanClaimedNotice, notifyCounterparty } from "@/lib/notify";
 
 const SESSION_COOKIE = "udhaar_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
@@ -102,6 +102,8 @@ export async function getOrCreateUser(
 
   if (existing) {
     await backfillBorrowerLoans(existing.id, existing.mobile);
+    // ...and the reverse: loans someone else entered naming *them* as lender.
+    await backfillLenderLoans(existing.id, existing.mobile);
     return existing;
   }
 
@@ -111,6 +113,7 @@ export async function getOrCreateUser(
     .returning();
 
   await backfillBorrowerLoans(created.id, created.mobile);
+  await backfillLenderLoans(created.id, created.mobile);
 
   return created;
 }
@@ -138,11 +141,13 @@ export async function backfillBorrowerLoans(userId: string, mobile: string): Pro
 
     if (!firstInst) continue;
 
-    const [lender] = await db
-      .select({ name: users.name })
-      .from(users)
-      .where(eq(users.id, loan.lenderId))
-      .limit(1);
+    const [lender] = loan.lenderId
+      ? await db
+          .select({ name: users.name })
+          .from(users)
+          .where(eq(users.id, loan.lenderId))
+          .limit(1)
+      : [undefined];
 
     await notifyCounterparty({
       userId,
@@ -158,3 +163,48 @@ export async function backfillBorrowerLoans(userId: string, mobile: string): Pro
     });
   }
 }
+
+/**
+ * The mirror of `backfillBorrowerLoans`, for loans a *borrower* entered.
+ *
+ * Someone signs up and it turns out another person had already written down a
+ * loan to their number: "I owe my uncle ₹5,000". This attaches their account
+ * as the lender, so from that moment they can see it, confirm payments and -
+ * the reason it matters - settle or write it off. Without it, a debt recorded
+ * by the borrower could never be forgiven by anyone, because a waiver is never
+ * the borrower's to give.
+ *
+ * Returns the linked loan ids so the caller can report what happened.
+ */
+export async function backfillLenderLoans(userId: string, mobile: string): Promise<string[]> {
+  const linkedLoans = await db
+    .update(loans)
+    .set({ lenderId: userId })
+    .where(and(eq(loans.lenderMobile, mobile), isNull(loans.lenderId)))
+    .returning();
+
+  for (const loan of linkedLoans) {
+    const [firstInst] = await db
+      .select()
+      .from(installments)
+      .where(eq(installments.loanId, loan.id))
+      .orderBy(installments.installmentNumber)
+      .limit(1);
+
+    if (!firstInst) continue;
+
+    await notifyCounterparty({
+      userId,
+      installmentId: firstInst.id,
+      loanId: loan.id,
+      notice: loanClaimedNotice({
+        borrowerName: loan.borrowerName,
+        amount: parseFloat(loan.amount),
+        firstDueAmount: parseFloat(firstInst.totalAmount),
+      }),
+    });
+  }
+
+  return linkedLoans.map((loan) => loan.id);
+}
+
