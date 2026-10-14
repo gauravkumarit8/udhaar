@@ -29,6 +29,8 @@ export default function ProfilePage() {
   const [channels, setChannels] = useState<Channels>({ push: true, sms: false, whatsapp: false });
   const [loading, setLoading] = useState(true);
   const [savingPush, setSavingPush] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -94,6 +96,54 @@ export default function ProfilePage() {
     }
   };
 
+  /** Downloads everything the app holds about this person, as a JSON file. */
+  const handleExport = () => {
+    // A plain navigation, not fetch: the route sets Content-Disposition, and
+    // letting the browser handle it avoids holding the whole file in memory.
+    window.location.href = "/api/account/export";
+  };
+
+  /**
+   * Deleting is offered honestly: the server refuses while a loan is open, and
+   * that refusal is a feature (a loan belongs to two people). So the UI asks
+   * once, then shows exactly what the server said if it says no.
+   */
+  const handleDelete = async () => {
+    if (
+      !confirm(
+        "Delete your account?\n\n" +
+          "This removes your profile and every loan you are on, including its payments and " +
+          "history. The other person on a closed loan loses that record too.\n\n" +
+          "It cannot be undone."
+      )
+    ) {
+      return;
+    }
+
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch("/api/account", { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        window.location.assign("/login");
+        return;
+      }
+      if (!res.ok) {
+        setDeleteError(data.action || data.error || "Couldn't delete the account. Try again.");
+        return;
+      }
+
+      // The session is gone with the account - back to the front door.
+      window.location.assign("/login");
+    } catch {
+      setDeleteError("Network error - nothing was deleted.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     window.location.assign("/login");
@@ -138,20 +188,30 @@ export default function ProfilePage() {
             {pushNote && (
               <p className="px-4 py-3 text-xs text-amber-700 border-t border-slate-50">{pushNote}</p>
             )}
-            <ToggleRow
-              label="SMS Reminders"
-              icon="💬"
-              on={false}
-              disabled
-              hint={channels.sms ? undefined : "SMS isn't connected yet"}
-            />
-            <ToggleRow
-              label="WhatsApp Reminders"
-              icon="📲"
-              on={false}
-              disabled
-              hint="Not connected yet"
-            />
+            {/* Reminders on WhatsApp/SMS are sent from the lender's own
+                phone, so they are not a preference to toggle - they are how
+                the reminder reaches someone who never installed Udhaar. */}
+            <div className="px-4 py-3 border-t border-slate-50">
+              <div className="flex items-center gap-3">
+                <span className="text-lg">📲</span>
+                <span className="text-sm text-slate-700">WhatsApp reminders</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 ml-8">
+                The reminder opens in your own WhatsApp, ready to send — so the borrower
+                doesn&apos;t need this app installed.
+              </p>
+            </div>
+            <div className="px-4 py-3 border-t border-slate-50">
+              <div className="flex items-center gap-3">
+                <span className="text-lg">💬</span>
+                <span className="text-sm text-slate-700">Automatic SMS</span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 ml-8">
+                {channels.sms
+                  ? "MSG91 is configured — OTPs are sent for real."
+                  : "Not set up: SMS is only used for OTPs once MSG91 keys are added. Reminders go through your own phone."}
+              </p>
+            </div>
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
@@ -160,8 +220,8 @@ export default function ProfilePage() {
             </h3>
             <p className="px-4 pb-4 text-xs text-slate-400">
               Udhaar nudges the borrower 2 days before, 1 day before and on the due date, then daily
-              while it stays unpaid. Reminders you send from a loan page are delivered instantly as
-              push notifications.
+              while it stays unpaid. From a loan page you can send a reminder on WhatsApp or by SMS,
+              or as an in-app notification if the borrower installed Udhaar.
             </p>
           </div>
 
@@ -194,6 +254,46 @@ export default function ProfilePage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
             </div>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide px-4 pt-4 pb-2">
+              Your data
+            </h3>
+            <p className="px-4 pb-3 text-xs text-slate-400">
+              Yours to take with you: loans, payments, reminders — everything the app holds about
+              you, as one file.
+            </p>
+            <button
+              onClick={handleExport}
+              className="w-full text-left px-4 py-3 flex items-center justify-between border-t border-slate-50 tap-highlight active:bg-slate-50"
+            >
+              <span className="flex items-center gap-3">
+                <span className="text-lg">⬇️</span>
+                <span className="text-sm text-slate-700 font-medium">Download my data</span>
+              </span>
+              <span className="text-[10px] text-slate-400 font-medium">JSON</span>
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="w-full text-left px-4 py-3 flex items-center justify-between border-t border-slate-50 tap-highlight active:bg-red-50 disabled:opacity-60"
+            >
+              <span className="flex items-center gap-3">
+                <span className="text-lg">🗑️</span>
+                <span className="text-sm text-red-600 font-medium">
+                  {deleting ? "Deleting…" : "Delete my account"}
+                </span>
+              </span>
+            </button>
+            {deleteError && (
+              <div className="px-4 py-3 border-t border-red-100 bg-red-50">
+                <p className="text-xs text-red-700">{deleteError}</p>
+                <a href="/dashboard" className="text-xs font-semibold text-red-700 underline mt-1 inline-block">
+                  Go to my loans
+                </a>
+              </div>
+            )}
           </div>
 
           <button

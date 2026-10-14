@@ -108,7 +108,21 @@ export default function LoanDetailPage() {
     installmentId: string;
     text: string;
     upiLink?: string;
+    /**
+     * Set when a WhatsApp/SMS link could not be opened automatically - a
+     * browser is entitled to block a pop-up that follows an `await`, so the
+     * lender always gets a link they can tap instead.
+     */
+    link?: { href: string; label: string };
   } | null>(null);
+  /**
+   * Which EMI the reminder sheet is open for. The sheet exists because a
+   * reminder is something the *lender* sends, from their own phone: WhatsApp
+   * needs no app on the borrower's side, which is the only way this reaches
+   * someone who has never heard of Udhaar.
+   */
+  const [remindFor, setRemindFor] = useState<string | null>(null);
+  const [remindLoading, setRemindLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"schedule" | "payments">("schedule");
   const [paymentError, setPaymentError] = useState<string | null>(null);
   // "Settle in full" - one payment for the whole loan, which is how people
@@ -242,17 +256,28 @@ export default function LoanDetailPage() {
     }
   };
 
-  const handleRemind = async (installmentId: string) => {
+  /**
+   * Records the reminder and hands back the message to send.
+   *
+   * `channel` decides what actually goes out: WhatsApp/SMS open the lender's
+   * own app with the text ready (nothing for the borrower to install), while
+   * push is the automatic path for a borrower who does have the app.
+   */
+  const handleRemind = async (installmentId: string, channel: "whatsapp" | "sms" | "push") => {
     haptics.tap();
+    setRemindLoading(true);
+
     try {
-      const result = await requestJson<{ delivered?: boolean; reason?: string; upiLink?: string }>(
-        `/api/installments/${installmentId}/remind`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ channel: "push" }),
-        }
-      );
+      const result = await requestJson<{
+        delivered?: boolean;
+        reason?: string;
+        upiLink?: string;
+        share?: { text: string; whatsappUrl: string; smsUrl: string };
+      }>(`/api/installments/${installmentId}/remind`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel }),
+      });
       const data = result.data ?? {};
 
       if (!result.ok) {
@@ -261,32 +286,49 @@ export default function LoanDetailPage() {
         return;
       }
 
+      setRemindFor(null);
       setReminderSent(installmentId);
 
-      if (data.delivered) {
-        haptics.notification("success");
-        setReminderNote({ installmentId, text: "Reminder delivered to the borrower's phone." });
-      } else {
-        // Be honest: push only reaches the borrower if they registered a
-        // device. Until SMS/WhatsApp is wired up there's no other channel.
-        haptics.notification("warning");
+      if (channel === "push") {
+        // The one case where delivery is knowable, so say exactly that.
+        haptics.notification(data.delivered ? "success" : "warning");
         setReminderNote({
           installmentId,
-          text: data.reason || "Reminder recorded, but it couldn't be delivered.",
+          text: data.delivered
+            ? "Reminder delivered to the borrower's phone."
+            : data.reason || "Reminder recorded, but it couldn't be delivered.",
           upiLink: data.upiLink ?? undefined,
+        });
+        if (data.delivered) {
+          const inst = installments.find((i) => i.id === installmentId);
+          if (inst && loan) {
+            const remaining =
+              parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid);
+            reminders.schedule(installmentId, inst.dueDate, loan.borrowerName, remaining);
+          }
+        }
+      } else {
+        // Opened the lender's own app: honest wording, and a fallback link in
+        // case the browser blocked the pop-up or they changed their mind.
+        const url = channel === "whatsapp" ? data.share?.whatsappUrl : data.share?.smsUrl;
+        haptics.notification("success");
+
+        const opened = url ? window.open(url, "_blank") : null;
+        const appName = channel === "whatsapp" ? "WhatsApp" : "your messages";
+        setReminderNote({
+          installmentId,
+          text: opened
+            ? `Reminder ready in ${appName} - press send there.`
+            : `Reminder recorded. Tap below to open ${appName}.`,
+          link: !opened && url ? { href: url, label: `Open ${appName}` } : undefined,
         });
       }
 
-      // Locally scheduled notifications nudge *this* device (the lender's) to
-      // follow up, on top of whatever reached the borrower.
-      const inst = installments.find((i) => i.id === installmentId);
-      if (inst && loan && data.delivered) {
-        const remaining = parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid);
-        reminders.schedule(installmentId, inst.dueDate, loan.borrowerName, remaining);
-      }
       setTimeout(() => setReminderSent(null), 3000);
     } catch {
       setReminderNote({ installmentId, text: "Network error - the reminder wasn't sent." });
+    } finally {
+      setRemindLoading(false);
     }
   };
 
@@ -732,6 +774,16 @@ export default function LoanDetailPage() {
             <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3.5 animate-scale-in">
               <p className="text-xs text-blue-800">{reminderNote.text}</p>
               <div className="flex items-center gap-3 mt-2">
+                {reminderNote.link && (
+                  <a
+                    href={reminderNote.link.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs font-semibold text-blue-700 underline"
+                  >
+                    {reminderNote.link.label}
+                  </a>
+                )}
                 {reminderNote.upiLink && (
                   <a
                     href={reminderNote.upiLink}
@@ -877,7 +929,10 @@ export default function LoanDetailPage() {
                     )}
                     {isLender && (
                       <button
-                        onClick={() => handleRemind(inst.id)}
+                        onClick={() => {
+                          haptics.tap();
+                          setRemindFor(inst.id);
+                        }}
                         className="bg-white active:bg-slate-100 text-slate-600 text-xs font-semibold px-4 py-2 rounded-xl border border-slate-200 tap-highlight"
                       >
                         {reminderSent === inst.id ? "✓ Sent!" : "🔔 Remind"}
@@ -998,6 +1053,81 @@ export default function LoanDetailPage() {
           )}
         </div>
       )}
+
+      {/* Reminder sheet: the lender sends it, from their own phone */}
+      <BottomSheet
+        open={!!remindFor}
+        onClose={() => setRemindFor(null)}
+        title="Send a reminder"
+        subtitle={
+          loan
+            ? `To ${loan.borrowerName} · ${loan.borrowerMobile}`
+            : undefined
+        }
+      >
+        <div className="space-y-2.5">
+          <p className="text-xs text-slate-500">
+            {loan?.borrowerId
+              ? "WhatsApp needs nothing installed on their phone - the message comes from yours."
+              : `${loan?.borrowerName ?? "The borrower"} hasn't joined Udhaar, so notifications can't reach them. WhatsApp works on any phone.`}
+          </p>
+
+          <button
+            onClick={() => remindFor && handleRemind(remindFor, "whatsapp")}
+            disabled={remindLoading}
+            className="w-full flex items-center gap-3 py-3.5 px-4 rounded-2xl bg-[#25D366] text-white font-semibold tap-highlight disabled:opacity-60"
+          >
+            <span className="text-xl">💬</span>
+            <span className="flex-1 text-left">
+              WhatsApp
+              <span className="block text-[11px] font-normal opacity-90">
+                Opens WhatsApp with the amount, due date and UPI link written out
+              </span>
+            </span>
+          </button>
+
+          <button
+            onClick={() => remindFor && handleRemind(remindFor, "sms")}
+            disabled={remindLoading}
+            className="w-full flex items-center gap-3 py-3.5 px-4 rounded-2xl border border-slate-200 text-slate-700 font-semibold tap-highlight disabled:opacity-60"
+          >
+            <span className="text-xl">✉️</span>
+            <span className="flex-1 text-left">
+              Text message
+              <span className="block text-[11px] font-normal text-slate-500">
+                Opens your messages app with the same text
+              </span>
+            </span>
+          </button>
+
+          <button
+            onClick={() => remindFor && handleRemind(remindFor, "push")}
+            disabled={remindLoading}
+            className="w-full flex items-center gap-3 py-3.5 px-4 rounded-2xl border border-slate-200 text-slate-700 font-semibold tap-highlight disabled:opacity-60"
+          >
+            <span className="text-xl">🔔</span>
+            <span className="flex-1 text-left">
+              In-app notification
+              <span className="block text-[11px] font-normal text-slate-500">
+                {loan?.borrowerId
+                  ? "Free and instant - only if they installed Udhaar and allowed notifications"
+                  : "They haven't joined Udhaar yet, so this can't reach them"}
+              </span>
+            </span>
+          </button>
+
+          {remindLoading && (
+            <p className="text-xs text-slate-400 text-center">Preparing the reminder…</p>
+          )}
+
+          <button
+            onClick={() => setRemindFor(null)}
+            className="w-full py-3 rounded-2xl text-slate-500 font-semibold text-sm"
+          >
+            Cancel
+          </button>
+        </div>
+      </BottomSheet>
 
       {/* Settle in full - one payment for the whole loan */}
       <BottomSheet

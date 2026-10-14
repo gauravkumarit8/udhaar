@@ -56,7 +56,7 @@ async function call(method, path, { token, body } = {}) {
   } catch {
     /* no body */
   }
-  return { status: res.status, json };
+  return { status: res.status, json, headers: Object.fromEntries(res.headers) };
 }
 
 const money = (v) => Number(Number(v).toFixed(2));
@@ -288,6 +288,65 @@ async function main() {
     const after = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
     check("the loan is closed", after.loan.status, "closed");
     check("nothing is owed", owed(after), { principal: 0, interest: 0, total: 0 });
+  }
+
+  console.log("\nA reminder that reaches a borrower who never installed the app");
+  {
+    const { id, detail } = await newLoan({ amount: "6000", interestRate: "0", upiId: "test@ybl" });
+    const emi = detail.installments[0].id;
+
+    const def = await call("POST", `/api/installments/${emi}/remind`, { token: LENDER_TOKEN, body: {} });
+    check("WhatsApp is the default channel", def.json.reminder?.channel, "whatsapp");
+    check("a WhatsApp deep link comes back", def.json.share?.whatsappUrl?.startsWith("https://wa.me/91"), true);
+    check("...and an SMS one", def.json.share?.smsUrl?.startsWith("sms:+91"), true);
+
+    const body = decodeURIComponent(String(def.json.share?.whatsappUrl).split("?text=")[1] ?? "");
+    check("the message names the lender", body.includes("Settlement Test Lender here"), true);
+    check("...and carries the amount and UPI link", body.includes("₹2,000.00") && body.includes("upi://pay"), true);
+
+    // The distinguishing claim: a share is *not* a delivery.
+    check("a share is never reported as delivered", def.json.delivered, false);
+    check("...and the status says which it was", def.json.status, "shared");
+
+    const push = await call("POST", `/api/installments/${emi}/remind`, { token: LENDER_TOKEN, body: { channel: "push" } });
+    check("push is still available", push.status, 200);
+    check("...and admits when nothing was delivered", push.json.delivered, false);
+
+    check("a stranger cannot send a reminder", (await call("POST", `/api/installments/${emi}/remind`, {
+      token: STRANGER_TOKEN, body: { channel: "whatsapp" },
+    })).status, 403);
+  }
+
+  console.log("\nAn interest-free loan is the easy path, and adds up exactly");
+  {
+    const { id } = await newLoan({ amount: "1000", interestRate: "0", tenureMonths: "3" });
+    const detail = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    const principal = money(detail.installments.reduce((sum, i) => sum + Number(i.principalAmount), 0));
+    const interest = money(detail.installments.reduce((sum, i) => sum + Number(i.interestAmount), 0));
+    check("no interest anywhere in the schedule", interest, 0);
+    check("the schedule sums to exactly what was lent", principal, 1000);
+    check("each EMI is just its principal",
+      detail.installments.every((i) => Number(i.totalAmount) === Number(i.principalAmount)), true);
+  }
+
+  console.log("\nYour data: take it with you, and delete the account when nothing is open");
+  {
+    check("an export downloads as a file", Boolean((await call("GET", "/api/account/export", {
+      token: LENDER_TOKEN,
+    })).headers?.["content-disposition"]?.includes("attachment")), true);
+
+    const exportRes = await call("GET", "/api/account/export", { token: LENDER_TOKEN });
+    check("it names the person it belongs to", exportRes.json.profile?.mobile, "9876500021");
+    check("it includes loans, installments and payments",
+      exportRes.json.counts?.loans > 0 &&
+        exportRes.json.counts?.installments > 0 &&
+        "payments" in (exportRes.json.counts ?? {}), true);
+    check("no cookie, no export", (await call("GET", "/api/account/export", {})).status, 401);
+
+    const refused = await call("DELETE", "/api/account", { token: LENDER_TOKEN });
+    check("deleting is refused while a loan is open", refused.status, 409);
+    check("...and says what to do instead", String(refused.json.action ?? "").includes("write-off"), true);
+    check("nothing was deleted", (await call("GET", "/api/loans", { token: LENDER_TOKEN })).status, 200);
   }
 
   console.log("\nWho may do what");
