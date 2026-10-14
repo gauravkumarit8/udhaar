@@ -17,14 +17,7 @@ export const dynamic = "force-dynamic";
  * database host (never the password or the full connection string).
  */
 
-type Status = "ok" | "warn" | "fail" | "skip";
-
-interface Check {
-  name: string;
-  status: Status;
-  detail: string;
-  fix?: string;
-}
+import { buildHealthReport, type HealthCheck as Check } from "@/lib/health-report";
 
 /** Columns added by a migration, so a stale schema is caught by name. */
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
@@ -229,7 +222,7 @@ export async function GET() {
   const isProduction = process.env.NODE_ENV === "production";
 
   let otpDetail: string;
-  let otpStatus: Status = "ok";
+  let otpStatus: Check["status"] = "ok";
   if (otpMode === "dummy") {
     otpDetail = "dummy mode - the OTP is 123456 for every number, and is returned by the API";
   } else if (smsConfigured) {
@@ -288,22 +281,10 @@ export async function GET() {
       : "Run npm run generate:vapid and set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so browsers can be notified (README → Notifications).",
   });
 
-  const failed = checks.filter((c) => c.status === "fail");
-  const healthy = failed.length === 0;
+  const { status, body } = buildHealthReport(checks, resolveBuildInfo());
 
-  return Response.json(
-    {
-      ok: healthy,
-      // Kept for existing monitors that only read `ok`.
-      checks,
-      ...(healthy
-        ? {}
-        : {
-            firstProblem: failed[0].name,
-            action: failed[0].fix,
-          }),
-      timestamp: new Date().toISOString(),
-    },
-    { status: healthy ? 200 : 503, headers: { "cache-control": "no-store" } }
-  );
+  return Response.json(body, {
+    status,
+    headers: { "cache-control": "no-store" },
+  });
 }

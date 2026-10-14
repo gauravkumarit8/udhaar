@@ -23,6 +23,14 @@ RUN npm run build
 FROM node:22-alpine AS runner
 WORKDIR /app
 
+# The release this image contains, so a deployed container can name its own
+# commit even when the host injects nothing (Render sets RENDER_GIT_COMMIT on
+# services it builds itself; a host that merely runs this image does not).
+# An empty value is ignored by src/lib/build-info.ts, so an unstamped local
+# build still reports "unknown" rather than a blank commit.
+ARG GIT_SHA=""
+ENV GIT_COMMIT=$GIT_SHA
+
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
