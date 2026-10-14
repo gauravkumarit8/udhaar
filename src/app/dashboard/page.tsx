@@ -57,8 +57,12 @@ interface DashboardData {
     activeLoans: number;
     totalLoans: number;
   };
+  /** One page of the due list; `dueItemCount` is how many there are in total. */
   dueItems: DueItem[];
+  dueItemCount?: number;
   loans: Loan[];
+  /** True when the loan list is a page and the rest is behind "see all". */
+  hasMoreLoans?: boolean;
 }
 
 function formatINR(amount: number): string {
@@ -232,6 +236,11 @@ export default function DashboardPage() {
   }
 
   const { summary, dueItems, loans } = data;
+  // Both lists arrive as one page. The counts say whether there is more
+  // behind them, so the headers can offer somewhere to go.
+  const dueItemCount = data.dueItemCount ?? dueItems.length;
+  const moreDueItems = dueItemCount > dueItems.length;
+  const hasMoreLoans = data.hasMoreLoans ?? summary.totalLoans > loans.length;
 
   return (
     <MobileShell>
@@ -320,9 +329,9 @@ export default function DashboardPage() {
             {/* One line per loan - the next payment on each - so this counts
                 loans. It used to count installments, which is how one loan with
                 ten EMIs could read as "10 items". */}
-            {dueItems.length > 1 && (
+            {dueItemCount > 1 && (
               <span className="text-xs text-emerald-600 font-semibold">
-                {dueItems.length} loans
+                {moreDueItems ? `showing ${dueItems.length} of ${dueItemCount} loans` : `${dueItemCount} loans`}
               </span>
             )}
           </div>
@@ -341,7 +350,7 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="space-y-2.5">
-              {dueItems.slice(0, 5).map((item, idx) => {
+              {dueItems.map((item, idx) => {
                 const days = item.daysUntilDue ?? daysUntil(item.dueDate);
                 const isOverdue = item.computedStatus === "overdue" || days < 0;
                 const isDueSoon = item.computedStatus === "due_soon";
@@ -437,6 +446,15 @@ export default function DashboardPage() {
               })}
             </div>
           )}
+
+          {moreDueItems && (
+            <Link
+              href="/loans"
+              className="block text-center text-xs text-emerald-600 font-semibold mt-3 tap-highlight"
+            >
+              See all {dueItemCount} loans with a payment due
+            </Link>
+          )}
         </div>
 
         <EnableNotifications />
@@ -445,9 +463,16 @@ export default function DashboardPage() {
         <div>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-bold text-slate-800">Your Loans</h2>
-            <Link href="/loans/new" className="text-xs text-emerald-600 font-semibold tap-highlight">
-              + New
-            </Link>
+            <div className="flex items-center gap-3">
+              {hasMoreLoans && (
+                <Link href="/loans" className="text-xs text-emerald-600 font-semibold tap-highlight">
+                  See all {summary.totalLoans}
+                </Link>
+              )}
+              <Link href="/loans/new" className="text-xs text-emerald-600 font-semibold tap-highlight">
+                + New
+              </Link>
+            </div>
           </div>
 
           {loans.length === 0 ? (

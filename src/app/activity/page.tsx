@@ -57,8 +57,15 @@ export default function ActivityPage() {
   useEffect(() => {
     async function load() {
       try {
+      /*
+       * `limit=200` on purpose: this screen *is* the full list of what is
+       * overdue and what is due soon, so it asks for the whole due list rather
+       * than the dashboard's page of five. (The dashboard, which prints five
+       * rows and a count, asks for neither.) Beyond 200 loans with a payment
+       * due this needs paging of its own - see the note in README.
+       */
       const [dashRes, notifRes] = await Promise.all([
-        fetch("/api/dashboard"),
+        fetch("/api/dashboard?limit=200"),
         fetch("/api/notifications"),
       ]);
       const [dashResult, notifResult] = await Promise.all([

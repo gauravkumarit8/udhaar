@@ -4,6 +4,7 @@ import {
   calculateTotalInterest,
   computeInstallmentStatus,
   generateInstallmentSchedule,
+  localToday,
 } from "@/lib/calculations";
 
 type AmountKey = "principalAmount" | "interestAmount" | "totalAmount";
@@ -133,5 +134,29 @@ describe("computeInstallmentStatus", () => {
     expect(computeInstallmentStatus(past, 1000, 100, 0, 0)).toBe("overdue");
     expect(computeInstallmentStatus(past, 1000, 100, 500, 0)).toBe("partially_paid");
     expect(computeInstallmentStatus(future, 1000, 100, 0, 0)).toBe("pending");
+  });
+});
+
+/**
+ * `localToday` is the date the dashboard hands to Postgres so the database and
+ * the app agree on what "overdue" means. The bug it exists to prevent: a
+ * container in UTC and a phone in IST disagreeing about the date for five and a
+ * half hours every night, so an installment due today flips between "due" and
+ * "overdue" depending on who you ask.
+ */
+describe("localToday", () => {
+  it("formats as YYYY-MM-DD, padded", () => {
+    expect(localToday(new Date(2026, 0, 5, 13, 30))).toBe("2026-01-05");
+    expect(localToday(new Date(2026, 11, 31, 23, 59))).toBe("2026-12-31");
+  });
+
+  it("reads the local calendar day, not UTC's", () => {
+    // 00:30 on the 2nd for a phone in IST is still the 1st in UTC.
+    const lateNight = new Date(2026, 2, 2, 0, 30);
+    expect(localToday(lateNight)).toBe("2026-03-02");
+  });
+
+  it("agrees with the clock it was given, not the real one", () => {
+    expect(localToday(new Date(2020, 5, 15))).toBe("2020-06-15");
   });
 });

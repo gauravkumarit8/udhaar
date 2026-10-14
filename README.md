@@ -291,12 +291,40 @@ unpaid installment, and the per-loan figure on each row is the next payment only
 The rule lives in `src/lib/due-items.ts` (`pickNextDuePerLoan`) with unit tests in
 `tests/due-items.test.ts`, so the list and the totals can't drift apart.
 
+### Payloads are pages, not archives
+
+Both lists the dashboard prints are one page of five rows by default, and both say
+how much is behind them (`hasMoreLoans`, `dueItemCount`). The numbers behind the
+list are summed in SQL - three `sum(case ...)` over the active loans' installments
+- instead of being folded in Node from every installment of every loan.
+`?limit=` asks for a bigger page (clamped to 200); the dashboard page leaves it
+alone and links to `/loans`, which lists every loan a page at a time through
+`GET /api/loans?limit=&offset=` (see `src/lib/paging.ts`). The Activity screen is
+the one that asks for the whole due list (`?limit=200`), because it renders all of
+it - it is the see-everything view for payments, and beyond 200 loans with
+something due it will need paging of its own.
+
+Measured on an account with 143 loans (63 active) in one sitting, old build
+against new, same data:
+
+| | before | after |
+| --- | --- | --- |
+| `/api/dashboard` response | 110,672 bytes | **5,180 bytes** |
+| warm latency (local Postgres) | 12.0 ms | **7.7 ms** |
+| installments read out of Postgres | 453 rows / 138 KB | **201 rows / 15 KB** |
+| loan rows read out of Postgres | 143 | **5** |
+
+The seven summary figures are identical to the last paisa (checked by diffing the
+two payloads, and by the harness folding the raw rows itself:
+`npm run verify:settlement`).
+
 ### Why it is quick on a slow connection
 
 The database is usually in another region, so every query round-trip is felt.
 
-- `/api/dashboard` is **one** joined query (loans ⋈ users ⋈ installments) that also
-  returns the signed-in person, so the page makes one request instead of two.
+- `/api/dashboard` runs its four queries (summary, due list, one page of loans,
+  badge count) **together** and returns the signed-in person, so the page makes
+  one request instead of two.
 - `/api/notifications?summary=1` (the bottom-bar badge) is a single `count(*)`
   joined on `users`; the unread count in the feed comes from SQL too.
 - `/api/loans/[id]` fetches installments and payments **in parallel**.

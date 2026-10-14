@@ -1,35 +1,72 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
+import { db, rawRows } from "@/db";
 import { loans, installments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { generateInstallmentSchedule } from "@/lib/calculations";
 import { loanAddedNotice, notifyCounterparty } from "@/lib/notify";
 import { parseLoanInput } from "@/lib/validation";
-import { eq, or, desc } from "drizzle-orm";
+import { countUnreadNotifications } from "@/lib/unread-count";
+import { parsePaging } from "@/lib/paging";
+import { activeLoansFirst } from "@/lib/loan-order";
+import { eq, or, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
-async function handleGET() {
+/**
+ * The full list, a page at a time.
+ *
+ * This answered with every loan the account had ever recorded - 119 of them on
+ * the test account, and it grows forever. It now takes `?limit=` / `?offset=`
+ * (see src/lib/paging.ts for the clamps) and says how many there are in total,
+ * so a screen can show a page and a "showing 20 of 119" line without asking
+ * twice.
+ *
+ * The dashboard's five rows come from the same ordering, so "the first page"
+ * means the same loans on both screens.
+ */
+async function handleGET(req: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Get loans where the user is either the lender or the borrower
-  const userLoans = await db
-    .select()
-    .from(loans)
-    .where(or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)))
-    .orderBy(desc(loans.createdAt));
+  const { limit, offset } = parsePaging(new URL(req.url).searchParams);
+
+  const [totalRows, userLoans, unread] = await Promise.all([
+    rawRows<{ total: string }>(sql`
+      select count(*) as total from loans l
+      where l.lender_id = ${session.id} or l.borrower_id = ${session.id}
+    `),
+    db
+      .select({ loan: loans, accountName: users.name })
+      .from(loans)
+      .leftJoin(users, eq(users.id, loans.lenderId))
+      .where(or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)))
+      .orderBy(...activeLoansFirst())
+      .limit(limit)
+      .offset(offset),
+    // The badge rides along, so a list screen needs no request of its own.
+    countUnreadNotifications(session.id),
+  ]);
+
+  const total = parseInt(totalRows[0]?.total ?? "0", 10);
 
   // Tag each loan with the viewer's role so the UI can render
   // "You lent" vs "You borrowed". A loan the viewer entered for a lender who
   // has no account is still theirs, so it must not vanish from the list.
-  const taggedLoans = userLoans.map((loan) => ({
+  const taggedLoans = userLoans.map(({ loan, accountName }) => ({
     ...loan,
+    lenderName: loan.lenderName || accountName,
     viewerRole: loan.lenderId === session.id ? ("lender" as const) : ("borrower" as const),
   }));
 
-  return NextResponse.json({ loans: taggedLoans });
+  return NextResponse.json({
+    loans: taggedLoans,
+    total,
+    limit,
+    offset,
+    hasMore: offset + taggedLoans.length < total,
+    unread,
+  });
 }
 
 async function handlePOST(req: NextRequest) {
