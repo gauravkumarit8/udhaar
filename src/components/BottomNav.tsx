@@ -3,7 +3,13 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useHaptics } from "@/hooks/useNative";
-import { UNREAD_CACHE_KEY } from "@/lib/client-cache";
+import {
+  isUnreadFresh,
+  readUnreadAt,
+  UNREAD_AT_KEY,
+  UNREAD_CACHE_KEY,
+  UNREAD_EVENT,
+} from "@/lib/client-cache";
 
 const tabs = [
   { href: "/dashboard", label: "Home", icon: "home" },
@@ -25,10 +31,13 @@ const tabs = [
 function rememberUnread(count: number): void {
   try {
     sessionStorage.setItem(UNREAD_CACHE_KEY, String(count));
+    sessionStorage.setItem(UNREAD_AT_KEY, String(Date.now()));
   } catch {
     // Private mode, storage full - the badge just isn't pre-painted.
   }
 }
+
+
 
 function useUnreadCount(): number {
   // Starts from what this device last saw: a badge that appears instantly and
@@ -62,9 +71,22 @@ function useUnreadCount(): number {
       }
     };
 
-    void load();
+    // A page that was answered in the last half-minute has already told us the
+    // count; only ask if what we have is older than that.
+    if (!isUnreadFresh(readUnreadAt())) void load();
+
     const timer = setInterval(load, 60_000);
     const onFocus = () => void load();
+
+    // Another screen's own response carried the count: use it, and treat it as
+    // freshly confirmed so the poll above does not immediately repeat it.
+    const onPublished = (event: Event) => {
+      const detail = (event as CustomEvent<number>).detail;
+      if (typeof detail !== "number" || cancelled) return;
+      setUnread(detail);
+      rememberUnread(detail);
+    };
+    window.addEventListener(UNREAD_EVENT, onPublished);
     // Opening the Activity screen clears the badge immediately instead of
     // waiting for the next poll.
     const onSeen = () => {
@@ -82,6 +104,7 @@ function useUnreadCount(): number {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("udhaar:notifications-seen", onSeen);
+      window.removeEventListener(UNREAD_EVENT, onPublished);
     };
   }, []);
 

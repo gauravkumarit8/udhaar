@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import BottomNav from "@/components/BottomNav";
 import MobileShell from "@/components/MobileShell";
 import { readApi, requestJson } from "@/lib/http";
+import { UNREAD_EVENT } from "@/lib/client-cache";
 
 interface Reminder {
   id: string;
@@ -76,6 +77,12 @@ export default function ActivityPage() {
         setNotifications(list);
         if (wasLoaded && fresh > 0) setJustArrived(fresh);
 
+        // The badge comes from this same response; the tab bar need not ask.
+        if (typeof notifResult.data?.unread === "number") {
+          window.dispatchEvent(
+            new CustomEvent(UNREAD_EVENT, { detail: notifResult.data.unread })
+          );
+        }
         if ((notifResult.data?.unread ?? 0) > 0) void markSeen();
       }
 

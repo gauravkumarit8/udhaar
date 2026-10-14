@@ -9,6 +9,7 @@ import ProofUpload from "@/components/ProofUpload";
 import ShareButton from "@/components/ShareButton";
 import { useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
+import { UNREAD_EVENT } from "@/lib/client-cache";
 import { summarizeSettlement } from "@/lib/payments";
 
 interface Loan {
@@ -173,6 +174,8 @@ export default function LoanDetailPage() {
           loan: Loan;
           installments: Installment[];
           payments: Payment[];
+          /** Carried so the tab bar need not ask again - see UNREAD_EVENT. */
+          unread?: number;
         }>(`/api/loans/${loanId}`);
 
         if (opts.redirectOn401 && result.status === 401) {
@@ -184,6 +187,9 @@ export default function LoanDetailPage() {
           setInstallments(result.data.installments);
           setPayments(result.data.payments);
           setLoadError(null);
+          if (typeof result.data.unread === "number") {
+            window.dispatchEvent(new CustomEvent(UNREAD_EVENT, { detail: result.data.unread }));
+          }
         } else if (result.error) {
           setLoadError(result.error);
         }

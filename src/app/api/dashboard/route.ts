@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { loans, installments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
+import { countUnreadNotifications } from "@/lib/unread-count";
 import { computeInstallmentStatus, daysUntil } from "@/lib/calculations";
 import { pickNextDuePerLoan, type DueItem } from "@/lib/due-items";
 import { or, eq, sql } from "drizzle-orm";
@@ -122,7 +123,18 @@ async function handleGET() {
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
+  /*
+   * The unread count rides along.
+   *
+   * The tab bar used to make its own request for this on every screen, which
+   * against a database in another region is a whole extra round trip before a
+   * badge can paint. The dashboard is the first screen almost everybody opens,
+   * and this costs one query inside a request that is already happening.
+   */
+  const unread = await countUnreadNotifications(session.id);
+
   return NextResponse.json({
+    unread,
     // The dashboard already knows who is asking (its session was the first
     // query), so the page no longer needs a second request to /api/auth/me
     // just to print a name in the greeting.

@@ -1,0 +1,78 @@
+name: Keep the free instance warm
+
+# Why this exists
+#
+# The app runs on Render's free tier, which sleeps a service after 15 minutes
+# without traffic. The next person to open it waits for a cold start - long
+# enough that the app reads as "slow" or "broken" even though the server itself
+# is fine. Asking for /api/health every ten minutes, waking hours, keeps that
+# first tap quick.
+#
+# Waking hours, not around the clock: 02:00-17:59 UTC is roughly 07:30-23:30
+# IST, when these reminders are actually opened. Running 24/7 would sit on the
+# whole free allowance (750 instance-hours a month) to keep an empty app awake
+# at 4am; this leaves room and keeps it quiet.
+#
+# What this is not
+#
+# It is not a fix for a slow database or a slow screen - those are in the
+# application, and were fixed there (see README, "What the home screen lists").
+# The real fix for a cold start is a paid instance, which never sleeps; if you
+# would rather not spend Actions minutes keeping it up, delete this file.
+#
+# GitHub's scheduler can be late under load (minutes, sometimes more), and
+# scheduled workflows are paused after 60 days without repository activity -
+# both fine here, since the only cost of a missed run is one cold start.
+on:
+  schedule:
+    - cron: "*/10 2-17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    name: Wake the app
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ask the app how it is
+        env:
+          APP_URL: ${{ vars.UDHAAR_APP_URL || 'https://udhaar-y94f.onrender.com' }}
+        run: |
+          set -uo pipefail
+
+          url="${APP_URL%/}/api/health?warm=$(date -u +%s)"
+          echo "GET ${url}"
+
+          # A sleeping instance takes 30-60s to answer; give it that much, and
+          # report the app's own words rather than a bare failure.
+          code=$(curl -sS --max-time 120 -o /tmp/health.json -w "%{http_code}" "${url}") || code=000
+          echo "HTTP ${code}"
+          cat /tmp/health.json 2>/dev/null || true
+          echo
+
+          if [ "${code}" != "200" ]; then
+            # Not a red tick: a cold start that answers slowly is exactly why
+            # this job runs, and a transient wake-up failure is not a release
+            # problem. Say so in the summary, where somebody will look.
+            echo "::warning::The app answered HTTP ${code}. If this repeats, check the Render deploy log."
+          fi
+
+          {
+            echo "### Keep-warm ping"
+            echo "- URL: ${url}"
+            echo "- HTTP: ${code}"
+            if [ -s /tmp/health.json ]; then
+              echo "- App says:"
+              echo '```json'
+              cat /tmp/health.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

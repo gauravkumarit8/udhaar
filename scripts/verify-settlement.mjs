@@ -704,6 +704,12 @@ async function main() {
     // The dashboard carries the viewer, so the page needs no second request.
     check("the payload names the viewer once", board.json.user?.mobile, "9876500021");
 
+    // The badge rides along in the screens' own responses, so the tab bar does
+    // not have to spend a second round trip asking for it.
+    check("the dashboard carries the badge count", typeof board.json.unread, "number");
+    const loanPayload = await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN });
+    check("...and so does a loan screen", typeof loanPayload.json.unread, "number");
+
     // The badge and the feed must agree about what is unread.
     const badge = await call("GET", "/api/notifications?summary=1", { token: BORROWER_TOKEN });
     const feed = await call("GET", "/api/notifications", { token: BORROWER_TOKEN });

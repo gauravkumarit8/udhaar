@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { loans, installments, payments, reminders, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
+import { countUnreadNotifications } from "@/lib/unread-count";
 import { computeInstallmentStatus, generateInstallmentSchedule } from "@/lib/calculations";
 import { and, eq } from "drizzle-orm";
 import { parseLoanInput } from "@/lib/validation";
@@ -73,7 +74,12 @@ async function handleGET(
     ),
   }));
 
+  // The tab bar's badge, answered in passing rather than by a second request
+  // from the browser (see src/lib/unread-count.ts).
+  const unread = await countUnreadNotifications(session.id);
+
   return NextResponse.json({
+    unread,
     loan: { ...loan, viewerRole, noCounterparty, isLender: viewerRole === "lender" },
     installments: enrichedInstallments,
     payments: loanPayments,
