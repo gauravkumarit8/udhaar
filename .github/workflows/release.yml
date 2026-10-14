@@ -41,10 +41,10 @@ jobs:
 
     steps:
       - name: 📥 Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 📥 Download Android APK
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: udhaar-debug.apk
           path: artifacts/
@@ -58,7 +58,7 @@ jobs:
           git log --oneline $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")..HEAD >> CHANGELOG.md 2>/dev/null || true
 
       - name: 🎉 Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.changelog.outputs.tag }}
           name: "Udhaar ${{ steps.changelog.outputs.tag }}"

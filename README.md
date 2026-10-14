@@ -194,6 +194,21 @@ server-side. Sessions expire after 30 days.
 
 Udhaar runs as a native app using **Capacitor** with these native features:
 
+> **The app loads the hosted web app, on purpose.** `server.url` in
+> `capacitor.config.ts` points at the deployment, so a bug fix reaches every
+> installed app the moment it is deployed — no store review, no rebuild. The
+> trade-offs are real and worth knowing:
+> - With no connection the app cannot show your data (there is no local copy).
+>   The WebView now displays `public/offline.html` instead of a blank screen —
+>   including the "the site may be waking up" hint, which matters on a free
+>   Render instance that sleeps.
+> - Stores can be strict about an app that is only a website wrapper. If you
+>   ever publish to the Play Store or App Store, switch to a bundled build:
+>   `npx next build` with `output: "export"`, point `webDir` at the exported
+>   directory, drop `server.url`, and give the API calls an absolute base URL
+>   (the app then talks to the deployed backend instead of its own origin).
+>   That also makes the app work offline for anything cached.
+
 | Feature | Plugin | Web Fallback |
 |---------|--------|-------------|
 | Smart Reminders | LocalNotifications | Browser Notifications |
@@ -256,9 +271,18 @@ Runs on every push to `main` and every PR:
 - ✅ Next.js build
 - ✅ Docker image build
 
-### Web Deploy (on tag `v*`)
-- Builds Docker image → pushes to GitHub Container Registry
-- Deploys to Render / Fly.io / Vercel
+### Web Deploy (on tag `v*`, on every push to `main`, or manually)
+- Builds the Docker image → pushes it to GitHub Container Registry
+- Then triggers the Render deploy hook (`RENDER_DEPLOY_HOOK`), unless the secret
+  is unset, in which case the job says so and passes
+- **Manual runs deploy by default** — Actions → *Deploy Web* → *Run workflow* is
+  the button for "update the live app now" without pushing a commit
+- A rejected hook fails the job (it used to pass silently)
+
+> **Two deploys per commit?** If Render's own *Auto-Deploy* is also on for this
+> service, a push to `main` queues one deploy from Render and one from here.
+> Pick one: keep Render's (it still deploys when Actions is broken or the
+> workflow is disabled), or turn Auto-Deploy off and let this job own it.
 
 ### Android Build (on tag `v*` or manual dispatch)
 - Sets Capacitor server URL to production
@@ -481,6 +505,12 @@ push.
 - **Run `npm run check-deploy` before blaming the app.** It distinguishes a
   missing environment variable from an unreachable database from a missing
   schema, and prints the command that fixes each.
+- **Workflow actions are on the Node 24 line.** `checkout@v7`, `setup-node@v7`,
+  `setup-java@v6`, `upload-artifact@v7`, `download-artifact@v8`,
+  `docker/*@v4–v7`, `action-gh-release@v3`, `setup-android@v4`. GitHub retires
+  the older Node runtimes on its own schedule and warns for months first — if a
+  workflow ever starts printing "…targets Node.js 20…", that action is the one
+  to bump (`gh api repos/<owner>/<repo>/releases/latest`).
 - **`OTP_MODE`.** Set it deliberately on every deployment: `auto` (default)
   fails closed in production until MSG91 is configured, `dummy` opts into the
   insecure-but-testable code.
