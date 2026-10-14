@@ -31,6 +31,9 @@ export interface Outstanding {
   paidInterest: number;
   interest: number;
   total: number;
+  /** Money the lender gave up: written off, or interest forgiven at settlement. */
+  waivedPrincipal: number;
+  waivedInterest: number;
 }
 
 function round2(value: number): number {
@@ -50,8 +53,10 @@ export async function getOutstanding(
     SELECT
       COALESCE(SUM(principal_amount), 0) AS total_principal,
       COALESCE(SUM(principal_paid), 0)   AS paid_principal,
+      COALESCE(SUM(principal_waived), 0) AS waived_principal,
       COALESCE(SUM(interest_amount), 0)  AS total_interest,
-      COALESCE(SUM(interest_paid), 0)    AS paid_interest
+      COALESCE(SUM(interest_paid), 0)    AS paid_interest,
+      COALESCE(SUM(interest_waived), 0)  AS waived_interest
     FROM installments
     WHERE loan_id = ${loanId}
   `);
@@ -61,8 +66,11 @@ export async function getOutstanding(
   const paidPrincipal = round2(parseFloat(row.paid_principal ?? "0"));
   const totalInterest = round2(parseFloat(row.total_interest ?? "0"));
   const paidInterest = round2(parseFloat(row.paid_interest ?? "0"));
-  const principal = Math.max(0, round2(totalPrincipal - paidPrincipal));
-  const interest = Math.max(0, round2(totalInterest - paidInterest));
+  const waivedPrincipal = round2(parseFloat(row.waived_principal ?? "0"));
+  const waivedInterest = round2(parseFloat(row.waived_interest ?? "0"));
+  // Waived money is settled money: it must never come back as something owed.
+  const principal = Math.max(0, round2(totalPrincipal - paidPrincipal - waivedPrincipal));
+  const interest = Math.max(0, round2(totalInterest - paidInterest - waivedInterest));
 
   return {
     totalPrincipal,
@@ -72,18 +80,99 @@ export async function getOutstanding(
     paidInterest,
     interest,
     total: round2(principal + interest),
+    waivedPrincipal,
+    waivedInterest,
+  };
+}
+
+export interface WaivedAmounts {
+  principal: number;
+  interest: number;
+}
+
+/**
+ * Forgive what is still owed, on every EMI of a loan.
+ *
+ * Two callers, one mechanism:
+ *   • settling a loan — the interest that was never earned is waived, and any
+ *     rounding tail on the principal (a paisa, the app's own tolerance) is
+ *     cleaned up so a closed loan never advertises a balance.
+ *   • writing a loan off — the lender gives up the whole outstanding balance.
+ *
+ * The amounts are written onto the installments rather than just abandoning
+ * them, so the record says "₹4,000 written off" instead of leaving numbers that
+ * look like they are still owed. Returns what this call actually forgave.
+ */
+export async function waiveRemaining(
+  loanId: string,
+  run: SqlRunner = runOnDb,
+  options: { principal: "all" | "tiny" } = { principal: "tiny" }
+): Promise<WaivedAmounts> {
+  const before = parseRows(
+    await run(sql`
+      SELECT
+        COALESCE(SUM(principal_waived), 0) AS principal,
+        COALESCE(SUM(interest_waived), 0)  AS interest
+      FROM installments WHERE loan_id = ${loanId}
+    `)
+  );
+
+  if (options.principal === "all") {
+    await run(sql`
+      UPDATE installments SET
+        principal_waived = GREATEST(0, principal_amount - principal_paid - principal_waived),
+        interest_waived  = GREATEST(0, interest_amount - interest_paid - interest_waived)
+      WHERE loan_id = ${loanId}
+    `);
+  } else {
+    // Settling: the interest left over is forgiven outright, and a principal
+    // remainder within a paisa is treated as paid (the same tolerance the rest
+    // of the app uses) rather than blocking the close.
+    await run(sql`
+      UPDATE installments SET
+        interest_waived  = GREATEST(0, interest_amount - interest_paid - interest_waived),
+        principal_waived = CASE
+          WHEN principal_amount - principal_paid - principal_waived <= 0.01
+            THEN GREATEST(0, principal_amount - principal_paid - principal_waived)
+          ELSE principal_waived
+        END
+      WHERE loan_id = ${loanId}
+    `);
+  }
+
+  const after = parseRows(
+    await run(sql`
+      SELECT
+        COALESCE(SUM(principal_waived), 0) AS principal,
+        COALESCE(SUM(interest_waived), 0)  AS interest
+      FROM installments WHERE loan_id = ${loanId}
+    `)
+  );
+
+  return {
+    principal: round2(parseFloat(after.principal ?? "0") - parseFloat(before.principal ?? "0")),
+    interest: round2(parseFloat(after.interest ?? "0") - parseFloat(before.interest ?? "0")),
   };
 }
 
 export interface CloseResult {
   closed: boolean;
   outstanding: Outstanding;
+  /** Interest forgiven by this close (zero when the loan was closed early). */
+  waivedInterest: number;
+  /** Principal forgiven by this close - only ever a rounding paisa. */
+  waivedPrincipal: number;
 }
 
 /**
  * Marks the loan closed once the principal is fully repaid. Safe to call after
  * every payment; a no-op while money is still owed. Pass the current
  * transaction as `run` so the close commits atomically with the payment.
+ *
+ * Closing is also where interest stops being owed: whatever interest the
+ * schedule still shows is forgiven (see `waiveRemaining`), because a closed
+ * loan that keeps advertising a balance is exactly the kind of half-truth this
+ * app is not allowed to tell. The caller reports the amount.
  */
 export async function closeLoanIfSettled(
   loanId: string,
@@ -92,10 +181,16 @@ export async function closeLoanIfSettled(
   const outstanding = await getOutstanding(loanId, run);
 
   if (outstanding.principal > 0.01) {
-    return { closed: false, outstanding };
+    return { closed: false, outstanding, waivedInterest: 0, waivedPrincipal: 0 };
   }
 
+  const waived = await waiveRemaining(loanId, run, { principal: "tiny" });
   await run(sql`UPDATE loans SET status = 'closed' WHERE id = ${loanId}`);
 
-  return { closed: true, outstanding };
+  return {
+    closed: true,
+    outstanding,
+    waivedInterest: waived.interest,
+    waivedPrincipal: waived.principal,
+  };
 }

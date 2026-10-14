@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import {
   parseLoanInput,
   validateProofUrl,
+  validateProofId,
   toNumber,
   isValidDateString,
   LIMITS,
@@ -228,5 +229,42 @@ describe("readApi", () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+});
+
+describe("validateProofId", () => {
+  it("accepts an id produced by our own upload route", () => {
+    const result = validateProofId("udhaar/proofs/abc123.jpg");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toBe("udhaar/proofs/abc123.jpg");
+  });
+
+  it("treats a missing id as 'no proof' rather than an error", () => {
+    for (const value of [undefined, null, ""]) {
+      const result = validateProofId(value);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value).toBeNull();
+    }
+  });
+
+  it("rejects anything that is not one of our asset ids", () => {
+    const bad = [
+      "https://evil.example.com/tracker.jpg", // a URL, not an id
+      "udhaar/proofs/../../etc/passwd",
+      "other-folder/proofs/abc.jpg", // wrong folder
+      "udhaar/proofs/a b.jpg", // whitespace inside
+      "udhaar/proofs/abc.jpg?x=1", // query string
+      "udhaar/proofs/abc.jpg#frag",
+      "udhaar/proofs/abc;rm -rf.jpg",
+    ];
+    for (const value of bad) {
+      expect(validateProofId(value).ok, value).toBe(false);
+    }
+  });
+
+  it("rejects non-strings and absurdly long ids", () => {
+    expect(validateProofId(42).ok).toBe(false);
+    expect(validateProofId({}).ok).toBe(false);
+    expect(validateProofId("udhaar/proofs/" + "a".repeat(LIMITS.PROOF_ID_MAX)).ok).toBe(false);
   });
 });

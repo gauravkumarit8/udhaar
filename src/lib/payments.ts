@@ -135,24 +135,276 @@ export function allocatePayment({
 /**
  * Remaining amounts for an installment row, safely parsed and clamped at zero
  * (an over-paid bucket must never read as "negative money still owed").
+ *
+ * Waived money counts as settled: it is no longer owed by anyone, so an EMI the
+ * lender wrote off must stop showing up as overdue in the schedule and in the
+ * reminder sweep. `principalWaived`/`interestWaived` are optional so callers
+ * holding a pre-0005 row (or a test fixture) still work.
  */
 export function remainingFor(inst: {
   principalAmount: string;
   interestAmount: string;
   principalPaid: string;
   interestPaid: string;
-}): { principalRemaining: number; interestRemaining: number; totalRemaining: number } {
+  principalWaived?: string | null;
+  interestWaived?: string | null;
+}): {
+  principalRemaining: number;
+  interestRemaining: number;
+  totalRemaining: number;
+  principalWaived: number;
+  interestWaived: number;
+} {
+  const principalWaived = Math.max(0, round2(parseFloat(inst.principalWaived ?? "0") || 0));
+  const interestWaived = Math.max(0, round2(parseFloat(inst.interestWaived ?? "0") || 0));
   const principalRemaining = Math.max(
     0,
-    round2(parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid))
+    round2(parseFloat(inst.principalAmount) - parseFloat(inst.principalPaid) - principalWaived)
   );
   const interestRemaining = Math.max(
     0,
-    round2(parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid))
+    round2(parseFloat(inst.interestAmount) - parseFloat(inst.interestPaid) - interestWaived)
   );
   return {
     principalRemaining,
     interestRemaining,
     totalRemaining: round2(principalRemaining + interestRemaining),
+    principalWaived,
+    interestWaived,
+  };
+}
+
+/** One EMI as the payoff planner sees it (already net of payments and waivers). */
+export interface PayoffInstallment {
+  installmentNumber: number;
+  principalRemaining: number;
+  interestRemaining: number;
+}
+
+export interface PayoffPlan {
+  ok: boolean;
+  error?: string;
+  /** Interest to apply, index-aligned with the installments passed in. */
+  interest: number[];
+  /** Principal to apply, index-aligned with the installments passed in. */
+  principal: number[];
+  /** Amount that will be applied to the ledger (never more than what's owed). */
+  applied: number;
+  /** Money received that nothing is owed against - recorded, not applied. */
+  unapplied: number;
+  /**
+   * Interest forgiven because this payment settles the principal. This is the
+   * app's settlement rule, and the caller records it on the EMIs so the close
+   * report can say "₹X interest waived" instead of pretending it vanished.
+   */
+  waivedInterest: number;
+  /** True when this payment leaves no principal outstanding. */
+  settlesLoan: boolean;
+}
+
+/** Distributes `left` (in paise) across `targets` (paise), left to right. */
+function takeCents(left: number, targets: number[]): { taken: number[]; left: number } {
+  const taken = targets.map(() => 0);
+  let remaining = left;
+  for (let i = 0; i < targets.length && remaining > 0; i += 1) {
+    const amount = Math.min(remaining, targets[i]);
+    taken[i] = amount;
+    remaining -= amount;
+  }
+  return { taken, left: remaining };
+}
+
+/**
+ * Plans a single payment that settles a whole loan - the thing a borrower does
+ * when they clear everything in one UPI transfer, and which the per-EMI payment
+ * screen cannot express (any amount above one EMI's remainder is refused).
+ *
+ * Oldest EMI first, exactly to the paisa, and the plan always accounts for
+ * every rupee received: applied + unapplied === amount. Three outcomes:
+ *
+ *   • covers everything owed      → every EMI settled, nothing waived
+ *   • covers the principal        → principal settled, the interest left over
+ *                                   is waived (settling early shouldn't bill
+ *                                   for interest that never accrued)
+ *   • covers only part of it      → an ordinary partial payment, oldest first
+ */
+export function planPayoff(amount: number, installments: PayoffInstallment[]): PayoffPlan {
+  const empty: PayoffPlan = {
+    ok: false,
+    interest: installments.map(() => 0),
+    principal: installments.map(() => 0),
+    applied: 0,
+    unapplied: 0,
+    waivedInterest: 0,
+    settlesLoan: false,
+  };
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ...empty, error: "Amount must be a positive number" };
+  }
+
+  const principalTargets = installments.map((i) => Math.max(0, Math.round(i.principalRemaining * 100)));
+  const interestTargets = installments.map((i) => Math.max(0, Math.round(i.interestRemaining * 100)));
+  const totalPrincipal = principalTargets.reduce((a, b) => a + b, 0);
+  const totalInterest = interestTargets.reduce((a, b) => a + b, 0);
+
+  if (totalPrincipal + totalInterest <= 0) {
+    return { ...empty, error: "Nothing is owed on this loan any more." };
+  }
+
+  // Interleaved oldest-first, interest before principal on each EMI - the same
+  // order the per-EMI "Full" button uses, so one big payment and many small
+  // ones leave the ledger in the same shape.
+  const interleaved: number[] = [];
+  for (let i = 0; i < installments.length; i += 1) {
+    interleaved.push(interestTargets[i], principalTargets[i]);
+  }
+
+  const amountCents = Math.round(amount * 100);
+
+  // Everything (or more than everything) they owe.
+  if (amountCents >= totalPrincipal + totalInterest) {
+    const { taken, left } = takeCents(amountCents, interleaved);
+    const interest: number[] = [];
+    const principal: number[] = [];
+    for (let i = 0; i < installments.length; i += 1) {
+      interest.push(taken[i * 2] / 100);
+      principal.push(taken[i * 2 + 1] / 100);
+    }
+    return {
+      ok: true,
+      interest,
+      principal,
+      applied: (amountCents - left) / 100,
+      unapplied: left / 100,
+      waivedInterest: 0,
+      settlesLoan: true,
+    };
+  }
+
+  // The principal is covered, so the loan is settled. Whatever the payment does
+  // not reach of the interest is waived rather than left hanging over a loan
+  // that is about to close.
+  if (amountCents >= totalPrincipal) {
+    const principalPass = takeCents(amountCents, principalTargets);
+    const interestPass = takeCents(principalPass.left, interestTargets);
+    const interestPaid = interestPass.taken.reduce((a, b) => a + b, 0);
+    return {
+      ok: true,
+      interest: interestPass.taken.map((c) => c / 100),
+      principal: principalPass.taken.map((c) => c / 100),
+      applied: (principalPass.taken.reduce((a, b) => a + b, 0) + interestPaid) / 100,
+      unapplied: 0,
+      waivedInterest: round2((totalInterest - interestPaid) / 100),
+      settlesLoan: true,
+    };
+  }
+
+  // A part payment against the whole loan: clear the oldest EMI first.
+  const { taken, left } = takeCents(amountCents, interleaved);
+  const interest: number[] = [];
+  const principal: number[] = [];
+  for (let i = 0; i < installments.length; i += 1) {
+    interest.push(taken[i * 2] / 100);
+    principal.push(taken[i * 2 + 1] / 100);
+  }
+  return {
+    ok: true,
+    interest,
+    principal,
+    applied: (amountCents - left) / 100,
+    unapplied: left / 100,
+    waivedInterest: 0,
+    settlesLoan: false,
+  };
+}
+
+/** One EMI as the loan screen sees it (amounts arrive as strings from the API). */
+export interface SummaryInstallment {
+  principalAmount: string | number;
+  interestAmount: string | number;
+  principalPaid: string | number;
+  interestPaid: string | number;
+  principalWaived?: string | number | null;
+  interestWaived?: string | number | null;
+}
+
+export interface SettlementSummary {
+  /** Scheduled totals, for the "₹X of ₹Y" line. */
+  principalTotal: number;
+  interestTotal: number;
+  principalPaid: number;
+  principalWaived: number;
+  interestPaid: number;
+  interestWaived: number;
+  totalWaived: number;
+  principalOutstanding: number;
+  interestOutstanding: number;
+  loanOutstanding: number;
+  /** Share of the principal that is settled (paid *or* waived), 0-100. */
+  principalProgressPercent: number;
+  /** Is there still something to settle, on a loan that is not closed? */
+  canSettleInFull: boolean;
+}
+
+function num(value: string | number | null | undefined): number {
+  const n = typeof value === "number" ? value : parseFloat(value ?? "0");
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * The numbers the loan screen shows.
+ *
+ * Two rules keep it honest:
+ *
+ *   - **waived money counts as settled, never as paid.** A loan that was
+ *     written off is finished, but the waiver is reported separately so a
+ *     glance at the screen cannot mistake it for money that arrived.
+ *   - **nothing reads as owed once it is settled.** Outstanding amounts are
+ *     clamped at zero, so float noise (or a stored value from before a
+ *     waiver) can never show "₹0.01 still due" on a finished loan, or keep a
+ *     "Settle in full" button on a closed one.
+ */
+export function summarizeSettlement(
+  installments: SummaryInstallment[],
+  loanStatus: string
+): SettlementSummary {
+  let principalAmount = 0;
+  let interestAmount = 0;
+  let principalPaid = 0;
+  let interestPaid = 0;
+  let principalWaived = 0;
+  let interestWaived = 0;
+
+  for (const inst of installments) {
+    principalAmount += num(inst.principalAmount);
+    interestAmount += num(inst.interestAmount);
+    principalPaid += num(inst.principalPaid);
+    interestPaid += num(inst.interestPaid);
+    // An EMI that carries a negative waiver is not a thing the app writes,
+    // but a hand-edited row must not turn into free money on screen either.
+    principalWaived += Math.max(0, num(inst.principalWaived));
+    interestWaived += Math.max(0, num(inst.interestWaived));
+  }
+
+  const principalOutstanding = Math.max(0, round2(principalAmount - principalPaid - principalWaived));
+  const interestOutstanding = Math.max(0, round2(interestAmount - interestPaid - interestWaived));
+
+  return {
+    principalTotal: round2(principalAmount),
+    interestTotal: round2(interestAmount),
+    principalPaid: round2(principalPaid),
+    principalWaived: round2(principalWaived),
+    interestPaid: round2(interestPaid),
+    interestWaived: round2(interestWaived),
+    totalWaived: round2(principalWaived + interestWaived),
+    principalOutstanding,
+    interestOutstanding,
+    loanOutstanding: round2(principalOutstanding + interestOutstanding),
+    principalProgressPercent:
+      principalAmount > 0
+        ? Math.round(((principalPaid + principalWaived) / principalAmount) * 100)
+        : 0,
+    canSettleInFull: loanStatus === "active" && principalOutstanding + interestOutstanding > EPSILON,
   };
 }

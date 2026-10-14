@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   loanAddedNotice,
   loanClosedNotice,
+  payoffNotice,
   loanUpdatedNotice,
   notifyCounterparty,
   paymentNotice,
@@ -171,16 +172,65 @@ describe("loanClosedNotice", () => {
     expect(notice.message).toBe("Gaurav closed the loan of ₹5,000.");
   });
 
-  it("keeps reporting interest that is still owed", () => {
-    const notice = loanClosedNotice({ actorName: "Gaurav", amount: 5000, interestOutstanding: 250.5 });
+  it("reports interest forgiven by the settlement", () => {
+    const notice = loanClosedNotice({ actorName: "Gaurav", amount: 5000, interestWaived: 250.5 });
 
-    expect(notice.message).toBe("Gaurav closed the loan of ₹5,000. ₹250.5 interest is still unpaid.");
+    expect(notice.message).toBe("Gaurav closed the loan of ₹5,000. ₹250.5 was written off.");
+  });
+
+  it("reports a write-off of principal too, as one number", () => {
+    const notice = loanClosedNotice({
+      actorName: "Gaurav",
+      amount: 5000,
+      interestWaived: 120,
+      principalWaived: 380,
+    });
+
+    expect(notice.message).toBe("Gaurav closed the loan of ₹5,000. ₹500 was written off.");
   });
 
   it("stays quiet about a rounding-error of interest", () => {
-    const notice = loanClosedNotice({ actorName: "Gaurav", amount: 5000, interestOutstanding: 0.004 });
+    const notice = loanClosedNotice({ actorName: "Gaurav", amount: 5000, interestWaived: 0.004 });
 
     expect(notice.message).toBe("Gaurav closed the loan of ₹5,000.");
+  });
+});
+
+describe("payoffNotice", () => {
+  const base = { actorName: "Gaurav", amount: 12240.8 };
+
+  it("asks the other side to confirm a 2-side payoff", () => {
+    const notice = payoffNotice({ ...base, event: "marked" });
+
+    expect(notice.title).toBe("🎉 Full payoff to confirm");
+    expect(notice.message).toBe(
+      "Gaurav recorded a payoff of ₹12,240.8 that settles the loan. " +
+        "Confirm it once the money reaches you."
+    );
+  });
+
+  it("names the interest it waives", () => {
+    const notice = payoffNotice({ ...base, event: "marked", waivedInterest: 240.8 });
+
+    expect(notice.message).toContain("₹240.8 interest was waived.");
+  });
+
+  it("announces a settlement that already happened", () => {
+    const notice = payoffNotice({ ...base, event: "settled", waivedInterest: 240.8 });
+
+    expect(notice.title).toBe("🎉 Loan settled");
+    expect(notice.message).toBe(
+      "Gaurav settled the whole loan with ₹12,240.8. ₹240.8 interest was waived."
+    );
+  });
+
+  it("says what is still outstanding when it was only a part payment", () => {
+    const notice = payoffNotice({ ...base, event: "recorded", remaining: 5000 });
+
+    expect(notice.title).toBe("✅ Payoff recorded");
+    expect(notice.message).toBe(
+      "Gaurav recorded ₹12,240.8 against the loan. ₹5,000 is still outstanding."
+    );
   });
 });
 

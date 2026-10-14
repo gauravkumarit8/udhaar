@@ -83,6 +83,12 @@ async function handlePOST(req: NextRequest) {
       interestAmount: installments.interestAmount,
       principalPaid: installments.principalPaid,
       interestPaid: installments.interestPaid,
+      // Waived money is settled money. A closed loan is already filtered out
+      // below, so today this only matters if a waiver ever happens on an
+      // active loan - but the sweep must never be the one place that forgets,
+      // or it will chase a debt that has been forgiven.
+      principalWaived: installments.principalWaived,
+      interestWaived: installments.interestWaived,
       borrowerId: loans.borrowerId,
       lenderName: users.name,
       lenderUpiId: loans.upiId,

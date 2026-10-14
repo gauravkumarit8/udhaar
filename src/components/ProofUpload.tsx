@@ -4,11 +4,15 @@ import { useState } from "react";
 import { useCamera, useHaptics } from "@/hooks/useNative";
 
 interface ProofUploadProps {
-  onCapture: (hostedUrl: string) => void;
-  currentProof?: string | null;
+  /**
+   * The uploaded proof's id (`udhaar/proofs/…`), or "" when it is removed.
+   * Not a URL: proofs are private, so the id is what the payment stores and
+   * what /api/payments/[id]/proof later signs.
+   */
+  onCapture: (proofId: string) => void;
 }
 
-export default function ProofUpload({ onCapture, currentProof }: ProofUploadProps) {
+export default function ProofUpload({ onCapture }: ProofUploadProps) {
   const { loading: cameraLoading, capture, pick, clear } = useCamera();
   const haptics = useHaptics();
   const [localPreview, setLocalPreview] = useState<string | null>(null);
@@ -27,7 +31,7 @@ export default function ProofUpload({ onCapture, currentProof }: ProofUploadProp
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Upload failed");
-      onCapture(data.url);
+      onCapture(data.proofId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't upload the photo. Try again.");
       setLocalPreview(null);
@@ -56,9 +60,10 @@ export default function ProofUpload({ onCapture, currentProof }: ProofUploadProp
     onCapture("");
   };
 
-  // Prefer the already-uploaded proof; fall back to the local preview
-  // while a fresh capture is still uploading.
-  const displayUrl = currentProof || localPreview;
+  // The captured image stays on screen as the preview: it is the exact file
+  // that was uploaded. The uploaded copy is private, so there is no URL to
+  // show for it - anyone else sees it through /api/payments/[id]/proof.
+  const displayUrl = localPreview;
   const loading = cameraLoading || uploading;
 
   return (

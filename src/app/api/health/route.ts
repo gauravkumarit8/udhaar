@@ -265,7 +265,7 @@ export async function GET() {
     // nobody can be notified about anything, which is worth saying out loud.
     status: push || webPush ? "ok" : "warn",
     detail:
-      `payment proofs: ${cloudinary ? "configured" : "not configured (uploads return 503)"}, ` +
+      `payment proofs: ${cloudinary ? "configured (private; served only through the app)" : "not configured (uploads and proof views return 503)"}, ` +
       `push (app): ${push ? "configured" : "not configured"}, ` +
       `push (browser): ${webPush ? "configured" : "not configured (websites can't be notified)"}`,
     fix: webPush || push

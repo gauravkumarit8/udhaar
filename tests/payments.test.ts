@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allocatePayment, remainingFor } from "@/lib/payments";
+import { allocatePayment, planPayoff, remainingFor, summarizeSettlement } from "@/lib/payments";
 
 /**
  * These are the exact scenarios that used to silently lose money: the API
@@ -97,7 +97,35 @@ describe("remainingFor", () => {
         principalPaid: "250.005",
         interestPaid: "0.00",
       })
-    ).toEqual({ principalRemaining: 750, interestRemaining: 100, totalRemaining: 850 });
+    ).toMatchObject({ principalRemaining: 750, interestRemaining: 100, totalRemaining: 850 });
+  });
+
+  it("treats waived money as settled, not as still owed", () => {
+    const remaining = remainingFor({
+      principalAmount: "1000.00",
+      interestAmount: "100.00",
+      principalPaid: "1000.00",
+      interestPaid: "0.00",
+      principalWaived: "0.00",
+      interestWaived: "100.00",
+    });
+
+    expect(remaining.interestRemaining).toBe(0);
+    expect(remaining.totalRemaining).toBe(0);
+    expect(remaining.interestWaived).toBe(100);
+  });
+
+  it("never lets paid + waived read as more than the EMI", () => {
+    const remaining = remainingFor({
+      principalAmount: "1000.00",
+      interestAmount: "100.00",
+      principalPaid: "1200.00",
+      interestPaid: "0.00",
+      principalWaived: "0.00",
+      interestWaived: "0.00",
+    });
+
+    expect(remaining.principalRemaining).toBe(0);
   });
 
   it("never reports a negative remainder", () => {
@@ -108,5 +136,228 @@ describe("remainingFor", () => {
       interestPaid: "100.00",
     });
     expect(principalRemaining + interestRemaining).toBe(0);
+  });
+});
+
+describe("planPayoff", () => {
+  // ₹12,000 over 3 months at 12%/yr - the shape of a real informal loan.
+  const schedule = [
+    { installmentNumber: 1, principalRemaining: 3960.27, interestRemaining: 120 },
+    { installmentNumber: 2, principalRemaining: 3999.87, interestRemaining: 80.4 },
+    { installmentNumber: 3, principalRemaining: 4039.86, interestRemaining: 40.4 },
+  ];
+  const total = 12240.8;
+
+  it("settles every EMI when the whole loan is paid", () => {
+    const plan = planPayoff(total, schedule);
+
+    expect(plan.ok).toBe(true);
+    expect(plan.settlesLoan).toBe(true);
+    expect(plan.waivedInterest).toBe(0);
+    expect(plan.unapplied).toBe(0);
+    expect(plan.applied).toBeCloseTo(total, 2);
+    expect(plan.interest).toEqual([120, 80.4, 40.4]);
+    expect(plan.principal).toEqual([3960.27, 3999.87, 4039.86]);
+  });
+
+  it("settles the principal alone and waives the interest it never reached", () => {
+    const plan = planPayoff(12000, schedule);
+
+    expect(plan.settlesLoan).toBe(true);
+    expect(plan.applied).toBe(12000);
+    expect(plan.principal).toEqual([3960.27, 3999.87, 4039.86]);
+    expect(plan.waivedInterest).toBeCloseTo(240.8, 2);
+    expect(plan.unapplied).toBe(0);
+  });
+
+  it("puts anything above the principal towards the interest, not the void", () => {
+    const plan = planPayoff(12100, schedule);
+
+    expect(plan.settlesLoan).toBe(true);
+    expect(plan.applied).toBe(12100);
+    // ₹100 of the ₹240.80 interest is paid, the rest is forgiven.
+    expect(plan.interest.reduce((a, b) => a + b, 0)).toBeCloseTo(100, 2);
+    expect(plan.waivedInterest).toBeCloseTo(140.8, 2);
+  });
+
+  it("records money it cannot apply instead of swallowing it", () => {
+    const plan = planPayoff(12250, schedule);
+
+    expect(plan.settlesLoan).toBe(true);
+    expect(plan.applied).toBeCloseTo(total, 2);
+    expect(plan.unapplied).toBeCloseTo(9.2, 2);
+    // The invariant the whole money path rests on.
+    expect(plan.applied + plan.unapplied).toBeCloseTo(12250, 2);
+  });
+
+  it("is an ordinary part payment below the principal, oldest EMI first", () => {
+    const plan = planPayoff(5000, schedule);
+
+    expect(plan.settlesLoan).toBe(false);
+    expect(plan.waivedInterest).toBe(0);
+    expect(plan.unapplied).toBe(0);
+    expect(plan.applied).toBe(5000);
+    // EMI 1 cleared entirely (interest then principal), then EMI 2's interest,
+    // and what is left goes on EMI 2's principal. Same order as one EMI at a
+    // time would have produced.
+    expect(plan.interest[0]).toBe(120);
+    expect(plan.principal[0]).toBe(3960.27);
+    expect(plan.interest[1]).toBe(80.4);
+    expect(plan.principal[1]).toBeCloseTo(839.33, 2);
+    expect(plan.interest[2]).toBe(0);
+    expect(plan.principal[2]).toBe(0);
+  });
+
+  it("keeps every paisa accounted for, whatever the amount", () => {
+    for (const amount of [0.01, 1, 999.99, 4080.27, 12000, 12240.8, 12240.81, 20000]) {
+      const plan = planPayoff(amount, schedule);
+      const applied = plan.applied + plan.unapplied;
+      expect(applied, `amount ${amount}`).toBeCloseTo(amount, 2);
+      if (!plan.settlesLoan) expect(plan.waivedInterest).toBe(0);
+    }
+  });
+
+  it("refuses an amount that is not money, and a loan with nothing left", () => {
+    expect(planPayoff(0, schedule).ok).toBe(false);
+    expect(planPayoff(-5, schedule).ok).toBe(false);
+    expect(
+      planPayoff(100, [{ installmentNumber: 1, principalRemaining: 0, interestRemaining: 0 }]).ok
+    ).toBe(false);
+  });
+
+  it("handles a single-EMI loan and an interest-free one", () => {
+    const oneEmi = [{ installmentNumber: 1, principalRemaining: 5000, interestRemaining: 0 }];
+    const plan = planPayoff(5000, oneEmi);
+    expect(plan.settlesLoan).toBe(true);
+    expect(plan.waivedInterest).toBe(0);
+    expect(plan.principal).toEqual([5000]);
+  });
+
+  it("leaves a one-paisa-short payment open for the close tolerance to settle", () => {
+    // The app treats a paisa as float noise (see closeLoanIfSettled), so this
+    // stays a part payment here and the tiny remainder is cleaned up on close.
+    const plan = planPayoff(11999.99, schedule);
+    expect(plan.settlesLoan).toBe(false);
+    expect(plan.applied).toBe(11999.99);
+  });
+});
+
+/**
+ * What the loan screen shows. The bug being guarded against is a settled or
+ * written-off loan still looking like it owes money - an "OVERDUE" EMI, a
+ * non-100% progress bar, or a "Settle in full" button that refuses to go away.
+ */
+describe("summarizeSettlement", () => {
+  const emi = (over: Partial<Record<string, string>> = {}) => ({
+    principalAmount: "4000",
+    interestAmount: "80.40",
+    principalPaid: "0",
+    interestPaid: "0",
+    principalWaived: "0",
+    interestWaived: "0",
+    ...over,
+  });
+
+  it("adds up an untouched loan", () => {
+    const s = summarizeSettlement([emi(), emi(), emi()], "active");
+    expect(s.principalTotal).toBe(12000);
+    expect(s.interestTotal).toBe(241.2);
+    expect(s.principalOutstanding).toBe(12000);
+    expect(s.interestOutstanding).toBe(241.2);
+    expect(s.loanOutstanding).toBe(12241.2);
+    expect(s.principalProgressPercent).toBe(0);
+    expect(s.canSettleInFull).toBe(true);
+  });
+
+  it("counts waived money as settled without calling it paid", () => {
+    const s = summarizeSettlement(
+      [emi({ interestWaived: "80.40" }), emi({ interestWaived: "80.40" }), emi({ interestWaived: "80.40" })],
+      "closed"
+    );
+    expect(s.principalPaid).toBe(0);
+    expect(s.interestPaid).toBe(0);
+    expect(s.interestWaived).toBe(241.2);
+    expect(s.totalWaived).toBe(241.2);
+    expect(s.interestOutstanding).toBe(0);
+    expect(s.loanOutstanding).toBe(12000);
+  });
+
+  it("reports a written-off loan as settled, and remembers what was forgiven", () => {
+    const s = summarizeSettlement(
+      [
+        emi({ principalPaid: "4000", interestPaid: "80.40" }),
+        emi({ principalWaived: "4000", interestWaived: "80.40" }),
+        emi({ principalWaived: "4000", interestWaived: "80.40" }),
+      ],
+      "closed"
+    );
+    expect(s.loanOutstanding).toBe(0);
+    expect(s.principalOutstanding).toBe(0);
+    expect(s.totalWaived).toBe(8160.8);
+    expect(s.principalProgressPercent).toBe(100);
+    expect(s.canSettleInFull).toBe(false);
+  });
+
+  it("shows a fully repaid loan as fully paid, with nothing waived", () => {
+    const s = summarizeSettlement(
+      [
+        emi({ principalPaid: "4000", interestPaid: "80.40" }),
+        emi({ principalPaid: "4000", interestPaid: "80.40" }),
+        emi({ principalPaid: "4000", interestPaid: "80.40" }),
+      ],
+      "closed"
+    );
+    expect(s.loanOutstanding).toBe(0);
+    expect(s.totalWaived).toBe(0);
+    expect(s.principalProgressPercent).toBe(100);
+  });
+
+  it("never lets a settled loan read as owing a paisa", () => {
+    // Float noise on a fully settled schedule must not resurrect a debt.
+    const s = summarizeSettlement(
+      [emi({ principalPaid: "3999.996", interestPaid: "80.4", principalWaived: "0.004" })],
+      "closed"
+    );
+    expect(s.principalOutstanding).toBe(0);
+    expect(s.interestOutstanding).toBe(0);
+    expect(s.loanOutstanding).toBe(0);
+  });
+
+  it("clamps an overpaid row at zero instead of showing a negative debt", () => {
+    const s = summarizeSettlement([emi({ principalPaid: "4001", interestPaid: "100" })], "closed");
+    expect(s.principalOutstanding).toBe(0);
+    expect(s.interestOutstanding).toBe(0);
+  });
+
+  it("ignores a negative waiver rather than treating it as free money", () => {
+    const s = summarizeSettlement([emi({ principalWaived: "-1000" })], "active");
+    expect(s.principalWaived).toBe(0);
+    expect(s.principalOutstanding).toBe(4000);
+  });
+
+  it("offers 'settle in full' only while the loan is open and owes something", () => {
+    expect(summarizeSettlement([emi()], "active").canSettleInFull).toBe(true);
+    expect(summarizeSettlement([emi()], "closed").canSettleInFull).toBe(false);
+    expect(
+      summarizeSettlement([emi({ principalPaid: "4000", interestPaid: "80.40" })], "active")
+        .canSettleInFull
+    ).toBe(false);
+  });
+
+  it("handles an empty schedule without dividing by zero", () => {
+    const s = summarizeSettlement([], "active");
+    expect(s.principalProgressPercent).toBe(0);
+    expect(s.loanOutstanding).toBe(0);
+    expect(s.canSettleInFull).toBe(false);
+  });
+
+  it("accepts the strings and numbers the API mixes together", () => {
+    const s = summarizeSettlement(
+      [{ ...emi({ principalPaid: "2000" }), interestPaid: 80.4, principalWaived: null, interestWaived: undefined }],
+      "active"
+    );
+    expect(s.principalOutstanding).toBe(2000);
+    expect(s.interestOutstanding).toBe(0);
+    expect(s.totalWaived).toBe(0);
   });
 });

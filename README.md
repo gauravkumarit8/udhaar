@@ -17,7 +17,9 @@ People in India lend money to friends and family, but tracking it is awkward. Ud
 - ✅ **Mark payments** — partial interest/principal payments with proof upload
 - ✅ **UPI deep links** — one-tap pay buttons inside reminders
 - ✅ **1-side or 2-side confirmation** — flexible payment verification
-- ✅ **Auto-close loan** — when principal is fully repaid
+- ✅ **Settle in full** — one payment clears the whole loan, not one EMI at a time
+- ✅ **Close & write off** — give up on a balance without pretending it was paid
+- ✅ **Auto-close loan** — when the loan is fully settled
 
 ---
 
@@ -80,6 +82,19 @@ npm run typecheck        # tsc --noEmit
 npm run lint             # eslint
 npm run build            # production build
 npm run check-deploy     # is the database + config actually usable?
+npm run verify:settlement # drives the real routes on a running server (needs a scratch DB)
+```
+
+`verify:settlement` is the check that would have caught the "can't close a paid-up
+loan" bug: it seeds three users and a session each, then settles loans over HTTP
+- full payment, early settlement, overpayment, part payment, write-off, 2-side
+confirmation, permissions and rejected amounts. Start `npm run dev` first, and
+point both the server and the script at the same **scratch** database:
+
+```powershell
+$env:DATABASE_URL = "postgresql://user:pass@host/scratch"
+npm run dev                                          # other terminal
+npm run verify:settlement                            # 41 checks, exit 1 on failure
 ```
 
 ### When something is broken
@@ -488,6 +503,74 @@ push.
 - **Phone/browser** - a real notification, if a channel above is configured and
   enabled for that device. Tapping it opens the loan it is about.
 
+## 🧾 Payment proofs are private
+
+A proof screenshot is a bank or UPI receipt - names, amounts, sometimes an
+account number. So a payment proof is visible to exactly the two people on the
+loan, and to nobody else:
+
+- **Uploads are stored privately.** `POST /api/upload` sends the image to
+  Cloudinary as an `authenticated` asset - one that cannot be fetched without a
+  signature - and returns the asset's **id**. The payment row stores that id
+  (`payments.proof_public_id`); no fetchable URL is ever written to the
+  database.
+- **Reading one goes through the app.** `GET /api/payments/[id]/proof` checks
+  the session against the loan the payment belongs to, signs a delivery URL
+  *server-side*, fetches the bytes and streams them back. Your browser never
+  sees a Cloudinary URL, so there is no link to forward, leak, or find later in
+  a log. Anyone else - logged in or not - gets the same `404` as a payment that
+  doesn't exist, so a stranger can't even probe for one.
+- **Failures say what happened** instead of rendering a broken image: `503`
+  names the missing `CLOUDINARY_*` variables, `502` reports what the proof store
+  answered (a rejected credential is called out by name).
+
+`CLOUDINARY_DELIVERY_HOST` is optional - set it only if your Cloudinary account
+serves assets from a custom domain.
+
+Proofs uploaded before this change stored a public Cloudinary URL
+(`payments.proof_url`). Those keep working: the route redirects to the stored
+URL, since that link was public already and rewriting it would need the
+original file. Re-upload is the only way to make an old proof private.
+
+## 🤝 Settling a loan
+
+People rarely pay an EMI schedule line by line - they wait until they have the
+money and clear the whole thing in one transfer. Two actions cover that, and
+both are on the loan screen for anyone on the loan:
+
+### Settle in full
+
+`POST /api/loans/[id]/payoff` applies **one** payment across the whole schedule,
+oldest EMI first (interest before principal inside each EMI, so interest is
+never skipped and left behind). What happens next depends on how much arrived:
+
+| Amount received | What the app does |
+|-----------------|-------------------|
+| the **principal**, or more | loan is **settled**: unpaid interest is recorded as **waived** (early settlement), never as paid |
+| more than what is owed | the loan is settled and the excess is kept on the payment as `unapplied_amount` - "₹500 received, not applied to the loan" |
+| less than the principal | an ordinary part payment: EMIs fill up oldest-first, nothing is waived |
+
+The sheet defaults to the principal - that is the early-settlement deal - with a
+second button to pay the interest too, and it asks before saving an overpayment.
+
+Waived interest is *not* money the borrower paid. It is stored separately
+(`installments.interest_waived` / `principal_waived`) and shown as
+"₹240.80 written off", so a settled loan never reads as though it was fully
+repaid, and the reminders stop chasing it.
+
+### Close & write off
+
+`POST /api/loans/[id]/close` with `{writeOff: true}` closes a loan that will
+never be repaid, recording the unpaid balance as written off. Without
+`writeOff`, closing still requires the principal to be paid - the response says
+so and points at the write-off option instead of failing vaguely. Both paths
+refuse to act while a payment claim is still pending (the other person could
+confirm it a second later), and closing an already-closed loan is a quiet
+success, so a double tap changes nothing.
+
+The borrower is told either way; the message says what was waived or written
+off, so nobody is surprised later by a smaller number than the schedule showed.
+
 ## 🚢 Deployment notes
 
 - **Static assets with `output: standalone`.** Next.js does *not* copy
@@ -496,8 +579,14 @@ push.
   and `render.yaml` both do). Skipping this serves HTML with no CSS or JS.
 - **Apply the migrations on a fresh database.** `npm run db:migrate` runs the
   SQL in `drizzle/` (generated from `src/db/schema.ts`). CI applies them to an
-  empty Postgres, and `render.yaml` runs them on every boot — a no-op once
-  applied.
+  empty Postgres, and `render.yaml` runs `db:baseline && db:migrate` on every
+  boot — a no-op once applied. The baseline step matters on a database that
+  predates the journal (created by `db:push`): it records the migrations whose
+  objects actually exist and verifies the rest, so `db:migrate` has only the
+  genuinely missing ones to apply. On a fresh database it does nothing at all.
+  A start-command change in `render.yaml` reaches an existing service on the
+  next Blueprint sync (Dashboard → Blueprints → Sync), or edit the Start Command
+  in the service's Settings directly.
 - **Don't use Render's free Postgres for real data.** Free instances are
   deleted 30 days after creation, with no backups: that is what silently broke
   production login once. Use any external Postgres (Neon, Supabase, Aiven) and
