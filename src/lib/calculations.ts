@@ -232,6 +232,20 @@ export function formatDate(dateStr: string): string {
 }
 
 /**
+ * Today, as YYYY-MM-DD, on the server's own clock.
+ *
+ * Sent to the database as a parameter when a query has to decide "is this
+ * overdue" - so the database and `daysUntil` below are measuring against the
+ * same day, instead of the database's `current_date` (UTC in a container) and
+ * the app's local midnight quietly disagreeing for part of the day.
+ */
+export function localToday(now = new Date()): string {
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
  * Days until a given date
  */
 export function daysUntil(dateStr: string): number {
