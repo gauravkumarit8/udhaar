@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
 import BottomSheet from "@/components/BottomSheet";
 import MobileShell from "@/components/MobileShell";
@@ -760,6 +761,15 @@ export default function LoanDetailPage() {
           )}
         </div>
 
+
+        {/* The whole record on one sheet: printable, and sendable as a summary. */}
+        <Link
+          href={`/loans/${loan.id}/statement`}
+          className="mt-3 flex items-center justify-between bg-white border border-slate-200 rounded-2xl px-4 py-3 tap-highlight active:bg-slate-50"
+        >
+          <span className="text-sm font-semibold text-slate-700">📄 Statement &amp; receipts</span>
+          <span className="text-xs text-emerald-600 font-semibold">View / share →</span>
+        </Link>
 
         {/* Share / Invite - lender only, used to send loan details to the borrower */}
         {isLender && (

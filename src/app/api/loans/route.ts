@@ -5,31 +5,99 @@ import { getSession } from "@/lib/auth";
 import { generateInstallmentSchedule } from "@/lib/calculations";
 import { loanAddedNotice, notifyCounterparty } from "@/lib/notify";
 import { parseLoanInput } from "@/lib/validation";
-import { eq, or, desc } from "drizzle-orm";
+import { countUnreadNotifications } from "@/lib/unread-count";
+import { parsePaging } from "@/lib/paging";
+import { activeLoansFirst } from "@/lib/loan-order";
+import {
+  loanRoleCondition,
+  loanSearchCondition,
+  loanStatusCondition,
+  parseLoanQuery,
+} from "@/lib/loan-search";
+import { and, eq, or, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
-async function handleGET() {
+/**
+ * The full list, a page at a time.
+ *
+ * This answered with every loan the account had ever recorded - 119 of them on
+ * the test account, and it grows forever. It now takes `?limit=` / `?offset=`
+ * (see src/lib/paging.ts for the clamps) and says how many there are in total,
+ * so a screen can show a page and a "showing 20 of 119" line without asking
+ * twice.
+ *
+ * The dashboard's five rows come from the same ordering, so "the first page"
+ * means the same loans on both screens.
+ */
+async function handleGET(req: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Get loans where the user is either the lender or the borrower
-  const userLoans = await db
-    .select()
-    .from(loans)
-    .where(or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)))
-    .orderBy(desc(loans.createdAt));
+  const params = new URL(req.url).searchParams;
+  const { limit, offset } = parsePaging(params);
+  const { q, status, role } = parseLoanQuery(params);
+
+  /*
+   * One set of conditions, used by the count and by the page.
+   *
+   * They have to be the same set, or the screen says "showing 20 of 143" while
+   * the filter above it is narrowing something else - the count is what the
+   * person reads to decide whether their search found anything.
+   */
+  const conditions = [
+    or(eq(loans.lenderId, session.id), eq(loans.borrowerId, session.id)),
+    loanRoleCondition(role, session.id),
+    loanStatusCondition(status),
+    loanSearchCondition(q),
+  ].filter((clause): clause is NonNullable<typeof clause> => clause !== undefined);
+
+  const where = and(...conditions);
+
+  const [totalRows, userLoans, unread] = await Promise.all([
+    // The count needs the same join as the page: the search can match the
+    // counterparty's account name, which only lives on `users`. Built with the
+    // same `where` fragment, in the query builder rather than in hand-written
+    // SQL, so the aliases and the conditions can never drift apart.
+    db
+      .select({ total: sql<string>`count(*)` })
+      .from(loans)
+      .leftJoin(users, eq(users.id, loans.lenderId))
+      .where(where),
+    db
+      .select({ loan: loans, accountName: users.name })
+      .from(loans)
+      .leftJoin(users, eq(users.id, loans.lenderId))
+      .where(where)
+      .orderBy(...activeLoansFirst())
+      .limit(limit)
+      .offset(offset),
+    // The badge rides along, so a list screen needs no request of its own.
+    countUnreadNotifications(session.id),
+  ]);
+
+  const total = parseInt(totalRows[0]?.total ?? "0", 10);
 
   // Tag each loan with the viewer's role so the UI can render
   // "You lent" vs "You borrowed". A loan the viewer entered for a lender who
   // has no account is still theirs, so it must not vanish from the list.
-  const taggedLoans = userLoans.map((loan) => ({
+  const taggedLoans = userLoans.map(({ loan, accountName }) => ({
     ...loan,
+    lenderName: loan.lenderName || accountName,
     viewerRole: loan.lenderId === session.id ? ("lender" as const) : ("borrower" as const),
   }));
 
-  return NextResponse.json({ loans: taggedLoans });
+  return NextResponse.json({
+    loans: taggedLoans,
+    total,
+    limit,
+    offset,
+    hasMore: offset + taggedLoans.length < total,
+    unread,
+    // Echoed back so the screen can show what it is actually filtering by.
+    query: { q, status, role },
+  });
 }
 
 async function handlePOST(req: NextRequest) {

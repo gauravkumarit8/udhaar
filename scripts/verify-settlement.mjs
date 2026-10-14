@@ -682,7 +682,9 @@ async function main() {
     );
     check("the loan has several installments outstanding", unpaid.length >= 5, true);
 
-    const board = await call("GET", "/api/dashboard", { token: LENDER_TOKEN });
+    // A big page: the dashboard sends five rows by default now, and this check
+    // is about a specific loan that may not be in the first five.
+    const board = await call("GET", "/api/dashboard?limit=200", { token: LENDER_TOKEN });
     const rows = (board.json.dueItems ?? []).filter((item) => item.loanId === id);
     check("the dashboard shows it once", rows.length, 1);
     check("...on its earliest unpaid installment", rows[0]?.installmentId, unpaid[0].id);
@@ -715,6 +717,203 @@ async function main() {
     const feed = await call("GET", "/api/notifications", { token: BORROWER_TOKEN });
     check("the badge count is a number", typeof badge.json.unread, "number");
     check("...and matches the feed's own count", badge.json.unread, feed.json.unread);
+  }
+
+  console.log("\nThe dashboard answers with a page, and the arithmetic still adds up");
+  {
+    /*
+     * Six identical \u20b91,000 loans at 0%, entered today.
+     *
+     * Chosen so every figure below is arithmetic a reader can do in their head:
+     * nothing overdue, nothing due this week, no interest. The account is also
+     * guaranteed to hold more than one page of loans whatever ran before this,
+     * which is what makes the cap assertions deterministic instead of a
+     * comment about what the database happens to contain.
+     */
+    const today = new Date().toLocaleDateString("en-CA");
+    // Before any of it, so the six loans below can be measured as a difference.
+    const before = (await call("GET", "/api/dashboard", { token: LENDER_TOKEN })).json;
+    const created = [];
+    for (let i = 0; i < 6; i += 1) {
+      const { id } = await newLoan({
+        amount: "1000",
+        interestRate: "0",
+        tenureMonths: "6",
+        startDate: today,
+      });
+      created.push(id);
+    }
+
+    const page = (await call("GET", "/api/dashboard", { token: LENDER_TOKEN })).json;
+    const full = (await call("GET", "/api/dashboard?limit=200", { token: LENDER_TOKEN })).json;
+
+    /*
+     * The equivalence check: every money figure the route reports has to equal
+     * what a plain fold over the raw installment rows says - the loop the route
+     * used to run in Node, run here instead. The route computes these in SQL
+     * now; this is the same question asked a second way, from the outside.
+     */
+    const rows = await query(
+      `select l.lender_id, i.principal_amount, i.principal_paid, i.interest_amount, i.interest_paid
+         from loans l join installments i on i.loan_id = l.id
+        where l.status = 'active' and (l.lender_id = $1 or l.borrower_id = $1)`,
+      [LENDER_ID]
+    );
+    let expectReceive = 0;
+    let expectPay = 0;
+    let expectInterest = 0;
+    for (const row of rows) {
+      const principal = Math.max(0, Number(row.principal_amount) - Number(row.principal_paid));
+      const interest = Math.max(0, Number(row.interest_amount) - Number(row.interest_paid));
+      if (row.lender_id === LENDER_ID) {
+        expectReceive += principal + interest;
+        expectInterest += interest;
+      } else {
+        expectPay += principal + interest;
+      }
+    }
+    check("the dashboard's receivable equals a fold of the raw rows",
+      full.summary.youWillReceive, money(expectReceive));
+    check("...its payable too", full.summary.youWillPay, money(expectPay));
+    check("...and the interest on top", full.summary.totalInterestEarned, money(expectInterest));
+    check("the six new loans are \u20b96,000 more receivable",
+      money(full.summary.youWillReceive - before.summary.youWillReceive), 6000);
+    check("...and six more active loans",
+      full.summary.activeLoans - before.summary.activeLoans, 6);
+    check("...with no interest, because they are interest-free",
+      full.summary.totalInterestEarned, before.summary.totalInterestEarned);
+    check("...and nothing overdue or due this week",
+      [full.summary.overdueAmount, full.summary.dueThisWeek],
+      [before.summary.overdueAmount, before.summary.dueThisWeek]);
+
+    // The page a phone gets: five rows, and the counts of everything behind them.
+    check("the dashboard sends five loans, not every loan", page.loans.length, 5);
+    check("...and says there are more", page.hasMoreLoans, true);
+    check("...while still counting them all", page.summary.totalLoans, full.summary.totalLoans);
+    check("...and the five it sends are the live ones",
+      page.loans.filter((l) => l.status === "active").length,
+      Math.min(5, page.summary.activeLoans));
+    check("the due list is a page as well", page.dueItems.length, 5);
+    check("...and carries the count of the whole list", page.dueItemCount, full.dueItems.length);
+    check("asking for more of it returns the same rows", full.dueItems.length, full.dueItemCount);
+
+    // The same accounting underneath, on the list endpoint the see-all screen uses.
+    const firstPage = await call("GET", "/api/loans?limit=2&offset=0", { token: LENDER_TOKEN });
+    const secondPage = await call("GET", "/api/loans?limit=2&offset=2", { token: LENDER_TOKEN });
+    check("the full list takes a page size", firstPage.json.loans.length, 2);
+    check("...and reports how many there are in total", firstPage.json.total, full.summary.totalLoans);
+    check("...and that there is more behind it", firstPage.json.hasMore, true);
+    check("...so page two is a different pair of loans",
+      firstPage.json.loans[0].id !== secondPage.json.loans[0].id, true);
+    check("...and the badge rides along on a list screen", typeof firstPage.json.unread, "number");
+
+    const junk = await call("GET", "/api/loans?limit=abc&offset=-5", { token: LENDER_TOKEN });
+    check("a nonsense page size is a page, not an error", junk.status, 200);
+    check("...clamped to the default page", junk.json.limit, 50);
+    check("...and a negative offset to the start", junk.json.offset, 0);
+
+    // Leave the database as it was found, so a re-run starts from the same place.
+    await query("DELETE FROM loans WHERE id = ANY($1::uuid[])", [created]);
+    const [{ n }] = await query("select count(*)::int as n from loans where id = ANY($1::uuid[])", [created]);
+    check("the probe loans are cleaned up", n, 0);
+  }
+
+  console.log("\nThe loan list searches, filters, and answers in pages");
+  {
+    const everything = (await call("GET", "/api/loans?limit=200", { token: LENDER_TOKEN })).json;
+    check("the list reports how many there are", typeof everything.total, "number");
+    check("...and whether a page is all of it", typeof everything.hasMore, "boolean");
+
+    const sample = everything.loans[0];
+    const firstName = sample.borrowerName.split(" ")[0];
+    const byName = (
+      await call("GET", `/api/loans?limit=200&q=${encodeURIComponent(firstName)}`, {
+        token: LENDER_TOKEN,
+      })
+    ).json;
+    check("a search by name finds that loan", byName.loans.some((l) => l.id === sample.id), true);
+    check("...and never claims more results than the account has", byName.total <= everything.total, true);
+
+    // The important one: `%` is an operator in a LIKE pattern, not text, so a
+    // search for it must find nothing rather than every loan on the account.
+    const percent = (
+      await call("GET", "/api/loans?limit=200&q=%25", { token: LENDER_TOKEN })
+    ).json;
+    check("a search for '%' looks for a percent sign, not everything", percent.total, 0);
+    const underscore = (
+      await call("GET", "/api/loans?limit=200&q=_", { token: LENDER_TOKEN })
+    ).json;
+    check("...and so does '_'", underscore.total, 0);
+
+    const nothing = (
+      await call("GET", "/api/loans?limit=200&q=zzznotaloan", { token: LENDER_TOKEN })
+    ).json;
+    check("a search that matches nothing returns nothing", nothing.total, 0);
+
+    const running = (
+      await call("GET", "/api/loans?limit=200&status=active", { token: LENDER_TOKEN })
+    ).json;
+    check("filtering to running loans returns only running loans",
+      running.loans.every((l) => l.status === "active"), true);
+    check("...and counts what it filtered", running.total <= everything.total, true);
+
+    const closed = (
+      await call("GET", "/api/loans?limit=200&status=closed", { token: LENDER_TOKEN })
+    ).json;
+    check("filtering to closed loans returns no running ones",
+      closed.loans.every((l) => l.status !== "active"), true);
+
+    const borrowed = (
+      await call("GET", "/api/loans?limit=200&role=borrower", { token: LENDER_TOKEN })
+    ).json;
+    check("filtering to the borrowed side returns only borrowed loans",
+      borrowed.loans.every((l) => l.viewerRole === "borrower"), true);
+
+    const nonsense = (
+      await call("GET", "/api/loans?limit=200&status=deleted&role=cosigner", { token: LENDER_TOKEN })
+    ).json;
+    check("an unknown filter is ignored, not obeyed", nonsense.total, everything.total);
+  }
+
+  console.log("\nA loan can be printed out as a statement");
+  {
+    // A fresh three-month loan: a schedule to print, and a ledger to add to.
+    const { id } = await newLoan({
+      amount: "6000",
+      interestRate: "12",
+      tenureMonths: "3",
+      startDate: "2026-01-01",
+    });
+
+    const sheet = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    check("the statement has every EMI on it", sheet.installments.length, 3);
+    check("...each with a status the sheet can print",
+      sheet.installments.every((i) => typeof i.computedStatus === "string"), true);
+    check("...the loan's own terms",
+      [typeof sheet.loan.startDate, typeof sheet.loan.interestRate, sheet.loan.tenureMonths],
+      ["string", "string", 3]);
+    check("...which side the reader is on", sheet.loan.viewerRole, "lender");
+    check("...and an empty ledger to start", sheet.payments.length, 0);
+
+    // Pay something, and the receipt has to show up on the sheet.
+    const paid = await call("POST", `/api/installments/${sheet.installments[0].id}/pay`, {
+      token: LENDER_TOKEN,
+      body: { amount: "1", paymentType: "both", notes: "statement check" },
+    });
+    check("a payment can be recorded", paid.status, 200); // this route answers 200, not 201
+
+    const after = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
+    const entry = after.payments[after.payments.length - 1];
+    check("it appears in the statement's ledger", after.payments.length, 1);
+    check("...with its amount", Number(entry?.amount), 1);
+    check("...its note", entry?.notes, "statement check");
+    check("...and a status (pending until the other side confirms)", typeof entry?.status, "string");
+    check("...and the EMI it was paid against", Boolean(entry?.installmentId), true);
+
+    // The counterparty sees the same sheet, from their side of it.
+    const theirSheet = (await call("GET", `/api/loans/${id}`, { token: BORROWER_TOKEN })).json;
+    check("the borrower can open the same statement", theirSheet.installments.length, 3);
+    check("...and it is labelled from their side", theirSheet.loan.viewerRole, "borrower");
   }
 
   console.log("\nWhen the lender finally signs up, the debt they were owed finds them");
