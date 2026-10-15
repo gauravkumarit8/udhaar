@@ -1,3 +1,5 @@
+import type { NextRequest } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
 import { resolveBuildInfo } from "@/lib/build-info";
@@ -13,8 +15,12 @@ export const dynamic = "force-dynamic";
  * host. This walks the chain in order and reports the first thing that's
  * actually broken, with the command that fixes it.
  *
- * Nothing secret is echoed back - only whether a variable is set, plus the
- * database host (never the password or the full connection string).
+ * The verdict is public on purpose: an uptime ping monitors it and the deploy
+ * workflow checks it after every release. The *details* are not. A caller who
+ * does not present `HEALTH_TOKEN` (their own header `x-health-token`) gets each
+ * check's name and status and nothing else - no database host, no statement
+ * about which integrations are configured, no explanation of the OTP mode. With
+ * the token, the full diagnosis comes back as before.
  */
 
 import { buildHealthReport, type HealthCheck as Check } from "@/lib/health-report";
@@ -137,7 +143,42 @@ function explainDbError(error: unknown): { detail: string; fix: string } {
   };
 }
 
-export async function GET() {
+/**
+ * Is the caller allowed the full detail?
+ *
+ * `HEALTH_TOKEN` is optional: when it is unset nobody gets details (fail
+ * closed), and when it is set the header must match exactly. The comparison is
+ * constant-time so the header cannot be probed a byte at a time.
+ */
+function maySeeDetails(req: NextRequest): boolean {
+  const expected = process.env.HEALTH_TOKEN;
+  if (!expected) return false;
+
+  const presented = req.headers.get("x-health-token");
+  if (!presented) return false;
+
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+
+  return timingSafeEqual(a, b);
+}
+
+/*
+ * Remedies, hoisted because each one is now said twice: to the owner (with the
+ * real detail) and to everyone else (remedy only). They hold commands and
+ * variable *names*, all of which are in the README - no hosts, no secrets.
+ */
+const SCHEMA_FIX =
+  "npm run db:push   (reconciles the database with the schema in one step; or npm run db:baseline then npm run db:migrate)";
+const OTP_FIX =
+  "Set OTP_MODE=dummy to accept the dummy code for now, or configure MSG91_AUTH_KEY + MSG91_FLOW_ID.";
+const REMINDERS_FIX =
+  "Set CRON_SECRET on the service to a long random string, and add the same value as a GitHub Actions secret (see README → Scheduled reminders).";
+const VAPID_FIX =
+  "Run npm run generate:vapid and set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so browsers can be notified (README → Notifications).";
+
+export async function GET(req: NextRequest) {
   const checks: Check[] = [];
 
   // 1. Is the app configured at all?
@@ -146,6 +187,8 @@ export async function GET() {
     name: "DATABASE_URL",
     status: hasDbUrl ? "ok" : "fail",
     detail: hasDbUrl ? `set → ${describeDbTarget()}` : "not set",
+    // The host is infrastructure detail: "set" is all a stranger needs.
+    publicDetail: hasDbUrl ? "set" : "not set",
     fix: hasDbUrl
       ? undefined
       : "Set DATABASE_URL on the service (Render → Environment) to your Postgres connection string.",
@@ -155,7 +198,12 @@ export async function GET() {
   if (hasDbUrl) {
     try {
       await db.execute(sql`select 1`);
-      checks.push({ name: "database connection", status: "ok", detail: "query succeeded (select 1)" });
+      checks.push({
+        name: "database connection",
+        status: "ok",
+        detail: "query succeeded (select 1)",
+        publicDetail: "query succeeded (select 1)",
+      });
 
       try {
         const result = await db.execute<{ table_name: string }>(sql`
@@ -192,18 +240,25 @@ export async function GET() {
               : missingColumns.length > 0
                 ? `missing column${missingColumns.length > 1 ? "s" : ""}: ${missingColumns.join(", ")}`
                 : `all ${REQUIRED_TABLES.length} tables present`,
-          fix:
-            schemaProblems.length === 0
-              ? undefined
-              : "npm run db:push   (reconciles the database with the schema in one step; or npm run db:baseline then npm run db:migrate)",
+          // Present-or-not is the useful half; the names of what is missing
+          // describe the schema to whoever asks.
+          publicDetail: schemaProblems.length === 0 ? "up to date" : "not up to date",
+          fix: schemaProblems.length === 0 ? undefined : SCHEMA_FIX,
+          // The missing table/column names stay hidden (they describe the
+          // schema); the command that fixes them is in the README.
+          publicFix: schemaProblems.length === 0 ? undefined : SCHEMA_FIX,
         });
       } catch (error) {
         const { detail, fix } = explainDbError(error);
-        checks.push({ name: "schema", status: "fail", detail, fix });
+        // The remedy is public documentation; the error text (which names the
+        // host) is not. Publishing the remedy is what lets the deploy verifier
+        // print an actionable reason for a redacted failure - the 2026-10-14
+        // outage was "schema: not up to date" with nothing to act on.
+        checks.push({ name: "schema", status: "fail", detail, fix, publicFix: fix });
       }
     } catch (error) {
       const { detail, fix } = explainDbError(error);
-      checks.push({ name: "database connection", status: "fail", detail, fix });
+      checks.push({ name: "database connection", status: "fail", detail, fix, publicFix: fix });
       checks.push({
         name: "schema",
         status: "skip",
@@ -238,10 +293,11 @@ export async function GET() {
     name: "OTP delivery",
     status: otpStatus,
     detail: `${otpMode} → ${otpDetail}`,
-    fix:
-      otpStatus === "fail"
-        ? "Set OTP_MODE=dummy to accept the dummy code for now, or configure MSG91_AUTH_KEY + MSG91_FLOW_ID."
-        : undefined,
+    // The mode is the part an owner reads at a glance; the sentence explaining
+    // that any number can be logged into with 123456 is not for strangers.
+    publicDetail: `mode: ${otpMode}`,
+    fix: otpStatus === "fail" ? OTP_FIX : undefined,
+    publicFix: otpStatus === "fail" ? OTP_FIX : undefined,
   });
 
   // 5. Optional integrations - informational only.
@@ -259,9 +315,9 @@ export async function GET() {
     detail: cronSecret
       ? "CRON_SECRET is set - the sweep can be triggered by .github/workflows/reminders.yml"
       : "CRON_SECRET is not set, so POST /api/reminders/run answers 503 and nobody is reminded automatically",
-    fix: cronSecret
-      ? undefined
-      : "Set CRON_SECRET on the service to a long random string, and add the same value as a GitHub Actions secret (see README → Scheduled reminders).",
+    publicDetail: cronSecret ? "set" : "not set",
+    fix: cronSecret ? undefined : REMINDERS_FIX,
+    publicFix: cronSecret ? undefined : REMINDERS_FIX,
   });
 
   // Browser push needs its own key pair; without it a website visitor can
@@ -276,12 +332,15 @@ export async function GET() {
       `payment proofs: ${cloudinary ? "configured (private; served only through the app)" : "not configured (uploads and proof views return 503)"}, ` +
       `push (app): ${push ? "configured" : "not configured"}, ` +
       `push (browser): ${webPush ? "configured" : "not configured (websites can't be notified)"}`,
-    fix: webPush || push
-      ? undefined
-      : "Run npm run generate:vapid and set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so browsers can be notified (README → Notifications).",
+    fix: webPush || push ? undefined : VAPID_FIX,
+    // Only the remedy, never the per-integration state above it: a stranger
+    // learns what to run, not what is (or isn't) configured.
+    publicFix: webPush || push ? undefined : VAPID_FIX,
   });
 
-  const { status, body } = buildHealthReport(checks, resolveBuildInfo());
+  const { status, body } = buildHealthReport(checks, resolveBuildInfo(), new Date(), {
+    redact: !maySeeDetails(req),
+  });
 
   return Response.json(body, {
     status,

@@ -62,6 +62,41 @@ async function call(method, path, { token, body, headers } = {}) {
 
 const money = (v) => Number(Number(v).toFixed(2));
 
+/**
+ * Ask for an OTP, waiting out the per-number cooldown if we hit it.
+ *
+ * The app refuses a second OTP for the same number within 30 seconds (by
+ * design - it is what stops SMS bombing). Without this, running the harness
+ * twice in a row fails on the *second* run for a reason that has nothing to do
+ * with the code being tested, which is how it behaved until 2026-10-15.
+ */
+async function sendOtp(mobile, { headers } = {}) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(`${BASE_URL}/api/auth/send-otp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": RUN_IP, ...headers },
+      body: JSON.stringify({ mobile }),
+    });
+    if (res.status !== 429) return { status: res.status, json: await res.json().catch(() => null) };
+    const body = await res.json().catch(() => ({}));
+    const wait = Number(String(body.error ?? "").match(/wait (\d+)s/)?.[1] ?? 0);
+    // Only the cooldown is worth waiting for. A per-caller or per-day limit will
+    // not clear in seconds, so report it instead of hanging.
+    if (!wait || !/before requesting another OTP/.test(String(body.error))) {
+      return { status: res.status, json: body };
+    }
+    await new Promise((r) => setTimeout(r, (wait + 2) * 1000));
+  }
+  return { status: 429, json: { error: "still rate limited after waiting" } };
+}
+
+/** A caller address of this run's own, so runs don't share a rate-limit bucket. */
+const RUN_IP = `198.18.${Math.floor(Math.random() * 250) + 1}.${Math.floor(Math.random() * 250) + 1}`;
+
+/** A mobile number nothing else in this run has used. */
+const freshMobile = (tag) =>
+  `9${String(tag % 10)}${String(Date.now() % 100000000).padStart(8, "0")}`.slice(0, 10);
+
 const LENDER_ID = "11111111-1111-1111-1111-111111111111";
 const BORROWER_ID = "22222222-2222-2222-2222-222222222222";
 const STRANGER_ID = "33333333-3333-3333-3333-333333333333";
@@ -916,6 +951,142 @@ async function main() {
     check("...and it is labelled from their side", theirSheet.loan.viewerRole, "borrower");
   }
 
+  console.log("\nThe app refuses the things it should refuse");
+  {
+    /*
+     * The upload gate, which is where a stored XSS got in.
+     *
+     * An SVG is not a photo: it is a document the browser parses and runs, and
+     * this app serves proofs back from its own origin. It used to pass a check
+     * that only looked at the `data:image/` prefix. Both halves are tested here
+     * against the running server - the declared type, and the bytes themselves.
+     */
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    ).toString("base64");
+    const jpegBytes = Buffer.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, ...Array(40).fill(0x30),
+    ]).toString("base64");
+
+    /*
+     * Probed with a throwaway account, signed up through the real OTP flow.
+     *
+     * The upload cap is 20 per account per 10 minutes, so probing with a
+     * long-lived test account would answer 429 after a couple of runs and the
+     * gate would go untested. A fresh account per run keeps this honest without
+     * weakening the cap itself.
+     */
+    const probeMobile = freshMobile(Math.floor(Math.random() * 10));
+    const probeSent = await sendOtp(probeMobile);
+    check("a throwaway account can ask for an OTP", probeSent.status, 200);
+    const probeSignup = await call("POST", "/api/auth/verify-otp", {
+      body: { mobile: probeMobile, code: String(probeSent.json?.devCode ?? "123456"), name: "Upload Probe" },
+    });
+    const probeToken = probeSignup.headers["set-cookie"]?.match(/udhaar_session=([^;]+)/)?.[1];
+    check("...and gets a session of its own", Boolean(probeToken), true);
+
+    const upload = (image) => call("POST", "/api/upload", { token: probeToken, body: { image } });
+
+    const asSvg = await upload(`data:image/svg+xml;base64,${svg}`);
+    check("an SVG uploaded as an image is refused", asSvg.status, 400);
+    check("...and the message says why, in words a person can act on",
+      /document that can run code/.test(String(asSvg.json?.error ?? "")), true);
+
+    const disguised = await upload(`data:image/png;base64,${svg}`);
+    check("markup wearing an image mime type is refused", disguised.status, 400);
+    check("...because the bytes are not that image",
+      /bytes don't match/.test(String(disguised.json?.error ?? "")), true);
+
+    const rawMarkup = await upload("data:image/svg+xml,<svg onload=alert(1)></svg>");
+    check("a non-base64 data URL is refused", rawMarkup.status, 400);
+
+    const realJpeg = await upload(`data:image/jpeg;base64,${jpegBytes}`);
+    check("a real JPEG passes the gate (Cloudinary may still refuse it)",
+      realJpeg.status === 503 || realJpeg.status === 200, true);
+
+    // The response that serves those bytes declares its own type - never the
+    // store's, which is how an SVG reached the browser as a document.
+    const proof = await call("GET", `/api/payments/${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}/proof`, {
+      token: LENDER_TOKEN,
+    });
+    check("an unknown payment has no proof to serve", proof.status, 404);
+
+    await query("DELETE FROM users WHERE mobile = $1", [probeMobile]);
+  }
+
+  console.log("\nEvery response carries the headers that were missing");
+  {
+    // Anonymous, because this is what a browser and a scanner both see.
+    const page = await fetch(`${BASE_URL}/login`);
+    const h = (name) => page.headers.get(name);
+
+    check("a page is served", page.status, 200);
+    check("HSTS is set", /max-age=\d{6,}/.test(String(h("strict-transport-security"))), true);
+    check("...for at least a year", Number(String(h("strict-transport-security")).match(/max-age=(\d+)/)?.[1] ?? 0) >= 31_536_000, true);
+    check("nosniff is set", h("x-content-type-options"), "nosniff");
+    check("a referrer policy is set", h("referrer-policy"), "strict-origin-when-cross-origin");
+    check("framing is refused", /frame-ancestors/.test(String(h("content-security-policy"))), true);
+    check("a permissions policy is set", /camera=/.test(String(h("permissions-policy"))), true);
+    check("the framework is not advertised", h("x-powered-by"), null);
+
+    const api = await fetch(`${BASE_URL}/api/health`);
+    check("API responses are nosniff too", api.headers.get("x-content-type-options"), "nosniff");
+    check("...and not embeddable elsewhere", api.headers.get("cross-origin-resource-policy"), "same-origin");
+  }
+
+  console.log("\nThe health endpoint tells a stranger nothing useful");
+  {
+    const publicBody = await (await fetch(`${BASE_URL}/api/health`)).json();
+    const asText = JSON.stringify(publicBody);
+
+    check("it still answers anonymously", typeof publicBody.ok, "boolean");
+    check("...and names the build", typeof publicBody.shortCommit === "object" || typeof publicBody.shortCommit === "string", true);
+    check("...with every check's verdict", Array.isArray(publicBody.checks), true);
+    check("but not the database host", /neon\.tech|127\.0\.0\.1|localhost/.test(asText), false);
+    check("...nor that the dummy OTP is 123456", asText.includes("123456"), false);
+    check("...nor which integrations are configured",
+      /proofs: configured|push \(app\): configured/.test(asText), false);
+
+    // With the health token (when the deployment has one) the diagnosis is back.
+    if (process.env.HEALTH_TOKEN) {
+      const withToken = await (
+        await fetch(`${BASE_URL}/api/health`, { headers: { "x-health-token": process.env.HEALTH_TOKEN } })
+      ).json();
+      check("the token holder sees the full detail",
+        JSON.stringify(withToken).length > asText.length, true);
+      check("...including details the public body lacks",
+        JSON.stringify(withToken) !== asText, true);
+    }
+  }
+
+  console.log("\nOTP sending is capped by more than the number itself");
+  {
+    // Per caller: 10 requests per 10 minutes from one address. Distinct numbers,
+    // so the per-number cooldown is not what stops it.
+    const ip = `198.51.100.${Math.floor(Math.random() * 200) + 20}`;
+    const tag = Math.floor(Math.random() * 10);
+    let blocked = null;
+    for (let i = 0; i < 11; i++) {
+      const res = await fetch(`${BASE_URL}/api/auth/send-otp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": ip },
+        body: JSON.stringify({ mobile: freshMobile(tag + i) }),
+      });
+      if (res.status === 429) {
+        blocked = { at: i + 1, retryAfter: res.headers.get("retry-after") };
+        break;
+      }
+    }
+    check("one address is cut off after ten OTP requests", blocked?.at, 11);
+    check("...and is told how long to wait", Number(blocked?.retryAfter ?? 0) > 0, true);
+
+    // A different address is unaffected, so the cap is per caller and not a
+    // global outage (the global budget is enforced separately, in the database).
+    const otherIp = `203.0.113.${Math.floor(Math.random() * 250) + 1}`;
+    const other = await sendOtp(freshMobile(9), { headers: { "x-forwarded-for": otherIp } });
+    check("a different caller is not punished for it", other.status, 200);
+  }
+
   console.log("\nWhen the lender finally signs up, the debt they were owed finds them");
   {
     /*
@@ -942,10 +1113,18 @@ async function main() {
       confirmationMode: "1-side",
     });
 
+    /*
+     * A number can only ask for ten OTPs a day (a real cap, added 2026-10-14),
+     * and this section signs up the same number on every run - so clear that
+     * number's OTP history first, or the eleventh run of the day meets its own
+     * rate limit and reports a failure that says nothing about the code.
+     */
+    await query("DELETE FROM otps WHERE mobile = $1", ["9876500077"]);
+
     // The real signup path: ask for an OTP, then verify it. The dummy OTP
     // (123456) is the deployment's own testing mode, and this is exactly the
     // flow that has to attach the loan.
-    const sent = await call("POST", "/api/auth/send-otp", { body: { mobile: "9876500077" } });
+    const sent = await sendOtp("9876500077");
     check("the lender can ask for an OTP", sent.status, 200);
     check("...and in this mode the code comes back", String(sent.json.devCode ?? ""), "123456");
 

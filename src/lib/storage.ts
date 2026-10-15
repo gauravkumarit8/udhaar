@@ -1,4 +1,5 @@
 import { v2 as cloudinary } from "cloudinary";
+import { checkProofImage } from "@/lib/image-type";
 
 /**
  * Payment-proof storage.
@@ -68,8 +69,19 @@ const FOLDER = "udhaar/proofs";
  * kills query/backup performance.
  */
 export async function uploadProofImage(dataUrl: string, folder = FOLDER): Promise<string> {
-  if (!dataUrl.startsWith("data:image/")) {
-    throw new Error("Expected a base64 image data URL");
+  /*
+   * What may be uploaded, checked before it reaches Cloudinary.
+   *
+   * This used to accept anything starting with `data:image/`, which includes
+   * `data:image/svg+xml` - and an SVG is a document the browser will run, not a
+   * photo. Combined with a route that echoed Cloudinary's content type back to
+   * the browser, that was stored XSS from the app's own origin. Now the declared
+   * type must be a raster format *and* the bytes must actually be one, so SVG
+   * (which has no signature at all) cannot get through either way.
+   */
+  const image = checkProofImage(dataUrl);
+  if (!image.ok) {
+    throw new Error(image.error);
   }
 
   // Rough size check: base64 is ~4/3 the size of the raw bytes

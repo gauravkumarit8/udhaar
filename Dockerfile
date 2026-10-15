@@ -16,6 +16,13 @@ WORKDIR /app
 ARG GIT_SHA=""
 ENV NEXT_PUBLIC_GIT_SHA=$GIT_SHA
 
+# Who may frame the app (the `frame-ancestors` CSP directive). It is read HERE,
+# at build time, and baked into the routes manifest - setting it on a running
+# container does nothing. The default, "none", means nobody may frame it.
+#   docker build --build-arg FRAME_ANCESTORS="'self' https://example.com" .
+ARG FRAME_ANCESTORS=""
+ENV FRAME_ANCESTORS=$FRAME_ANCESTORS
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

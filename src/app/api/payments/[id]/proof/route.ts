@@ -3,6 +3,10 @@ import { db } from "@/db";
 import { loans, payments } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { isStorageConfigured, signedDeliveryUrl } from "@/lib/storage";
+import {
+  PROOF_RESPONSE_CSP,
+  safeProofContentType,
+} from "@/lib/proof-content-type";
 import { eq } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
@@ -101,12 +105,25 @@ async function handleGET(
       );
     }
 
-    // Pipe the image through. `private, no-store` keeps it out of shared
-    // caches; the bytes are the counterparty's to see, but the URL stays ours.
+    /*
+     * Pipe the image through, with a content type *we* choose.
+     *
+     * This used to echo Cloudinary's own header, which meant an uploaded SVG
+     * came back as `image/svg+xml` and the browser rendered it as a document -
+     * script and all - from the app's own origin. `nosniff` does not help
+     * against a type the server declares itself, so anything that is not a
+     * plain raster format is declared as a JPEG (it will fail to decode, which
+     * is a broken image rather than a running script).
+     *
+     * The CSP is the second lock: the response may load nothing and runs in a
+     * sandbox with a unique origin, so even a type that slipped through could
+     * not reach this app's origin, storage, or session.
+     */
     return new Response(upstream.body, {
       status: 200,
       headers: {
-        "content-type": upstream.headers.get("content-type") ?? "image/jpeg",
+        "content-type": safeProofContentType(upstream.headers.get("content-type")),
+        "content-security-policy": PROOF_RESPONSE_CSP,
         "cache-control": "private, no-store",
         "content-disposition": "inline",
         "x-content-type-options": "nosniff",
@@ -122,7 +139,9 @@ async function handleGET(
   if (payment.proofUrl) {
     return NextResponse.redirect(payment.proofUrl, {
       status: 302,
-      headers: { "cache-control": "no-store" },
+      // `no-referrer`: the third-party host has no business learning where the
+      // visitor came from (and with it, which app is serving the proof).
+      headers: { "cache-control": "no-store", "referrer-policy": "no-referrer" },
     });
   }
 
