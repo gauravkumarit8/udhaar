@@ -17,6 +17,7 @@
     "check-deploy": "node scripts/check-deploy.mjs",
     "check-whatsapp": "node scripts/check-whatsapp.mjs",
     "verify:whatsapp": "node scripts/verify-whatsapp.mjs",
+    "verify:ui": "node scripts/verify-ui.mjs",
     "generate:vapid": "node scripts/generate-vapid-keys.mjs",
     "typecheck": "tsc --noEmit",
     "verify:deployment": "node scripts/verify-deployment.mjs"

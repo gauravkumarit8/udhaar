@@ -84,6 +84,7 @@ npm run lint             # eslint
 npm run build            # production build
 npm run check-deploy     # is the database + config actually usable?
 npm run verify:settlement # drives the real routes on a running server (needs a scratch DB)
+npm run verify:ui        # holds every screen to the design system (needs a running server)
 ```
 
 `verify:settlement` is the check that would have caught the "can't close a paid-up
@@ -95,7 +96,19 @@ point both the server and the script at the same **scratch** database:
 ```powershell
 $env:DATABASE_URL = "postgresql://user:pass@host/scratch"
 npm run dev                                          # other terminal
-npm run verify:settlement                            # 41 checks, exit 1 on failure
+npm run verify:settlement                            # 215 checks, exit 1 on failure
+```
+
+`verify:ui` is the same idea for the interface. It asks the server for every
+page's HTML and for the stylesheet the pages link to, and checks the things a
+screenshot would catch and a unit test never will: a class name Tailwind never
+generated, a screen still wearing the palette the revamp replaced, the tab bar
+rendered twice or missing, the stylesheet losing its dark-mode or print rules.
+It seeds one throwaway account and one loan of its own, so it needs nothing but
+a running server:
+
+```powershell
+npm run verify:ui                                    # 99 checks, exit 1 on failure
 ```
 
 ### When something is broken
@@ -376,6 +389,29 @@ search text is normalised and its LIKE wildcards are escaped
 (`src/lib/loan-search.ts`, with tests) - searching for `%` looks for a percent
 sign and finds nothing, instead of matching every loan on the account - and it
 is always passed as a query parameter, never spliced into SQL.
+
+### The design system
+
+Colour, radius, elevation and motion are declared once, as tokens in
+`src/app/globals.css`, and every screen spends them through the primitives in
+`src/components/ui.tsx` (Button, Card, Sheet, Notice, Badge, Chip, Field,
+Progress, Avatar, Skeleton, DetailRow, EmptyState) and `src/components/ActionSheets.tsx`
+(recording a payment, sending a reminder - the two things both the home screen
+and the loan screen need to be able to open).
+
+Two rules keep it honest:
+
+- **No `dark:` variants.** Light and dark are the same tokens with different
+  values, and `@theme inline` points the utilities straight at the variables, so
+  a component that needs a `dark:` class is a component that has hard-coded a
+  colour. `verify:ui` fails if one appears.
+- **Money is formatted in one place.** `formatMoney` (Indian digit grouping, no
+  decimal tail on whole rupees, two decimals when there is a fraction) replaced
+  four copies of `formatINR`; `tests/money.test.ts` holds it to those rules.
+
+Printing is treated as a document rather than a screen: `@media print`
+re-declares the light palette, so a statement printed from a phone in dark mode
+comes out on white paper instead of as a black rectangle.
 
 ### A statement you can hand over
 

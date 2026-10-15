@@ -135,11 +135,15 @@ export default function LoanStatementPage() {
   );
 
   if (loading) {
+    // The tab bar is here too: a document that takes a moment to load is still
+    // a screen in an app, and leaving the bottom of it empty makes it look
+    // like the app fell over.
     return (
-      <div className="mx-auto w-full max-w-2xl px-4 py-5">
+      <div className="mx-auto w-full max-w-2xl px-4 pb-28 py-5">
         <Skeleton className="h-8 w-40 rounded-control" />
         <Skeleton className="mt-4 h-44 rounded-card" />
         <Skeleton className="mt-3 h-24 rounded-card" />
+        <BottomNav />
       </div>
     );
   }

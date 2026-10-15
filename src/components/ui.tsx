@@ -31,8 +31,21 @@ export function formatMoney(amount: number | string): string {
   const value = typeof amount === "string" ? Number(amount) : amount;
   if (!Number.isFinite(value)) return "₹0";
 
-  const whole = Math.abs(value % 1) < 0.005;
-  return `₹${value.toLocaleString("en-IN", {
+  /*
+   * Round to paise first, then decide.
+   *
+   * Deciding on the raw value gets `99.999` wrong: it is not a whole number, so
+   * the formatter would print two decimals - "₹100.00" - for a figure that
+   * rounds to a round one. Deciding on the rounded value means the tail is
+   * dropped exactly when what is displayed is whole, which is the rule the
+   * reader is applying anyway. (Values like this are not hypothetical: they
+   * come out of adding and subtracting money in the browser.)
+   */
+  const paise = Math.round(value * 100) / 100;
+  const whole = paise % 1 === 0;
+  // The sign goes outside the symbol: "-₹500", never "₹-500".
+  const sign = paise < 0 ? "-" : "";
+  return `${sign}₹${Math.abs(paise).toLocaleString("en-IN", {
     minimumFractionDigits: whole ? 0 : 2,
     maximumFractionDigits: 2,
   })}`;
