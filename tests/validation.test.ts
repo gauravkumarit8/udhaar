@@ -141,13 +141,10 @@ describe("parseLoanInput", () => {
 describe("validateProofUrl", () => {
   afterEach(() => {
     delete process.env.CLOUDINARY_CLOUD_NAME;
+    delete process.env.CLOUDINARY_DELIVERY_HOST;
   });
 
-  it("accepts https links and treats empty input as no proof", () => {
-    expect(validateProofUrl("https://example.com/receipt.jpg")).toEqual({
-      ok: true,
-      value: "https://example.com/receipt.jpg",
-    });
+  it("treats empty input as no proof", () => {
     expect(validateProofUrl(undefined)).toEqual({ ok: true, value: null });
     expect(validateProofUrl("")).toEqual({ ok: true, value: null });
   });
@@ -164,18 +161,42 @@ describe("validateProofUrl", () => {
     expect(validateProofUrl(`https://example.com/${"a".repeat(600)}`).ok).toBe(false);
   });
 
-  it("pins uploads to the app's own Cloudinary account when configured", () => {
+  it("pins uploads to the app's own Cloudinary account", () => {
     process.env.CLOUDINARY_CLOUD_NAME = "udhaar-app";
 
     expect(
-      validateProofUrl("https://res.cloudinary.com/udhaar-app/image/upload/v1/udhaar/proofs/a.jpg").ok
-    ).toBe(true);
+      validateProofUrl("https://res.cloudinary.com/udhaar-app/image/upload/v1/udhaar/proofs/a.jpg")
+    ).toEqual({
+      ok: true,
+      value: "https://res.cloudinary.com/udhaar-app/image/upload/v1/udhaar/proofs/a.jpg",
+    });
     // Someone else's account, or a lookalike host
     expect(
       validateProofUrl("https://res.cloudinary.com/attacker/image/upload/v1/a.jpg").ok
     ).toBe(false);
     expect(validateProofUrl("https://res.cloudinary.com.evil.com/a.jpg").ok).toBe(false);
     expect(validateProofUrl("https://example.com/a.jpg").ok).toBe(false);
+  });
+
+  it("does not widen when Cloudinary is not configured here", () => {
+    // The branch that used to accept any https URL when the env var was unset:
+    // a missing variable must not change a security rule. The proof route
+    // redirects the other party to whatever is stored, so an arbitrary link
+    // behind "view proof" is a phishing surface.
+    delete process.env.CLOUDINARY_CLOUD_NAME;
+    expect(validateProofUrl("https://example.com/receipt.jpg").ok).toBe(false);
+    expect(validateProofUrl("https://res.cloudinary.com/anything/a.jpg").ok).toBe(false);
+  });
+
+  it("follows a configured custom delivery host", () => {
+    process.env.CLOUDINARY_CLOUD_NAME = "udhaar-app";
+    process.env.CLOUDINARY_DELIVERY_HOST = "cdn.udhaar.app";
+
+    expect(validateProofUrl("https://cdn.udhaar.app/udhaar/proofs/a.jpg").ok).toBe(true);
+    // The stock host is not accepted while a custom one is configured: assets
+    // are not served from there in that setup.
+    expect(validateProofUrl("https://res.cloudinary.com/udhaar-app/a.jpg").ok).toBe(false);
+    expect(validateProofUrl("https://cdn.udhaar.app.evil.com/a.jpg").ok).toBe(false);
   });
 });
 

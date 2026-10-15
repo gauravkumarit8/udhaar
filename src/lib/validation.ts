@@ -264,8 +264,12 @@ export function parseLoanInput(body: unknown): ValidationResult<LoanInput> {
  * as a clickable link. Without this check a caller could store `javascript:`,
  * a `data:` blob, or a tracking URL under someone else's EMI.
  *
- * Accepted: an https URL on the app's own Cloudinary account (when Cloudinary
- * is configured), or any https URL when it isn't.
+ * Accepted: an https URL on the app's own Cloudinary account - always, whether
+ * or not Cloudinary is configured here. The "any https URL when unconfigured"
+ * branch this replaces was a hole in two directions: the proof route redirects
+ * the *other* party to whatever is stored, so it let a signed-in user park an
+ * arbitrary link behind "view proof", and a missing environment variable
+ * silently changed a security rule.
  */
 export function validateProofUrl(value: unknown): ValidationResult<string | null> {
   if (value === undefined || value === null || value === "") return { ok: true, value: null };
@@ -288,14 +292,23 @@ export function validateProofUrl(value: unknown): ValidationResult<string | null
     return { ok: false, error: "Proof link must start with https://" };
   }
 
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
-  if (cloudName) {
-    if (url.hostname !== "res.cloudinary.com" || !url.pathname.startsWith(`/${cloudName}/`)) {
-      return {
-        ok: false,
-        error: "Proof link must be an image uploaded through this app",
-      };
-    }
+  /*
+   * The host has to be Cloudinary's delivery host for *this account*, or the
+   * custom delivery host when one is configured. Checked unconditionally: an
+   * unset variable must never widen what is allowed.
+   */
+  const deliveryHost = process.env.CLOUDINARY_DELIVERY_HOST?.trim().toLowerCase();
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+
+  const allowedHost = deliveryHost
+    ? url.hostname === deliveryHost
+    : url.hostname === "res.cloudinary.com" && Boolean(cloudName) && url.pathname.startsWith(`/${cloudName}/`);
+
+  if (!allowedHost) {
+    return {
+      ok: false,
+      error: "Proof link must be an image uploaded through this app",
+    };
   }
 
   // Data URLs never reach here (they aren't https), which also keeps large

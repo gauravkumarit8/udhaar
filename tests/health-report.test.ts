@@ -70,3 +70,100 @@ describe("the health body", () => {
     expect(body.ok).toBe(true);
   });
 });
+
+/**
+ * What a stranger is allowed to learn from a public endpoint.
+ *
+ * `/api/health` must stay usable anonymously (uptime ping, deploy verifier) and
+ * it used to answer with the database host, the OTP mode's "123456 for every
+ * number" sentence, and which integrations are configured. The redaction has to
+ * be fail-closed: a check that does not declare a public form must not leak its
+ * real detail by accident.
+ */
+describe("buildHealthReport redaction", () => {
+  const build = { commit: "abc1234def", short: "abc1234" };
+
+  it("keeps the verdict and the commit public", () => {
+    const { status, body } = buildHealthReport(
+      [{ name: "database connection", status: "ok", detail: "query succeeded", publicDetail: "query succeeded" }],
+      build,
+      new Date("2026-01-01T00:00:00.000Z"),
+      { redact: true }
+    );
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.commit).toBe("abc1234def");
+    expect(body.timestamp).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("shows the public form of a check when it has one", () => {
+    const { body } = buildHealthReport(
+      [{ name: "DATABASE_URL", status: "ok", detail: "set → ep-secret.neon.tech:5432/neondb", publicDetail: "set" }],
+      build,
+      new Date(),
+      { redact: true }
+    );
+    expect(body.checks[0].detail).toBe("set");
+    expect(JSON.stringify(body)).not.toContain("neon.tech");
+  });
+
+  it("hides a detail that has no public form, rather than guessing", () => {
+    const { body } = buildHealthReport(
+      [{ name: "optional integrations", status: "ok", detail: "proofs: configured (private)" }],
+      build,
+      new Date(),
+      { redact: true }
+    );
+    expect(body.checks[0].detail).toMatch(/hidden/);
+    expect(JSON.stringify(body)).not.toContain("configured (private)");
+  });
+
+  it("does not hand a stranger the fix that names a host or a command", () => {
+    const { body } = buildHealthReport(
+      [
+        {
+          name: "database connection",
+          status: "fail",
+          detail: "Authentication failed: password authentication failed for user \"postgres\"",
+          fix: "Re-copy the connection string from Neon → Connect.",
+          publicFix: "Check the service logs.",
+        },
+      ],
+      build,
+      new Date(),
+      { redact: true }
+    );
+    expect(body.ok).toBe(false);
+    expect(body.firstProblem).toBe("database connection");
+    expect(body.action).toBe("Check the service logs.");
+    expect(JSON.stringify(body)).not.toContain("password authentication failed");
+    expect(JSON.stringify(body)).not.toContain("Neon");
+  });
+
+  it("points a stranger at the logs when a failure has no public fix", () => {
+    const { body } = buildHealthReport(
+      [{ name: "schema", status: "fail", detail: "missing column: loans.created_by_user_id" }],
+      build,
+      new Date(),
+      { redact: true }
+    );
+    expect(body.action).toMatch(/HEALTH_TOKEN/);
+    expect(JSON.stringify(body)).not.toContain("created_by_user_id");
+  });
+
+  it("still tells the token-holder everything", () => {
+    const checks = [
+      { name: "DATABASE_URL", status: "ok" as const, detail: "set → ep-secret.neon.tech:5432/neondb", publicDetail: "set" },
+    ];
+    const { body } = buildHealthReport(checks, build, new Date(), { redact: false });
+    expect(body.checks[0].detail).toContain("neon.tech");
+  });
+
+  it("defaults to the full detail (the route passes redact explicitly)", () => {
+    const { body } = buildHealthReport(
+      [{ name: "DATABASE_URL", status: "ok", detail: "set → db.example.com", publicDetail: "set" }],
+      build
+    );
+    expect(body.checks[0].detail).toContain("db.example.com");
+  });
+});

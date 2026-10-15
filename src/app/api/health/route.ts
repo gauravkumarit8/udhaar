@@ -1,3 +1,5 @@
+import type { NextRequest } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
 import { resolveBuildInfo } from "@/lib/build-info";
@@ -13,8 +15,12 @@ export const dynamic = "force-dynamic";
  * host. This walks the chain in order and reports the first thing that's
  * actually broken, with the command that fixes it.
  *
- * Nothing secret is echoed back - only whether a variable is set, plus the
- * database host (never the password or the full connection string).
+ * The verdict is public on purpose: an uptime ping monitors it and the deploy
+ * workflow checks it after every release. The *details* are not. A caller who
+ * does not present `HEALTH_TOKEN` (their own header `x-health-token`) gets each
+ * check's name and status and nothing else - no database host, no statement
+ * about which integrations are configured, no explanation of the OTP mode. With
+ * the token, the full diagnosis comes back as before.
  */
 
 import { buildHealthReport, type HealthCheck as Check } from "@/lib/health-report";
@@ -137,7 +143,28 @@ function explainDbError(error: unknown): { detail: string; fix: string } {
   };
 }
 
-export async function GET() {
+/**
+ * Is the caller allowed the full detail?
+ *
+ * `HEALTH_TOKEN` is optional: when it is unset nobody gets details (fail
+ * closed), and when it is set the header must match exactly. The comparison is
+ * constant-time so the header cannot be probed a byte at a time.
+ */
+function maySeeDetails(req: NextRequest): boolean {
+  const expected = process.env.HEALTH_TOKEN;
+  if (!expected) return false;
+
+  const presented = req.headers.get("x-health-token");
+  if (!presented) return false;
+
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+
+  return timingSafeEqual(a, b);
+}
+
+export async function GET(req: NextRequest) {
   const checks: Check[] = [];
 
   // 1. Is the app configured at all?
@@ -146,6 +173,8 @@ export async function GET() {
     name: "DATABASE_URL",
     status: hasDbUrl ? "ok" : "fail",
     detail: hasDbUrl ? `set → ${describeDbTarget()}` : "not set",
+    // The host is infrastructure detail: "set" is all a stranger needs.
+    publicDetail: hasDbUrl ? "set" : "not set",
     fix: hasDbUrl
       ? undefined
       : "Set DATABASE_URL on the service (Render → Environment) to your Postgres connection string.",
@@ -155,7 +184,12 @@ export async function GET() {
   if (hasDbUrl) {
     try {
       await db.execute(sql`select 1`);
-      checks.push({ name: "database connection", status: "ok", detail: "query succeeded (select 1)" });
+      checks.push({
+        name: "database connection",
+        status: "ok",
+        detail: "query succeeded (select 1)",
+        publicDetail: "query succeeded (select 1)",
+      });
 
       try {
         const result = await db.execute<{ table_name: string }>(sql`
@@ -192,6 +226,9 @@ export async function GET() {
               : missingColumns.length > 0
                 ? `missing column${missingColumns.length > 1 ? "s" : ""}: ${missingColumns.join(", ")}`
                 : `all ${REQUIRED_TABLES.length} tables present`,
+          // Present-or-not is the useful half; the names of what is missing
+          // describe the schema to whoever asks.
+          publicDetail: schemaProblems.length === 0 ? "up to date" : "not up to date",
           fix:
             schemaProblems.length === 0
               ? undefined
@@ -238,6 +275,9 @@ export async function GET() {
     name: "OTP delivery",
     status: otpStatus,
     detail: `${otpMode} → ${otpDetail}`,
+    // The mode is the part an owner reads at a glance; the sentence explaining
+    // that any number can be logged into with 123456 is not for strangers.
+    publicDetail: `mode: ${otpMode}`,
     fix:
       otpStatus === "fail"
         ? "Set OTP_MODE=dummy to accept the dummy code for now, or configure MSG91_AUTH_KEY + MSG91_FLOW_ID."
@@ -259,6 +299,7 @@ export async function GET() {
     detail: cronSecret
       ? "CRON_SECRET is set - the sweep can be triggered by .github/workflows/reminders.yml"
       : "CRON_SECRET is not set, so POST /api/reminders/run answers 503 and nobody is reminded automatically",
+    publicDetail: cronSecret ? "set" : "not set",
     fix: cronSecret
       ? undefined
       : "Set CRON_SECRET on the service to a long random string, and add the same value as a GitHub Actions secret (see README → Scheduled reminders).",
@@ -281,7 +322,9 @@ export async function GET() {
       : "Run npm run generate:vapid and set VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY so browsers can be notified (README → Notifications).",
   });
 
-  const { status, body } = buildHealthReport(checks, resolveBuildInfo());
+  const { status, body } = buildHealthReport(checks, resolveBuildInfo(), new Date(), {
+    redact: !maySeeDetails(req),
+  });
 
   return Response.json(body, {
     status,
