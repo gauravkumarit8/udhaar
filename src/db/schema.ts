@@ -232,8 +232,27 @@ export const reminders = pgTable("reminders", {
   recipientId: uuid("recipient_id").references(() => users.id, { onDelete: "cascade" }),
   /** loan_added | payment_marked | payment_recorded | loan_closed | … | reminder. */
   type: varchar("type", { length: 24 }),
+  /**
+   * WhatsApp's id for the message, from the send response. The delivery
+   * webhook addresses messages by this id and by nothing else, so without it a
+   * reminder can never be confirmed as delivered - or as failed - after the
+   * fact.
+   */
+  providerMessageId: varchar("provider_message_id", { length: 128 }),
+  /**
+   * What WhatsApp last said about this message: accepted | sent | delivered |
+   * read | failed. Kept apart from `status` on purpose - `status` is this app's
+   * own word ("did we get it out?"), this is the provider's, and only a webhook
+   * may move it. A push that a device accepted is `status: sent`; it will never
+   * become `delivered` just because a WhatsApp template for the same EMI was.
+   */
+  providerStatus: varchar("provider_status", { length: 24 }),
+  /** Why the provider refused or dropped it - shown to the owner, not guessed. */
+  providerError: varchar("provider_error", { length: 300 }),
 }, (table) => [
   uniqueIndex("reminders_dedupe_key_unique").on(table.dedupeKey),
+  // The delivery webhook looks reminders up by the provider's id.
+  index("reminders_provider_message_id_idx").on(table.providerMessageId),
   // The Activity feed and the badge filter by recipient and by loan.
   index("reminders_recipient_id_idx").on(table.recipientId),
   index("reminders_loan_id_idx").on(table.loanId),
@@ -249,3 +268,21 @@ export const deviceTokens = pgTable("device_tokens", {
   platform: varchar("platform", { length: 10 }).notNull(), // android | ios | web
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [index("device_tokens_user_id_idx").on(table.userId)]);
+
+/**
+ * Numbers that asked us to stop.
+ *
+ * WhatsApp's rules - and basic decency - say a business-initiated message needs
+ * a way out, and the way out has to be honoured immediately and permanently,
+ * not on the next run of something. A number lands here when the person replies
+ * STOP (the webhook records it) or when they switch reminders off in the app.
+ * The sweep checks this table before every send.
+ */
+export const whatsappOptOuts = pgTable("whatsapp_opt_outs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  /** 10-digit Indian mobile, the same shape `users.mobile` and `loans.borrower_mobile` use. */
+  mobile: varchar("mobile", { length: 15 }).notNull().unique(),
+  /** "stop reply" | "settings" | … - how we learned. */
+  reason: varchar("reason", { length: 60 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
