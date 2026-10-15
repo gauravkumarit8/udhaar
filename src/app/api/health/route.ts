@@ -24,6 +24,7 @@ export const dynamic = "force-dynamic";
  */
 
 import { buildHealthReport, type HealthCheck as Check } from "@/lib/health-report";
+import { readWhatsAppConfig, whatsappMissing } from "@/lib/whatsapp";
 
 /** Columns added by a migration, so a stale schema is caught by name. */
 const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
@@ -56,6 +57,7 @@ const REQUIRED_TABLES = [
   "payments",
   "reminders",
   "device_tokens",
+  "whatsapp_opt_outs",
 ];
 
 function describeDbTarget(): string {
@@ -337,6 +339,52 @@ export async function GET(req: NextRequest) {
     // learns what to run, not what is (or isn't) configured.
     publicFix: webPush || push ? undefined : VAPID_FIX,
   });
+
+  /*
+   * 7. WhatsApp reminders. Off is a legitimate choice (push and the lender's
+   * one-tap share still work), but a half-configured provider is not: it looks
+   * enabled and silently sends nothing.
+   */
+  const wa = readWhatsAppConfig();
+  const waMissing = whatsappMissing(wa);
+  if (wa.provider !== "meta") {
+    checks.push({
+      name: "whatsapp reminders",
+      status: "ok",
+      detail: "off - reminders go out by push, and by the lender's own one-tap WhatsApp share",
+      publicDetail: "off",
+    });
+  } else if (waMissing.length > 0) {
+    const fix = `Set ${waMissing.join(", ")} on the service (see README → WhatsApp reminders).`;
+    checks.push({
+      name: "whatsapp reminders",
+      status: "fail",
+      detail: `WHATSAPP_PROVIDER=meta but ${waMissing.join(", ")} ${waMissing.length > 1 ? "are" : "is"} not set, so no reminder would be sent`,
+      publicDetail: "misconfigured",
+      fix,
+      publicFix: fix,
+    });
+  } else if (!wa.appSecret || !wa.verifyToken) {
+    const missing = [!wa.appSecret ? "WHATSAPP_APP_SECRET" : null, !wa.verifyToken ? "WHATSAPP_VERIFY_TOKEN" : null]
+      .filter(Boolean)
+      .join(", ");
+    const fix = `Set ${missing} and point Meta's webhook at /api/whatsapp/webhook. Without them, messages are sent but nothing learns whether they arrived, and STOP replies are not honoured.`;
+    checks.push({
+      name: "whatsapp reminders",
+      status: "warn",
+      detail: `sending works (template "${wa.templateName}", ${wa.templateLanguage}, up to ${wa.dailyMax}/day), but ${missing} is not set - delivery reports and STOP replies are off`,
+      publicDetail: "configured (no delivery reports)",
+      fix,
+      publicFix: fix,
+    });
+  } else {
+    checks.push({
+      name: "whatsapp reminders",
+      status: "ok",
+      detail: `template "${wa.templateName}" (${wa.templateLanguage}), up to ${wa.maxPerRun}/run and ${wa.dailyMax}/day, delivery reports and STOP replies on`,
+      publicDetail: "configured",
+    });
+  }
 
   const { status, body } = buildHealthReport(checks, resolveBuildInfo(), new Date(), {
     redact: !maySeeDetails(req),

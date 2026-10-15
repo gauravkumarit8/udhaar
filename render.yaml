@@ -60,6 +60,26 @@ services:
       # change it here and redeploy, or the build keeps the old one.
       - key: FRAME_ANCESTORS
         value: "'none'"
+      # WhatsApp reminders (optional, paid, and OFF with no provider - see the
+      # README for costs and the template to submit). Uncomment these four and
+      # fill them in to have the scheduled sweep send the message itself
+      # instead of leaving it to the lender's one-tap share.
+      # - key: WHATSAPP_PROVIDER
+      #   value: meta
+      # - key: WHATSAPP_TOKEN
+      #   sync: false
+      # - key: WHATSAPP_PHONE_NUMBER_ID
+      #   sync: false
+      # - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+      #   sync: false
+      # - key: WHATSAPP_APP_SECRET
+      #   sync: false
+      # - key: WHATSAPP_VERIFY_TOKEN
+      #   sync: false
+      # - key: WHATSAPP_DAILY_MAX
+      #   value: "200"
+      # - key: WHATSAPP_TO_UNREGISTERED
+      #   value: "false"
       # Set in the Render dashboard to a long random string. Send it as the
       # `x-health-token` header to /api/health to see the full diagnosis (the
       # database host, which integrations are configured, the error text behind

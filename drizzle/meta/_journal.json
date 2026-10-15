@@ -57,6 +57,13 @@
       "when": 1791972516067,
       "tag": "0007_hot_path_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792040381227,
+      "tag": "0008_whatsapp_reminders",
+      "breakpoints": true
     }
   ]
 }
