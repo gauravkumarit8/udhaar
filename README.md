@@ -91,10 +91,19 @@ npm run verify:ui        # holds every screen to the design system (needs a runn
 loan" bug: it seeds three users and a session each, then settles loans over HTTP
 - full payment, early settlement, overpayment, part payment, write-off, 2-side
 confirmation, permissions and rejected amounts. Start `npm run dev` first, and
-point both the server and the script at the same **scratch** database:
+point both the server and the script at the same **scratch** database.
+
+It also needs the app it is pointed at to be able to sign someone in: the checks
+read the dummy code back from `/api/auth/send-otp`, which only answers with one
+when the app runs with `OTP_MODE=dummy`, and they drive the reminder sweep, which
+needs the same `CRON_SECRET` the server has. Point `BASE_URL` at a deployment
+without either and the harness says so in one line and stops, rather than
+failing two hundred checks for one reason. CI sets both for its own container.
 
 ```powershell
 $env:DATABASE_URL = "postgresql://user:pass@host/scratch"
+$env:OTP_MODE     = "dummy"     # so the harness can sign itself in
+$env:CRON_SECRET  = "any-long-string-the-server-also-has"
 npm run dev                                          # other terminal
 npm run verify:settlement                            # 215 checks, exit 1 on failure
 ```
