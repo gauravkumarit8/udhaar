@@ -47,6 +47,8 @@ interface DueRow {
   interest_amount: string;
   principal_paid: string;
   interest_paid: string;
+  /** The lender's UPI id, so the borrower can pay from the due row directly. */
+  lender_upi_id: string | null;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -160,6 +162,9 @@ async function handleGET(req: NextRequest) {
           i.interest_amount,
           i.principal_paid,
           i.interest_paid,
+          -- The lender's UPI id travels with the due row so a borrower can pay
+          -- from the home screen in one tap, without opening the loan first.
+          l.upi_id as lender_upi_id,
           row_number() over (
             partition by l.id order by i.due_date, i.installment_number
           ) as rn
@@ -174,7 +179,7 @@ async function handleGET(req: NextRequest) {
         loan_id, borrower_name, lender_name, viewer_is_lender,
         installment_id, installment_number,
         to_char(due_date, 'YYYY-MM-DD') as due_date,
-        principal_amount, interest_amount, principal_paid, interest_paid
+        principal_amount, interest_amount, principal_paid, interest_paid, lender_upi_id
       from unpaid
       where rn = 1 or due_date < ${today}::date
       order by due_date, installment_number
@@ -204,8 +209,9 @@ async function handleGET(req: NextRequest) {
    */
   const candidates: DueCandidate[] = [];
   for (const row of dueRows) {
-    const amount = Math.max(0, num(row.principal_amount) - num(row.principal_paid))
-      + Math.max(0, num(row.interest_amount) - num(row.interest_paid));
+    const principalRemaining = Math.max(0, num(row.principal_amount) - num(row.principal_paid));
+    const interestRemaining = Math.max(0, num(row.interest_amount) - num(row.interest_paid));
+    const amount = principalRemaining + interestRemaining;
     const computedStatus = computeInstallmentStatus(
       row.due_date,
       num(row.principal_amount),
@@ -225,6 +231,11 @@ async function handleGET(req: NextRequest) {
       amount,
       computedStatus,
       viewerRole: row.viewer_is_lender ? "lender" : "borrower",
+      // The row as it will be shown, ready to be acted on: the UPI id to pay
+      // into, and the principal/interest split so "Interest only" is one tap.
+      lenderUpiId: row.lender_upi_id ?? null,
+      principalRemaining,
+      interestRemaining,
     });
   }
 

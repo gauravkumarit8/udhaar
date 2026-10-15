@@ -1,9 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import { ArrowLeft, ArrowRight, Check, HandCoins, ShieldCheck } from "lucide-react";
+import { Button, Field, Input, Notice, cx } from "@/components/ui";
 import { requestJson } from "@/lib/http";
 import { clearClientCaches } from "@/lib/client-cache";
 
+/**
+ * Signing in: name and number, then six digits.
+ *
+ * The whole screen is two fields and one button. It keeps the properties that
+ * matter from the screen it replaces: the OTP box verifies itself the moment
+ * the sixth digit lands (nothing to tap), backspacing out of an empty box goes
+ * to the one before it, and while the deployment is in dummy-OTP mode the code
+ * is shown and can be filled in with one tap - because a mode where anyone can
+ * log in as any number has no business looking like a secret.
+ */
 export default function LoginPage() {
   const [step, setStep] = useState<"mobile" | "otp">("mobile");
   const [mobile, setMobile] = useState("");
@@ -25,11 +37,14 @@ export default function LoginPage() {
     setLoading(true);
     // requestJson never throws on a non-JSON body, so a 500 from the server
     // shows what actually went wrong instead of a generic message.
-    const result = await requestJson<{ devCode?: string; dummyOtp?: boolean }>("/api/auth/send-otp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mobile }),
-    });
+    const result = await requestJson<{ devCode?: string; dummyOtp?: boolean }>(
+      "/api/auth/send-otp",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mobile }),
+      }
+    );
 
     if (!result.ok) {
       setError(result.error ?? "Couldn't send the OTP. Try again.");
@@ -87,100 +102,78 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-emerald-700 via-emerald-800 to-teal-900 flex flex-col max-w-lg mx-auto relative overflow-hidden">
-      {/* Decorative circles */}
-      <div className="absolute top-[-100px] right-[-80px] w-64 h-64 bg-emerald-600/30 rounded-full blur-3xl" />
-      <div className="absolute bottom-[-60px] left-[-60px] w-48 h-48 bg-teal-500/20 rounded-full blur-3xl" />
+    <div className="relative mx-auto flex min-h-screen w-full max-w-lg flex-col bg-bg">
+      {/* A quiet brand band at the top rather than a full-height gradient: the
+          card below it is where everything happens. */}
+      <div className="safe-top relative overflow-hidden bg-brand px-6 pb-16 pt-10 text-brand-ink">
+        <div
+          aria-hidden
+          className="absolute -right-16 -top-20 size-56 rounded-full bg-black/10 blur-2xl"
+        />
+        <div className="relative flex items-center gap-3">
+          <span className="flex size-12 items-center justify-center rounded-2xl bg-black/15">
+            <HandCoins className="size-6" />
+          </span>
+          <div>
+            <h1 className="text-[26px] font-bold leading-none tracking-tight">Udhaar</h1>
+            <p className="mt-1 text-[13px] opacity-80">Track loans. Get paid. No awkward calls.</p>
+          </div>
+        </div>
+      </div>
 
-      {/* Content */}
-      <div className="relative flex-1 flex flex-col justify-end pb-8 px-6">
+      <div className="flex flex-1 flex-col px-5 pb-8">
         {step === "mobile" ? (
-          <div className="animate-slide-down">
-            {/* Hero */}
-            <div className="text-center mb-10">
-              <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center text-4xl mx-auto mb-4 shadow-2xl shadow-emerald-900/50 animate-bounce-in">
-                💰
-              </div>
-              <h1 className="text-4xl font-extrabold text-white tracking-tight">Udhaar</h1>
-              <p className="text-emerald-200 mt-2 text-base">
-                Track loans. Get paid. No awkward calls.
-              </p>
-            </div>
-
-            {/* Form Card */}
-            <div className="bg-white rounded-3xl p-6 shadow-2xl shadow-black/20">
-              <h2 className="text-xl font-bold text-slate-800 mb-1">Welcome</h2>
-              <p className="text-slate-500 text-sm mb-6">
-                Enter your details to get started
-              </p>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                    Your Name
-                  </label>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Rahul Sharma"
-                    className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none text-slate-800 placeholder:text-slate-400"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                    Mobile Number
-                  </label>
-                  <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-1 focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-transparent">
-                    <span className="text-slate-500 font-semibold text-sm">+91</span>
-                    <div className="w-px h-6 bg-slate-200" />
-                    <input
-                      type="tel"
-                      value={mobile}
-                      onChange={(e) =>
-                        setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))
-                      }
-                      placeholder="9876543210"
-                      className="w-full py-2.5 bg-transparent outline-none text-slate-800 placeholder:text-slate-400"
-                      maxLength={10}
-                    />
-                    {mobile.length === 10 && (
-                      <span className="text-emerald-500 text-lg">✓</span>
-                    )}
-                  </div>
-                </div>
-
-                {error && (
-                  <div className="bg-red-50 text-red-600 text-sm p-3.5 rounded-2xl animate-scale-in">
-                    {error}
-                  </div>
-                )}
-
-                <button
-                  onClick={handleSendOTP}
-                  disabled={loading || mobile.length !== 10}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold py-4 rounded-2xl text-base transition-all tap-highlight"
-                >
-                  {loading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      Sending OTP...
-                    </span>
-                  ) : (
-                    "Continue →"
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <p className="text-emerald-300/60 text-xs text-center mt-6">
-              By continuing, you agree to our Terms of Service
+          <div className="animate-rise -mt-10 rounded-card border border-line bg-surface p-5 shadow-float">
+            <h2 className="text-[17px] font-bold tracking-tight text-ink">Welcome</h2>
+            <p className="mt-0.5 text-[13px] text-ink-2">
+              Your number is your account - no password to remember.
             </p>
+
+            <div className="mt-5 space-y-4">
+              <Field label="Your name">
+                <Input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Rahul Sharma"
+                  autoComplete="name"
+                />
+              </Field>
+
+              <Field label="Mobile number">
+                <div className="flex items-center gap-2.5 rounded-control border border-line bg-surface px-3.5 focus-within:border-brand focus-within:ring-4 focus-within:ring-[var(--ring)]">
+                  <span className="text-[15px] font-semibold text-ink-3">+91</span>
+                  <span className="h-6 w-px bg-line" />
+                  <input
+                    type="tel"
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                    placeholder="9876543210"
+                    inputMode="numeric"
+                    autoComplete="tel-national"
+                    maxLength={10}
+                    className="w-full bg-transparent py-3 text-[15px] text-ink outline-none placeholder:text-ink-3"
+                  />
+                  {mobile.length === 10 && <Check className="size-4 shrink-0 text-good" />}
+                </div>
+              </Field>
+
+              {error && <Notice tone="bad">{error}</Notice>}
+
+              <Button
+                block
+                size="lg"
+                loading={loading}
+                disabled={mobile.length !== 10}
+                onClick={handleSendOTP}
+                icon={loading ? undefined : <ArrowRight className="size-4" />}
+              >
+                {loading ? "Sending OTP" : "Continue"}
+              </Button>
+            </div>
           </div>
         ) : (
-          <div className="animate-slide-up">
-            {/* Back button */}
+          <div className="animate-rise -mt-10 rounded-card border border-line bg-surface p-5 shadow-float">
             <button
               onClick={() => {
                 setStep("mobile");
@@ -188,94 +181,90 @@ export default function LoginPage() {
                 setError("");
                 setDevCode(null);
               }}
-              className="text-emerald-300 mb-6 flex items-center gap-1 text-sm font-medium tap-highlight"
+              className="tap -ml-1 mb-3 flex items-center gap-1 rounded-control px-1 py-1 text-[13px] font-semibold text-ink-3 hover:bg-surface-2"
             >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-              </svg>
+              <ArrowLeft className="size-4" />
               Back
             </button>
 
-            <div className="text-center mb-8">
-              <div className="w-16 h-16 bg-emerald-600/50 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4">
-                📱
-              </div>
-              <h2 className="text-2xl font-bold text-white">Verify OTP</h2>
-              <p className="text-emerald-200 mt-1 text-sm">
-                {dummyOtp
-                  ? `Dummy mode — no SMS sent. Code for +91 ${mobile} below.`
-                  : `We sent a 6-digit code to +91 ${mobile}`}
-              </p>
+            <h2 className="text-[17px] font-bold tracking-tight text-ink">Verify OTP</h2>
+            <p className="mt-0.5 text-[13px] text-ink-2">
+              {dummyOtp
+                ? `Dummy mode - no SMS is sent. The code for +91 ${mobile} is below.`
+                : `We sent a 6-digit code to +91 ${mobile}`}
+            </p>
+
+            <div className="mt-5 flex gap-1.5">
+              {otp.map((digit, idx) => (
+                <input
+                  key={idx}
+                  id={`otp-${idx}`}
+                  type="tel"
+                  inputMode="numeric"
+                  value={digit}
+                  onChange={(e) => handleOtpChange(idx, e.target.value)}
+                  onKeyDown={(e) => handleOtpKeyDown(idx, e)}
+                  aria-label={`Digit ${idx + 1}`}
+                  maxLength={1}
+                  autoFocus={idx === 0}
+                  className={cx(
+                    "size-12 rounded-control border bg-surface text-center text-[20px] font-bold tabular-nums text-ink",
+                    "focus:border-brand focus:outline-none focus:ring-4 focus:ring-[var(--ring)]",
+                    digit ? "border-brand" : "border-line"
+                  )}
+                />
+              ))}
             </div>
 
-            <div className="bg-white rounded-3xl p-6 shadow-2xl shadow-black/20">
-              {/* OTP Input Boxes */}
-              <div className="flex gap-2.5 justify-center mb-6">
-                {otp.map((digit, idx) => (
-                  <input
-                    key={idx}
-                    id={`otp-${idx}`}
-                    type="tel"
-                    inputMode="numeric"
-                    value={digit}
-                    onChange={(e) => handleOtpChange(idx, e.target.value)}
-                    onKeyDown={(e) => handleOtpKeyDown(idx, e)}
-                    className="w-12 h-14 text-center text-2xl font-bold bg-slate-50 border-2 border-slate-200 rounded-2xl outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all"
-                    maxLength={1}
-                    autoFocus={idx === 0}
-                  />
-                ))}
-              </div>
+            {devCode && (
+              <Notice tone="warn" className="mt-4" icon={<ShieldCheck className="size-4" />}>
+                <p className="text-[12px] font-semibold">
+                  Dummy OTP mode · code {devCode}
+                </p>
+                <p className="mt-0.5">
+                  SMS isn&apos;t configured yet, so anyone can log in as any number until real SMS
+                  is switched on.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOtp(devCode.split(""));
+                    void verifyOtp(devCode);
+                  }}
+                  className="tap mt-1.5 rounded-full bg-surface px-3 py-1 text-[11px] font-bold text-warn"
+                >
+                  Fill {devCode} and continue
+                </button>
+              </Notice>
+            )}
 
-              {devCode && (
-                <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 mb-4 text-center">
-                  <p className="text-[11px] font-bold text-amber-700 uppercase tracking-wide">
-                    Dummy OTP mode
-                  </p>
-                  <p className="text-xs text-amber-700 mt-1">
-                    Use <span className="font-mono font-bold text-base">{devCode}</span> — SMS isn&apos;t
-                    configured yet. Anyone can log in as any number until real SMS is turned on.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setOtp(devCode.split(""))}
-                    className="mt-2 text-[11px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-3 py-1.5 rounded-full tap-highlight"
-                  >
-                    Tap to fill {devCode}
-                  </button>
-                </div>
-              )}
+            {error && (
+              <Notice tone="bad" className="mt-4">
+                {error}
+              </Notice>
+            )}
 
-              {error && (
-                <div className="bg-red-50 text-red-600 text-sm p-3.5 rounded-2xl mb-4 animate-scale-in">
-                  {error}
-                </div>
-              )}
+            <Button
+              block
+              size="lg"
+              className="mt-4"
+              loading={loading}
+              disabled={otp.some((d) => !d)}
+              onClick={() => verifyOtp(otp.join(""))}
+            >
+              {loading ? "Verifying" : "Verify and log in"}
+            </Button>
 
-              <button
-                onClick={() => verifyOtp(otp.join(""))}
-                disabled={loading || otp.some((d) => !d)}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 text-white font-bold py-4 rounded-2xl text-base transition-all tap-highlight"
-              >
-                {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Verifying...
-                  </span>
-                ) : (
-                  "Verify & Login"
-                )}
-              </button>
-
-              <button
-                onClick={handleSendOTP}
-                className="w-full text-slate-500 hover:text-slate-700 text-sm py-3 mt-2 tap-highlight"
-              >
-                Didn&apos;t get it? <span className="text-emerald-600 font-semibold">Resend OTP</span>
-              </button>
-            </div>
+            <Button block variant="ghost" className="mt-1.5" onClick={handleSendOTP}>
+              Didn&apos;t get it? Resend
+            </Button>
           </div>
         )}
+
+        <p className="mt-auto pt-8 text-center text-[11px] text-ink-3">
+          By continuing you agree to the Terms of Service, and to money being recorded accurately -
+          what the app shows is what both sides see.
+        </p>
       </div>
     </div>
   );

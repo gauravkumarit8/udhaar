@@ -36,7 +36,7 @@ function check(label, got, want) {
     passed++;
     console.log(`  \u2713 ${label}`);
   } else {
-    failures.push(label);
+    failures.push({ label, got, want });
     console.log(`  \u2717 ${label}\n      got      ${JSON.stringify(got)}\n      wanted   ${JSON.stringify(want)}`);
   }
 }
@@ -208,6 +208,46 @@ function owed(detail) {
   return { principal: money(principal), interest: money(interest), total: money(principal + interest) };
 }
 
+/**
+ * Can this deployment do the two things this harness assumes?
+ *
+ * Everything below signs in over OTP and drives the reminder sweep, so a server
+ * started without OTP_MODE=dummy (a production build with no SMS provider
+ * answers 503 on /api/auth/send-otp) or without CRON_SECRET turns one missing
+ * variable into two hundred unrelated-looking failures. CI did exactly that the
+ * first time these checks ran there. One sentence up front is worth all of it.
+ *
+ * The probe uses its own caller address and its own number, so it does not
+ * spend the OTP budget the rate-limit checks below depend on.
+ */
+async function preflight() {
+  const ip = `203.0.113.${Math.floor(Math.random() * 250) + 1}`;
+  const sent = await sendOtp(freshMobile(9), { headers: { "x-forwarded-for": ip } });
+
+  if (sent.status !== 200 || !sent.json?.devCode) {
+    const why = sent.json?.error ?? `HTTP ${sent.status}`;
+    console.error(
+      `\n\u2717 this deployment cannot issue a test login, so there is nothing to check here.\n` +
+        `  POST /api/auth/send-otp said: ${why}\n\n` +
+        `  This harness signs in with the OTP the app hands back, which only happens when the app\n` +
+        `  runs with OTP_MODE=dummy. Start it that way (and with CRON_SECRET set, which the reminder\n` +
+        `  sweep checks need), or point BASE_URL at a deployment that already does.`
+    );
+    process.exit(1);
+  }
+
+  if (!process.env.CRON_SECRET) {
+    console.error(
+      `\n\u2717 CRON_SECRET is not set for this harness run.\n` +
+        `  The reminder-sweep checks post to /api/reminders/run with it, so export the same value\n` +
+        `  the server has and run again.`
+    );
+    process.exit(1);
+  }
+
+  console.log("  \u2713 preflight: the deployment issues test logins, and the sweep secret is set");
+}
+
 async function main() {
   const ping = await fetch(`${BASE_URL}/api/health`).catch(() => null);
   if (!ping) {
@@ -215,6 +255,7 @@ async function main() {
     process.exit(1);
   }
 
+  await preflight();
   await seed();
 
   console.log("\nThe reported bug: the borrower clears the whole loan in one transfer");
@@ -1166,6 +1207,18 @@ async function main() {
       ? `\n\u2717 ${failures.length} check(s) failed, ${passed} passed`
       : `\n\u2713 all ${passed} settlement checks passed`
   );
+
+  // A failure here is a wall of red in a CI log, and the log is not always
+  // reachable - a job's log lives in storage a sandbox like ours cannot open,
+  // while check-run annotations can be read with `gh api`. So publish each
+  // failure as an annotation too.
+  if (process.env.GITHUB_ACTIONS && failures.length) {
+    for (const failure of failures) {
+      const oneLine = (value) => JSON.stringify(value).slice(0, 180);
+      console.log(`::error::${failure.label} - got ${oneLine(failure.got)}, wanted ${oneLine(failure.want)}`);
+    }
+  }
+
   process.exit(failures.length ? 1 : 0);
 }
 

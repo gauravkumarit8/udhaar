@@ -75,6 +75,43 @@ jobs:
       - name: 🏗️ Build Next.js
         run: npm run build
 
+      # The two harnesses that drive the real server, against the build that
+      # just came out of it: the settlement checks (does the money still work)
+      # and the design checks (does every screen still use the design system).
+      # They need a running server pointed at the CI database, so they run here
+      # rather than in the unit-test step.
+      # The two checks below sign in over OTP and drive the reminder sweep, so
+      # the app they are pointed at has to be able to do those things. Without
+      # OTP_MODE=dummy, a production server with no SMS provider answers 503 on
+      # /api/auth/send-otp - and the first time these steps ran in CI, that one
+      # missing variable read as dozens of unrelated failures.
+      - name: 🚀 Serve the build against the CI database
+        env:
+          OTP_MODE: dummy
+          CRON_SECRET: ci-only-cron-secret
+        run: |
+          npm run start -- -p 3100 -H 127.0.0.1 > /tmp/server.log 2>&1 &
+          # Any answer means it is listening: this waits for the socket, and
+          # leaves "is the database usable" to the checks that follow.
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null http://127.0.0.1:3100/login; then
+              echo "server is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the server did not come up in 30 seconds"
+          cat /tmp/server.log
+          exit 1
+
+      - name: 🎨 Design checks (every screen against the design system)
+        run: BASE_URL=http://127.0.0.1:3100 npm run verify:ui
+
+      - name: 💰 Settlement checks (215 of them, over HTTP)
+        env:
+          CRON_SECRET: ci-only-cron-secret
+        run: BASE_URL=http://127.0.0.1:3100 npm run verify:settlement
+
       - name: 🐳 Build Docker image
         run: docker build -t udhaar:ci .
 

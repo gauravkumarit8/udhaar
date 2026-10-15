@@ -1,9 +1,22 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import BottomNav from "@/components/BottomNav";
-import MobileShell from "@/components/MobileShell";
-import { readApi, requestJson } from "@/lib/http";
+import Link from "next/link";
+import { BellRing, Check, Clock, HandCoins, Receipt } from "lucide-react";
+import MobileShell, { ListSkeleton } from "@/components/MobileShell";
+import { PaySheet, RemindSheet, type PayTarget, type RemindTarget } from "@/components/ActionSheets";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Notice,
+  SectionHeader,
+  cx,
+  formatMoney,
+} from "@/components/ui";
+import { readApi } from "@/lib/http";
 import { UNREAD_EVENT } from "@/lib/client-cache";
 
 interface Reminder {
@@ -22,12 +35,26 @@ interface DueItem {
   borrowerName: string;
   lenderName: string | null;
   installmentId: string;
+  installmentNumber?: number;
   dueDate: string;
   amount: number;
   computedStatus: string;
   viewerRole: "lender" | "borrower";
+  /** Carried by the dashboard API so a payment can start from this screen. */
+  lenderUpiId?: string | null;
+  principalRemaining?: number;
+  interestRemaining?: number;
 }
 
+/**
+ * Everything that has happened, and everything that needs to happen.
+ *
+ * Overdue first, then due soon, then the notifications feed. The rows are
+ * actionable where they are: a lender sends the reminder from here, and a
+ * borrower pays from here - the same sheets the home screen uses - instead of
+ * each row being a signpost to the loan screen, where the same job then needed
+ * two more taps.
+ */
 export default function ActivityPage() {
   const [dueItems, setDueItems] = useState<DueItem[]>([]);
   const [notifications, setNotifications] = useState<Reminder[]>([]);
@@ -36,6 +63,9 @@ export default function ActivityPage() {
   const [justArrived, setJustArrived] = useState(0);
   /** Notification ids already rendered, so arrivals mid-session can be called out. */
   const knownIds = useRef<Set<string>>(new Set());
+
+  const [payFor, setPayFor] = useState<DueItem | null>(null);
+  const [remindFor, setRemindFor] = useState<DueItem | null>(null);
 
   // Marks the feed read, which is what the tab badge counts. Fire-and-forget:
   // the badge is a convenience, and the screen must render whether or not this
@@ -57,41 +87,39 @@ export default function ActivityPage() {
   useEffect(() => {
     async function load() {
       try {
-      /*
-       * `limit=200` on purpose: this screen *is* the full list of what is
-       * overdue and what is due soon, so it asks for the whole due list rather
-       * than the dashboard's page of five. (The dashboard, which prints five
-       * rows and a count, asks for neither.) Beyond 200 loans with a payment
-       * due this needs paging of its own - see the note in README.
-       */
-      const [dashRes, notifRes] = await Promise.all([
-        fetch("/api/dashboard?limit=200"),
-        fetch("/api/notifications"),
-      ]);
-      const [dashResult, notifResult] = await Promise.all([
-        readApi<{ dueItems?: DueItem[] }>(dashRes),
-        readApi<{ notifications?: Reminder[]; unread?: number }>(notifRes),
-      ]);
+        /*
+         * `limit=200` on purpose: this screen *is* the full list of what is
+         * overdue and what is due soon, so it asks for the whole due list rather
+         * than the dashboard's page of five. (The dashboard, which prints five
+         * rows and a count, asks for neither.) Beyond 200 loans with a payment
+         * due this needs paging of its own - see the note in README.
+         */
+        const [dashRes, notifRes] = await Promise.all([
+          fetch("/api/dashboard?limit=200"),
+          fetch("/api/notifications"),
+        ]);
+        const [dashResult, notifResult] = await Promise.all([
+          readApi<{ dueItems?: DueItem[] }>(dashRes),
+          readApi<{ notifications?: Reminder[]; unread?: number }>(notifRes),
+        ]);
 
-      if (dashResult.ok) setDueItems(dashResult.data?.dueItems ?? []);
-      if (notifResult.ok) {
-        const list = notifResult.data?.notifications ?? [];
-        // Anything that arrived while this screen was open is called out, so a
-        // notification that lands mid-session isn't silently mixed in.
-        const fresh = list.filter((n) => !knownIds.current.has(n.id)).length;
-        const wasLoaded = knownIds.current.size > 0;
-        knownIds.current = new Set(list.map((n) => n.id));
-        setNotifications(list);
-        if (wasLoaded && fresh > 0) setJustArrived(fresh);
+        if (dashResult.ok) setDueItems(dashResult.data?.dueItems ?? []);
+        if (notifResult.ok) {
+          const list = notifResult.data?.notifications ?? [];
+          // Anything that arrived while this screen was open is called out, so a
+          // notification that lands mid-session isn't silently mixed in.
+          const fresh = list.filter((n) => !knownIds.current.has(n.id)).length;
+          const wasLoaded = knownIds.current.size > 0;
+          knownIds.current = new Set(list.map((n) => n.id));
+          setNotifications(list);
+          if (wasLoaded && fresh > 0) setJustArrived(fresh);
 
-        // The badge comes from this same response; the tab bar need not ask.
-        if (typeof notifResult.data?.unread === "number") {
-          window.dispatchEvent(
-            new CustomEvent(UNREAD_EVENT, { detail: notifResult.data.unread })
-          );
+          // The badge comes from this same response; the tab bar need not ask.
+          if (typeof notifResult.data?.unread === "number") {
+            window.dispatchEvent(new CustomEvent(UNREAD_EVENT, { detail: notifResult.data.unread }));
+          }
+          if ((notifResult.data?.unread ?? 0) > 0) void markSeen();
         }
-        if ((notifResult.data?.unread ?? 0) > 0) void markSeen();
-      }
 
         // A silent failure used to leave this page looking merely empty.
         setLoadError(dashResult.error ?? notifResult.error ?? null);
@@ -121,247 +149,227 @@ export default function ActivityPage() {
     };
   }, []);
 
-  const [reminderNote, setReminderNote] = useState<string | null>(null);
-  /** Fallback when the browser blocks the WhatsApp/SMS pop-up after an await. */
-  const [reminderLink, setReminderLink] = useState<{ href: string; label: string } | null>(null);
-
-  /**
-   * Same rule as the loan screen: WhatsApp first, because the borrower may
-   * never have installed this app. Push is attempted alongside it when they
-   * have an account, but it is no longer the only thing we can offer.
-   */
-  const handleRemind = async (installmentId: string, channel: "whatsapp" | "sms" | "push" = "whatsapp") => {
-    try {
-      const result = await requestJson<{
-        delivered?: boolean;
-        reason?: string;
-        share?: { whatsappUrl: string; smsUrl: string };
-      }>(`/api/installments/${installmentId}/remind`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel }),
-      });
-
-      if (!result.ok) {
-        setReminderNote(result.error || "Reminder not sent");
-      } else if (channel === "push") {
-        setReminderNote(
-          result.data?.delivered ? "✓ Delivered to their phone" : result.data?.reason || "Not delivered"
-        );
-      } else {
-        const url = channel === "whatsapp" ? result.data?.share?.whatsappUrl : result.data?.share?.smsUrl;
-        const appName = channel === "whatsapp" ? "WhatsApp" : "your messages";
-        const opened = url ? window.open(url, "_blank") : null;
-        setReminderNote(
-          opened ? `Reminder ready in ${appName} - press send there` : `Reminder recorded - tap below to open ${appName}`
-        );
-        setReminderLink(!opened && url ? { href: url, label: `Open ${appName}` } : null);
-      }
-    } catch {
-      setReminderNote("Network error - reminder not sent");
-    }
-    setTimeout(() => {
-      setReminderNote(null);
-      setReminderLink(null);
-    }, 8000);
-  };
-
   const overdue = dueItems.filter((d) => d.computedStatus === "overdue");
   const dueSoon = dueItems.filter((d) => d.computedStatus === "due_soon");
 
+  const openPay = (item: DueItem) => {
+    setPayFor(item);
+  };
+
+  const openRemind = (item: DueItem) => {
+    setRemindFor(item);
+  };
+
+  const payTarget: PayTarget | null = payFor
+    ? {
+        installmentId: payFor.installmentId,
+        installmentNumber: payFor.installmentNumber ?? 0,
+        dueDate: payFor.dueDate,
+        principalRemaining: payFor.principalRemaining ?? payFor.amount,
+        interestRemaining: payFor.interestRemaining ?? 0,
+        counterparty: payFor.lenderName || "Lender",
+        viewerRole: payFor.viewerRole,
+        upiId: payFor.lenderUpiId ?? null,
+      }
+    : null;
+
+  const remindTarget: RemindTarget | null = remindFor
+    ? {
+        installmentId: remindFor.installmentId,
+        installmentNumber: remindFor.installmentNumber ?? 0,
+        dueDate: remindFor.dueDate,
+        remaining: remindFor.amount,
+        borrowerName: remindFor.borrowerName,
+        canPush: true,
+      }
+    : null;
+
+  /** One row of "what needs doing", in whichever direction it is going. */
+  const dueRow = (item: DueItem, tone: "bad" | "warn") => {
+    const receiving = item.viewerRole === "lender";
+    const displayName = receiving ? item.borrowerName : item.lenderName || "Lender";
+
+    return (
+      <Card key={`${item.loanId}-${item.installmentId}`} className="overflow-hidden p-0">
+        <Link href={`/loans/${item.loanId}`} className="tap flex items-center gap-3 p-4">
+          <Avatar name={displayName} size={40} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="truncate text-[14px] font-semibold text-ink">{displayName}</p>
+              <Badge tone={receiving ? "good" : "warn"}>
+                {receiving ? "OWED TO YOU" : "YOU OWE"}
+              </Badge>
+            </div>
+            <p className="mt-0.5 text-[12px] text-ink-3">
+              <span className={cx("font-semibold tabular-nums", tone === "bad" && "text-bad")}>
+                {formatMoney(item.amount)}
+              </span>{" "}
+              · due{" "}
+              {new Date(item.dueDate + "T00:00:00").toLocaleDateString("en-IN", {
+                day: "numeric",
+                month: "short",
+              })}
+              {tone === "bad" ? " - overdue" : ""}
+            </p>
+          </div>
+        </Link>
+
+        <div className="flex items-center gap-2 border-t border-line px-3 py-2">
+          {receiving ? (
+            <Button size="sm" variant="secondary" onClick={() => openRemind(item)}>
+              <BellRing className="size-3.5" />
+              Remind
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => openPay(item)}>
+              <Receipt className="size-3.5" />
+              Pay now
+            </Button>
+          )}
+          <Link
+            href={`/loans/${item.loanId}`}
+            className="tap ml-auto px-2 text-[12px] font-semibold text-ink-3"
+          >
+            View loan
+          </Link>
+        </div>
+      </Card>
+    );
+  };
+
   return (
     <MobileShell title="Activity">
-      <div className="px-5 pb-24">
-        {reminderNote && (
-          <div className="mb-4 bg-blue-50 border border-blue-200 rounded-2xl p-3.5 text-xs text-blue-800 animate-scale-in">
-            {reminderNote}
-            {reminderLink && (
-              <a
-                href={reminderLink.href}
-                target="_blank"
-                rel="noreferrer"
-                className="block mt-1.5 font-semibold text-blue-700 underline"
-              >
-                {reminderLink.label}
-              </a>
-            )}
-          </div>
-        )}
-        {/* Overdue Section */}
-        {overdue.length > 0 && (
-          <div className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-              <h2 className="text-base font-bold text-red-600">Overdue ({overdue.length})</h2>
-            </div>
-            <div className="space-y-2.5">
-              {overdue.map((item, idx) => (
-                <div
-                  key={idx}
-                  className="bg-red-50 rounded-2xl p-4 border border-red-100"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-bold text-slate-800">{item.viewerRole === "lender" ? item.borrowerName : (item.lenderName || "Lender")}</p>
-                      <p className="text-xs text-red-600 mt-0.5">
-                        Due {new Date(item.dueDate + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · ₹{item.amount.toLocaleString("en-IN")}
-                        {item.viewerRole === "borrower" && (
-                          <span className="ml-1.5 text-[10px] font-bold bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">YOU OWE</span>
-                        )}
-                      </p>
-                    </div>
-                    {item.viewerRole === "lender" ? (
-                      <button
-                        onClick={() => handleRemind(item.installmentId)}
-                        className="bg-red-600 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                      >
-                        🔔 Remind Now
-                      </button>
-                    ) : (
-                      <a
-                        href={`/loans/${item.loanId}`}
-                        className="bg-red-600 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                      >
-                        Pay Now
-                      </a>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Due Soon Section */}
-        {dueSoon.length > 0 && (
-          <div className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-2 h-2 bg-amber-400 rounded-full" />
-              <h2 className="text-base font-bold text-amber-600">Due Soon ({dueSoon.length})</h2>
-            </div>
-            <div className="space-y-2.5">
-              {dueSoon.map((item, idx) => (
-                <div
-                  key={idx}
-                  className="bg-amber-50 rounded-2xl p-4 border border-amber-100"
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-bold text-slate-800">{item.viewerRole === "lender" ? item.borrowerName : (item.lenderName || "Lender")}</p>
-                      <p className="text-xs text-amber-600 mt-0.5">
-                        Due {new Date(item.dueDate + "T00:00:00").toLocaleDateString("en-IN", { day: "numeric", month: "short" })} · ₹{item.amount.toLocaleString("en-IN")}
-                        {item.viewerRole === "borrower" && (
-                          <span className="ml-1.5 text-[10px] font-bold bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">YOU OWE</span>
-                        )}
-                      </p>
-                    </div>
-                    {item.viewerRole === "lender" ? (
-                      <button
-                        onClick={() => handleRemind(item.installmentId)}
-                        className="bg-amber-500 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                      >
-                        🔔 Remind
-                      </button>
-                    ) : (
-                      <a
-                        href={`/loans/${item.loanId}`}
-                        className="bg-amber-500 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                      >
-                        Pay Now
-                      </a>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* A failed load used to look like an empty page */}
+      <div className="px-4 pb-8 pt-3">
         {loadError && (
-          <div className="mb-4 bg-amber-50 border border-amber-200 rounded-2xl p-4">
-            <p className="text-sm text-amber-800">{loadError}</p>
-            <button
-              onClick={() => window.location.reload()}
-              className="mt-2 text-xs font-semibold text-amber-900 underline"
-            >
-              Retry
-            </button>
-          </div>
+          <Notice tone="warn" className="mb-4" onDismiss={() => setLoadError(null)}>
+            {loadError}
+          </Notice>
         )}
 
-        {/* Empty State */}
-        {overdue.length === 0 && dueSoon.length === 0 && (
-          <div className="text-center py-16">
-            <div className="text-6xl mb-4">🔔</div>
-            <h3 className="text-xl font-bold text-slate-700">All Quiet!</h3>
-            <p className="text-slate-400 text-sm mt-1">No overdue or upcoming reminders</p>
-          </div>
+        {loading && dueItems.length === 0 && !loadError && <ListSkeleton rows={4} />}
+
+        {overdue.length > 0 && (
+          <section className="mb-6">
+            <SectionHeader
+              title="Overdue"
+              count={overdue.length}
+              action={<Badge tone="bad">needs action</Badge>}
+            />
+            <div className="stagger space-y-2.5">{overdue.map((item) => dueRow(item, "bad"))}</div>
+          </section>
+        )}
+
+        {dueSoon.length > 0 && (
+          <section className="mb-6">
+            <SectionHeader title="Due soon" count={dueSoon.length} />
+            <div className="stagger space-y-2.5">{dueSoon.map((item) => dueRow(item, "warn"))}</div>
+          </section>
+        )}
+
+        {!loading && overdue.length === 0 && dueSoon.length === 0 && !loadError && (
+          <Card padded={false} className="mb-6">
+            <EmptyState
+              icon={<Check className="size-6" />}
+              title="All quiet"
+              body="Nothing is overdue and nothing is due in the next week. We'll tell you when something is."
+            />
+          </Card>
         )}
 
         {/* Notifications: loans added, payments marked/confirmed/rejected,
             reminders sent. Always rendered - an empty section that says so is
             how you know nothing is wrong. */}
         {!loading && (
-          <div className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="w-2 h-2 bg-blue-400 rounded-full" />
-              <h2 className="text-base font-bold text-slate-700">Notifications</h2>
-              {justArrived > 0 && (
-                <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full animate-scale-in">
-                  {justArrived} new
-                </span>
-              )}
-            </div>
-            {notifications.length === 0 && (
-              <p className="text-xs text-slate-400 bg-white rounded-2xl border border-slate-100 p-4">
-                Nothing here yet. When someone adds a loan for you, marks a payment, confirms or
-                rejects one, or changes the loan, it shows up here - and on your phone if you&apos;ve
-                turned notifications on.
-              </p>
+          <section className="mb-6">
+            <SectionHeader
+              title="Notifications"
+              action={
+                justArrived > 0 ? (
+                  <Badge tone="brand">{justArrived} new</Badge>
+                ) : undefined
+              }
+            />
+
+            {notifications.length === 0 ? (
+              <Card>
+                <p className="text-[13px] leading-relaxed text-ink-3">
+                  Nothing here yet. When someone adds a loan for you, marks a payment, confirms or
+                  rejects one, or changes the loan, it shows up here - and on your phone if
+                  you&apos;ve turned notifications on.
+                </p>
+              </Card>
+            ) : (
+              <ul className="stagger space-y-2.5">
+                {notifications.map((n) => (
+                  <Card as="li" key={n.id} className="p-0">
+                    <Link
+                      href={`/loans/${n.loanId}`}
+                      className="tap block px-4 py-3.5 hover:bg-surface-2"
+                    >
+                      <p className="text-[13px] leading-snug text-ink-2">{n.message}</p>
+                      <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-3">
+                        <Clock className="size-3" />
+                        {new Date(n.sentAt).toLocaleDateString("en-IN", {
+                          day: "numeric",
+                          month: "short",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                        {n.status && n.status !== "sent" ? ` · ${n.status}` : ""}
+                      </p>
+                    </Link>
+                  </Card>
+                ))}
+              </ul>
             )}
-            <div className="space-y-2.5">
-              {notifications.map((n) => (
-                <a
-                  key={n.id}
-                  href={`/loans/${n.loanId}`}
-                  className="block bg-white rounded-2xl p-4 border border-slate-100 tap-highlight active:bg-slate-50 transition-all"
-                >
-                  <p className="text-sm text-slate-700">{n.message}</p>
-                  <p className="text-[11px] text-slate-400 mt-1.5">
-                    {new Date(n.sentAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}
-                  </p>
-                </a>
-              ))}
-            </div>
-          </div>
+          </section>
         )}
 
-        {/* Smart Reminder Info */}
-        <div className="bg-white rounded-2xl p-4 border border-slate-100 mt-4">
-          <h3 className="font-bold text-sm text-slate-700 mb-2">⏰ Smart Reminders</h3>
-          <div className="space-y-2">
-            <div className="flex items-center gap-3 text-xs text-slate-500">
-              <span className="w-8 h-8 bg-emerald-100 rounded-xl flex items-center justify-center text-sm shrink-0">T-2</span>
-              <span>2 days before due date</span>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-slate-500">
-              <span className="w-8 h-8 bg-amber-100 rounded-xl flex items-center justify-center text-sm shrink-0">T-1</span>
-              <span>1 day before due date</span>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-slate-500">
-              <span className="w-8 h-8 bg-red-100 rounded-xl flex items-center justify-center text-sm shrink-0">T0</span>
-              <span>On due date</span>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-slate-500">
-              <span className="w-8 h-8 bg-red-100 rounded-xl flex items-center justify-center text-sm shrink-0">7d</span>
-              <span>Daily nag for 7 days if overdue</span>
-            </div>
+        {/* What the app will do on its own, so nobody has to guess. */}
+        <Card className="mt-4">
+          <div className="flex items-center gap-2">
+            <HandCoins className="size-4 text-ink-2" />
+            <h3 className="text-[13px] font-semibold text-ink">Reminders you don&apos;t send</h3>
           </div>
-        </div>
+          <div className="mt-3 grid grid-cols-2 gap-2.5">
+            {[
+              ["T-2", "2 days before it is due"],
+              ["T-1", "1 day before it is due"],
+              ["T0", "on the due date"],
+              ["7d", "daily while overdue"],
+            ].map(([tag, text]) => (
+              <div key={tag} className="flex items-center gap-2.5">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-control bg-surface-2 text-[11px] font-bold text-ink-2">
+                  {tag}
+                </span>
+                <span className="text-[11px] leading-snug text-ink-3">{text}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
       </div>
 
-      <BottomNav />
+      {payTarget && (
+        <PaySheet
+          key={payTarget.installmentId}
+          target={payTarget}
+          onClose={() => setPayFor(null)}
+          onRecorded={() => {
+            setRefreshKey((key) => key + 1);
+          }}
+        />
+      )}
+
+      {remindTarget && (
+        <RemindSheet
+          key={remindTarget.installmentId}
+          target={remindTarget}
+          onClose={() => setRemindFor(null)}
+          onSent={() => {
+            setRefreshKey((key) => key + 1);
+          }}
+        />
+      )}
     </MobileShell>
   );
 }
