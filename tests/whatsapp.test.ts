@@ -28,6 +28,9 @@ function config(overrides: Partial<WhatsAppConfig> = {}): WhatsAppConfig {
     templateLanguage: "en",
     apiVersion: "v23.0",
     apiBase: "https://graph.example",
+    maxPerRun: 50,
+    dailyMax: 200,
+    toUnregistered: false,
     ...overrides,
   };
 }

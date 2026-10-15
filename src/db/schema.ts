@@ -275,8 +275,8 @@ export const deviceTokens = pgTable("device_tokens", {
  * WhatsApp's rules - and basic decency - say a business-initiated message needs
  * a way out, and the way out has to be honoured immediately and permanently,
  * not on the next run of something. A number lands here when the person replies
- * STOP (the webhook records it) or when they switch reminders off in the app.
- * The sweep checks this table before every send.
+ * STOP - the webhook records it in the same request that heeds it. The sweep
+ * checks this table before every send.
  */
 export const whatsappOptOuts = pgTable("whatsapp_opt_outs", {
   id: uuid("id").defaultRandom().primaryKey(),

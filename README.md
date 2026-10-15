@@ -702,6 +702,106 @@ be told they owe money. So the reminder is designed around that.
 The scheduled T-2/T-1/T0 sweep still pushes to anyone with the app; for
 everyone else the lender now has a one-tap way to send it themselves.
 
+### Sending them automatically (WhatsApp Business API)
+
+The one-tap share needs a human to tap, every day, for every loan. If you want
+the T-2/T-1/T0 sweep to actually send the WhatsApp message itself, the app
+supports Meta's **WhatsApp Cloud API** - the official one, no middleman, no
+unofficial libraries (those get numbers banned, and a banned number takes the
+whole reminder channel with it).
+
+**It is off until you configure it.** With nothing set, everything above works
+exactly as it does today: push to the people who have the app, one-tap share for
+everyone else.
+
+**What it costs.** Meta bills per *delivered* message, on its own INR rate
+card: a **utility** template to an Indian number is **₹0.115** (about ₹0.136
+with 18% GST) at the time of writing - a reminder template is a utility
+template, and since 1 October 2026 utility templates are billed whether or not
+the person messaged you first. A refused or undelivered template is not
+charged. There is no per-message middleman markup here because this talks to
+Meta directly rather than through a BSP: **100 reminders a month is about
+₹14.** (Rates change - check Meta's published rate card before budgeting on
+this.)
+
+The app also caps itself, because an unbounded loop that costs money per
+iteration is how a bug becomes a bill: `WHATSAPP_MAX_PER_RUN` (50) per sweep and
+`WHATSAPP_DAILY_MAX` (200) per day, counted from the reminder rows themselves -
+so a restart cannot reset the counter, and the ceiling holds across workers.
+When the day's budget is spent, reminders still go out by push; WhatsApp is just
+skipped, with the reason recorded on the reminder.
+
+**Setup** (about 20 minutes, most of it Meta's own forms):
+
+1. Create a **Meta Business account** and a **WhatsApp Business Account**, and
+   add a phone number you can receive an SMS or call on. A number already used
+   in the normal WhatsApp app has to be deleted from it first.
+2. Meta → **WhatsApp → API Setup**: copy the **Phone number ID**, and create a
+   **System User** token with `whatsapp_business_messaging` (a temporary token
+   from that page expires in 24 hours - the check below says so if you use one).
+3. Submit the **template** below and wait for *Approved*. Business-initiated
+   messages can only use an approved template; that is Meta's rule, not this
+   app's.
+4. Set the variables (locally in `.env`, on the host in its environment):
+   `WHATSAPP_PROVIDER=meta`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
+   `WHATSAPP_BUSINESS_ACCOUNT_ID`, `WHATSAPP_APP_SECRET`,
+   `WHATSAPP_VERIFY_TOKEN`, and the template's name/language if you changed it.
+5. Point Meta's webhook at `https://your-app/api/whatsapp/webhook` with the
+   verify token from step 4, subscribed to the **messages** field. That is what
+   makes delivery reports and STOP replies work.
+6. Verify before trusting it:
+
+   ```powershell
+   npm run check-whatsapp
+   ```
+
+   It makes two read-only calls to Meta and tells you exactly which of the four
+   usual mistakes you made: an expired token, a phone *number* pasted where the
+   *id* belongs, a template that isn't approved yet (or is named slightly
+   differently), or a missing app secret. It never sends a message.
+
+**The template to submit** (name `udhaar_emi_reminder`, category **Utility**,
+language English) - the parameter order is fixed, because the app fills these
+five values in this order and Meta rejects a send whose parameter count or order
+doesn't match:
+
+```
+Hi {{1}}, {{2}} is due to {{3}} on {{4}}.
+{{5}}
+Reply STOP to stop these reminders.
+```
+
+| # | Filled with | Example |
+|---|---|---|
+| 1 | the borrower's first name | `Ravi` |
+| 2 | what is still owed on that EMI | `₹4,500.00` |
+| 3 | the lender's name | `Aunty Kamla` |
+| 4 | the due date | `14 Sep 2026` |
+| 5 | how to pay, or what to ask for | `Pay by UPI to kamla@okhdfcbank.` |
+
+**Who gets messaged, and who doesn't.** This part is deliberate:
+
+- **Borrowers who have an account** - signing up is the consent. The sweep
+  sends them the template *and* still pushes (push is free, and this is about
+  reach, not either/or).
+- **Numbers the lender typed in for someone who never signed up** are *not*
+  messaged unless you set `WHATSAPP_TO_UNREGISTERED=true`. Messaging a third
+  party about money they never asked this app to track is a compliance decision
+  and yours to make - the flag exists so you can make it knowingly.
+- **Anyone who replies STOP** is recorded in `whatsapp_opt_outs` and is never
+  messaged again - by any run, from any worker, immediately. The sweep checks
+  that table before every send, and `npm run check-whatsapp`/`/api/health` show
+  whether the webhook is wired up at all.
+
+**What the app will and won't claim.** A `200` from Meta means *accepted*, so
+that is what gets stored (`provider_status: accepted`), and a reminder is only
+marked **delivered** when the webhook says so. The provider's word and the app's
+are kept in separate columns precisely so a pushed reminder can never inherit
+"delivered" from a WhatsApp message about the same EMI.
+
+**Nothing else changes without it.** No provider, no cost, no configuration:
+the app behaves exactly as it did before this existed.
+
 ## 🆓 Most loans between people are interest-free
 
 The loan form defaults to **interest-free** - no rate, equal instalments, and

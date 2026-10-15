@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { installments, loans, reminders, users } from "@/db/schema";
+import { installments, loans, reminders, users, whatsappOptOuts } from "@/db/schema";
 import { sendPushToUser } from "@/lib/push";
 import { remainingFor } from "@/lib/payments";
 import { formatDate, generateUPILink } from "@/lib/calculations";
@@ -14,6 +14,13 @@ import {
   secretsMatch,
   todayInIndia,
 } from "@/lib/reminders";
+import {
+  buildReminderTemplateParams,
+  isWhatsAppConfigured,
+  readWhatsAppConfig,
+  sendWhatsAppTemplate,
+  shouldWhatsApp,
+} from "@/lib/whatsapp";
 import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -90,6 +97,9 @@ async function handlePOST(req: NextRequest) {
       principalWaived: installments.principalWaived,
       interestWaived: installments.interestWaived,
       borrowerId: loans.borrowerId,
+      // Always present, account or not: WhatsApp can reach a borrower who has
+      // never installed anything, which push never could.
+      borrowerMobile: loans.borrowerMobile,
       // Stored name first, account name as the fallback: a borrower-entered
       // loan names a lender who may never sign up, and those reminders - the
       // borrower's own nudge to pay - are exactly the ones worth sending.
@@ -127,12 +137,48 @@ async function handlePOST(req: NextRequest) {
     }
   }
 
+  /*
+   * WhatsApp: configured, then bounded.
+   *
+   * The day's budget is counted from the reminder rows themselves rather than
+   * kept in memory, because the thing being protected is a bill - and a counter
+   * that resets when the host restarts is not a limit. `channel = "whatsapp"`
+   * is only ever written after a provider accepted a message, so this count is
+   * what actually went out.
+   */
+  const whatsapp = readWhatsAppConfig();
+  const whatsappOn = isWhatsAppConfigured(whatsapp);
+  const dayStart = new Date(`${today}T00:00:00+05:30`);
+
+  let whatsappBudgetLeft = whatsapp.dailyMax;
+  if (whatsappOn) {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(reminders)
+      .where(and(eq(reminders.channel, "whatsapp"), gte(reminders.sentAt, dayStart)));
+
+    whatsappBudgetLeft = Math.max(0, whatsapp.dailyMax - (row?.count ?? 0));
+  }
+
+  let whatsappSentThisRun = 0;
+
+  // Nobody who said STOP is ever messaged again - one query for the whole run.
+  const optedOut = new Set<string>();
+  if (whatsappOn && pool.length > 0) {
+    const rows = await db
+      .select({ mobile: whatsappOptOuts.mobile })
+      .from(whatsappOptOuts)
+      .where(inArray(whatsappOptOuts.mobile, pool.map((c) => c.borrowerMobile)));
+    for (const row of rows) optedOut.add(row.mobile);
+  }
+
   const skipped: Array<{ installmentId: string; reason: string }> = [];
   const sent: Array<{
     installmentId: string;
     kind: string;
     delivered: boolean;
     pushSent: number;
+    whatsapp?: string;
     reason?: string;
   }> = [];
   let notDueToday = 0;
@@ -216,6 +262,53 @@ async function handlePOST(req: NextRequest) {
         )
       : null;
 
+    /*
+     * WhatsApp first, where it is configured and allowed.
+     *
+     * Push is free, so it still goes out below - this is not either/or, it is
+     * "whichever of these the person actually looks at". A WhatsApp failure
+     * never stops the push, and neither one is allowed to fail the sweep.
+     */
+    let whatsappOutcome: string | undefined;
+    let whatsappMessageId: string | undefined;
+    let whatsappError: string | undefined;
+
+    const decision = shouldWhatsApp({
+      hasAccount: Boolean(candidate.borrowerId),
+      optedOut: optedOut.has(candidate.borrowerMobile),
+      includeUnregistered: whatsapp.toUnregistered,
+      remaining: totalRemaining,
+      budgetLeft: whatsappBudgetLeft > 0 && whatsappSentThisRun < whatsapp.maxPerRun,
+    });
+
+    if (!whatsappOn) {
+      whatsappOutcome = "off";
+    } else if (!decision.send) {
+      whatsappOutcome = `skipped: ${decision.reason}`;
+    } else {
+      const result = await sendWhatsAppTemplate({
+        to: candidate.borrowerMobile,
+        params: buildReminderTemplateParams({
+          borrowerName: candidate.borrowerName,
+          lenderName: candidate.lenderName,
+          amount: totalRemaining,
+          dueDateLabel: formatDate(candidate.dueDate),
+          upiId: candidate.lenderUpiId,
+        }),
+        config: whatsapp,
+      });
+
+      if (result.ok && result.messageId) {
+        whatsappOutcome = "sent";
+        whatsappMessageId = result.messageId;
+        whatsappSentThisRun += 1;
+        whatsappBudgetLeft -= 1;
+      } else {
+        whatsappOutcome = `failed: ${result.error}`;
+        whatsappError = result.error;
+      }
+    }
+
     const pushResult = await sendPushToUser(candidate.borrowerId, plan.title, body, {
       type: "reminder",
       kind: plan.kind,
@@ -224,11 +317,26 @@ async function handlePOST(req: NextRequest) {
       ...(upiLink ? { upiLink } : {}),
     });
 
-    const delivered = pushResult.sent > 0;
+    const delivered = pushResult.sent > 0 || Boolean(whatsappMessageId);
 
     await db
       .update(reminders)
-      .set({ status: delivered ? "sent" : "failed" })
+      .set({
+        status: delivered ? "sent" : "failed",
+        // The channel that actually carried it, recorded so the day's budget
+        // can be counted and so the feed can say how someone was reached.
+        ...(whatsappMessageId
+          ? {
+              channel: "whatsapp",
+              providerMessageId: whatsappMessageId,
+              providerStatus: "accepted",
+            }
+          : {}),
+        // A failed attempt is kept even when the push lands: "we tried WhatsApp
+        // and it was refused because X" is the sort of thing an owner needs to
+        // see, and it is invisible if only successes are recorded.
+        ...(whatsappError ? { providerStatus: "failed", providerError: whatsappError } : {}),
+      })
       .where(eq(reminders.id, claim.id));
 
     sent.push({
@@ -236,9 +344,10 @@ async function handlePOST(req: NextRequest) {
       kind: plan.kind,
       delivered,
       pushSent: pushResult.sent,
+      whatsapp: whatsappOutcome,
       reason: delivered
         ? undefined
-        : "the borrower has no device registered for push notifications",
+        : "nothing reached the borrower: no device registered for push, and no WhatsApp message was accepted",
     });
   }
 
@@ -257,9 +366,17 @@ async function handlePOST(req: NextRequest) {
     skippedDetail: skipped.slice(0, 20),
     sent: sent.slice(0, 50),
     truncated,
+    whatsapp: {
+      configured: whatsappOn,
+      sent: whatsappSentThisRun,
+      budgetLeft: whatsappOn ? whatsappBudgetLeft : undefined,
+      toUnregistered: whatsappOn ? whatsapp.toUnregistered : undefined,
+    },
     note:
       deliveredCount === 0 && sent.length > 0
-        ? "Reminders were recorded, but no push reached a device. Borrowers need to open the app once and allow notifications."
+        ? whatsappOn
+          ? "Nothing reached anybody: no device accepted a push, and WhatsApp refused or skipped every message - see the per-reminder detail."
+          : "Reminders were recorded, but no push reached a device. Borrowers need to open the app once and allow notifications."
         : undefined,
   });
 }

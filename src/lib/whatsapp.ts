@@ -46,6 +46,12 @@ export interface WhatsAppConfig {
   apiVersion: string;
   /** Base URL, overridable for tests and for an on-prem proxy. */
   apiBase: string;
+  /** How many template messages one sweep may send (a runaway guard). */
+  maxPerRun: number;
+  /** How many may go out in a day in total - this is the bill. */
+  dailyMax: number;
+  /** Message numbers the lender typed in, without the borrower signing up. */
+  toUnregistered: boolean;
 }
 
 const DEFAULTS = {
@@ -53,7 +59,24 @@ const DEFAULTS = {
   templateLanguage: "en",
   apiVersion: "v23.0",
   apiBase: "https://graph.facebook.com",
+  maxPerRun: 50,
+  dailyMax: 200,
 };
+
+/** A positive whole number from the environment, or the default. */
+function positiveInt(name: string, fallback: number): number {
+  const raw = env(name);
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+/** true only for the spellings people actually write in a .env file. */
+function bool(name: string, fallback = false): boolean {
+  const raw = env(name).toLowerCase();
+  if (!raw) return fallback;
+  return ["1", "true", "yes", "on"].includes(raw);
+}
 
 const env = (name: string): string => (process.env[name] ?? "").trim();
 
@@ -79,6 +102,15 @@ export function readWhatsAppConfig(): WhatsAppConfig {
       process.env.NODE_ENV === "production"
         ? DEFAULTS.apiBase
         : env("WHATSAPP_API_BASE") || DEFAULTS.apiBase,
+    maxPerRun: positiveInt("WHATSAPP_MAX_PER_RUN", DEFAULTS.maxPerRun),
+    dailyMax: positiveInt("WHATSAPP_DAILY_MAX", DEFAULTS.dailyMax),
+    /*
+     * Off by default, and this is the consent line rather than a limitation:
+     * messaging a number that the *lender* typed in, about money, is not
+     * something the person on the other end asked for. Turning this on is the
+     * operator's call to make - and to be able to defend.
+     */
+    toUnregistered: bool("WHATSAPP_TO_UNREGISTERED"),
   };
 }
 
