@@ -24,6 +24,7 @@ export const dynamic = "force-dynamic";
  */
 
 import { buildHealthReport, type HealthCheck as Check } from "@/lib/health-report";
+import { describeBootMigration, readBootMigrationReport } from "@/lib/migration-report";
 import { readWhatsAppConfig, whatsappMissing } from "@/lib/whatsapp";
 
 /** Columns added by a migration, so a stale schema is caught by name. */
@@ -38,6 +39,12 @@ const REQUIRED_COLUMNS: Array<{ table: string; column: string }> = [
   { table: "installments", column: "principal_waived" },
   { table: "installments", column: "interest_waived" },
   { table: "payments", column: "unapplied_amount" },
+  // WhatsApp reminders (migration 0008). The table alone is not enough: a run
+  // that created it and then died would leave reminders without the columns the
+  // sweep writes, which is the half-applied state worth naming precisely.
+  { table: "reminders", column: "provider_message_id" },
+  { table: "reminders", column: "provider_status" },
+  { table: "reminders", column: "provider_error" },
   // Borrower-side entry (migration 0006). A database without these can still
   // serve the app's original direction, but every loan query selects them -
   // and the "I borrowed" screen writes them - so a half-migrated database has
@@ -383,6 +390,26 @@ export async function GET(req: NextRequest) {
       status: "ok",
       detail: `template "${wa.templateName}" (${wa.templateLanguage}), up to ${wa.maxPerRun}/run and ${wa.dailyMax}/day, delivery reports and STOP replies on`,
       publicDetail: "configured",
+    });
+  }
+
+  /*
+   * When the schema is behind, the useful question is not "what is missing" -
+   * that is above - but "why is it still missing". The boot migration writes
+   * down what it did (`scripts/migrate-at-boot.mjs`), and this reads it back:
+   * never run, ran and failed, ran and thought there was nothing to do, or
+   * applied it somewhere else. Four causes, four fixes, one line each.
+   */
+  const schemaCheck = checks.find((c) => c.name === "schema");
+  if (schemaCheck && schemaCheck.status === "fail") {
+    const explanation = describeBootMigration(readBootMigrationReport());
+    checks.push({
+      name: "boot migration",
+      status: explanation.status,
+      detail: explanation.detail,
+      publicDetail: explanation.publicDetail,
+      fix: SCHEMA_FIX,
+      publicFix: SCHEMA_FIX,
     });
   }
 
