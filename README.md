@@ -1048,8 +1048,19 @@ prints the reason without a secret having to exist in the repository.
 - **A deploy is not finished until the app says it is.** The `verify-production`
   job in `deploy-web.yml` polls the deployed `/api/health` until it reports the
   commit that was just released *and* a healthy schema, and fails the workflow
-  (printing the app's own `firstProblem` and the command that fixes it) if that
+  (printing every check that failed, and the command that fixes each) if that
   does not happen within 15 minutes.
+- **A failure that cannot heal fails fast.** Migrations run *before* the server
+  starts, so once the released commit is answering traffic its migration has
+  either been applied or given up - waiting the remaining fourteen minutes only
+  reaches the same conclusion more slowly. If that commit is live and its
+  `schema` check is red, the verifier gives it `SCHEMA_FAIL_FAST_MS` (two
+  minutes) and then fails with the reason and the one-off command that heals it.
+  A database that is merely unreachable is *not* treated this way (`schema` is
+  `skip` then, not `fail`) because that can come good on its own. Set
+  `SCHEMA_FAIL_FAST_MS=0` to wait the whole timeout as before. Observed on
+  2026-10-15: a 15-minute red run whose conclusion was already certain after 70
+  seconds.
 - **An app that cannot name its commit is a failure, not a warning.** Until
   2026-10-14 the verifier printed a warning and exited **0** when the deployed
   app answered healthy without a commit - and `/api/health` never actually put
