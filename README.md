@@ -197,6 +197,29 @@ Upgrade path: create a DLT-approved MSG91 Flow template with a variable named
 generated with `crypto.randomInt`, expire after 5 minutes, and lock out after 5
 wrong attempts.
 
+### Rate limits
+
+A login screen that sends an SMS is a way to spend somebody else's money, so OTP
+sending is capped three ways. They are layered on purpose: the first one is
+cheap and stops the common case, and the others are counted in the database so
+they survive a restart.
+
+| Cap | Default | Counted where | Stops |
+|---|---|---|---|
+| Per caller | 10 per 10 minutes | in memory (`src/lib/rate-limit.ts`) | one connection walking a list of numbers |
+| Per number | `OTP_PER_MOBILE_DAILY_MAX`, 10 a day | `otps` table | SMS-bombing one number, and burning your budget on it |
+| Service-wide | `OTP_GLOBAL_HOURLY_MAX`, 300 an hour | `otps` table | a botnet rotating `X-Forwarded-For`, which the per-caller cap cannot see |
+| Proof uploads | 20 per 10 minutes per account | in memory | one account filling your proof storage |
+
+Hitting a cap answers `429` with a `retry-after` header and a sentence a person
+can read ("Too many OTP requests from this connection. Try again in 600s."),
+rather than a generic failure. Guessing an OTP wrong five times locks that code
+out entirely, and re-requesting an OTP invalidates the previous one.
+
+The per-number and service-wide caps are deliberately *not* resettable by
+restarting the app or by making the request look like it came from somewhere
+new, which is the whole point of keeping them in the database.
+
 ### Sessions
 
 Login sets an opaque 32-byte random token in an `httpOnly` cookie and stores it
@@ -636,6 +659,14 @@ loan, and to nobody else:
 - **Failures say what happened** instead of rendering a broken image: `503`
   names the missing `CLOUDINARY_*` variables, `502` reports what the proof store
   answered (a rejected credential is called out by name).
+- **A proof has to actually be a photo.** Uploads are checked twice: the data
+  URL must declare a raster type (JPEG, PNG, GIF, WebP, HEIC, AVIF), and the
+  decoded bytes must match that type's signature. An **SVG is refused by name**,
+  because an SVG is not a picture - it is a document the browser parses and runs
+  scripts in, and proofs are served from the app's own origin. The response that
+  hands back the bytes also declares its own content type and carries
+  `Content-Security-Policy: default-src 'none'; sandbox`, so nothing in a stored
+  file can act even if the checks above were ever wrong.
 
 `CLOUDINARY_DELIVERY_HOST` is optional - set it only if your Cloudinary account
 serves assets from a custom domain.
@@ -848,6 +879,69 @@ failing mysteriously. Switching them on takes about five minutes:
 assets from a custom domain or a proxy. The free plan (25 monthly credits,
 managed storage) is far more than proofs need: each one is a ~100 KB JPEG after
 the app's 1600px resize, so tens of thousands fit comfortably.
+
+## 🛡️ Security headers, and the health endpoint
+
+Every response carries the same header set: a Content-Security-Policy that
+allows no third-party scripts and no `eval`, HSTS (two years), `nosniff`,
+`Referrer-Policy: strict-origin-when-cross-origin`, a `Permissions-Policy` that
+turns off the cameras, microphones, geolocation and payment APIs the app never
+uses, `Cross-Origin-Resource-Policy: same-origin`, and no `X-Powered-By`.
+
+They are set in `next.config.ts`, so they apply to pages and API responses
+alike, in every environment - there is nothing to turn on.
+
+### Where the app may be framed (`FRAME_ANCESTORS`)
+
+`frame-ancestors` is the one header that is *not* runtime configuration:
+Next.js bakes it into the routes manifest **at build time**. Changing it on a
+running server has no effect at all.
+
+```powershell
+# Local build that a workspace preview is allowed to frame
+$env:FRAME_ANCESTORS="'self' https://*.e2b.app"; npm run build; npm run start
+```
+
+The default is `'none'` - nobody may frame the app - and when it is exactly
+`'none'` the app also sends `X-Frame-Options: DENY` for older browsers. Set it
+in whatever builds your image (a Docker build arg, the CI job, your host's build
+command), not in the running service's environment.
+
+### Seeing the full health detail (`HEALTH_TOKEN`)
+
+`/api/health` is public by design: an uptime ping and the deploy verifier both
+call it without credentials, and both need the verdicts. What they do *not* need
+is the database host, which integrations are configured, or the sentence that
+says the dummy OTP is `123456` for every number.
+
+So the public body has the verdicts (`ok`, `checks[].status`, `firstProblem`),
+a plain `set` / `up to date` / `not configured`, and - importantly - the
+**remedy** for anything that failed, because that is what makes a red CI run
+actionable:
+
+```jsonc
+// anonymous, with the database unreachable
+{ "ok": false, "firstProblem": "database connection",
+  "action": "The database is unreachable — on Render's free tier a Postgres
+             instance is deleted 30 days after creation...",
+  "checks": [{ "name": "database connection", "status": "fail",
+               "detail": "hidden - send the health token for the full detail",
+               "fix": "The database is unreachable — ..." }] }
+```
+
+Set `HEALTH_TOKEN` on the service (a long random string) and send it as
+`x-health-token` to get the real detail - the host, the error text, which
+integrations are set. Without the variable set, *nobody* sees the detail, and a
+wrong token is indistinguishable from no token. It is compared in constant time,
+so it cannot be guessed one character at a time.
+
+```powershell
+curl -s -H "x-health-token: $env:HEALTH_TOKEN" https://your-app/api/health
+```
+
+The deploy workflow deliberately verifies the deployment **anonymously**, on the
+same view any stranger gets, and that view names the fix - so a failed deploy
+prints the reason without a secret having to exist in the repository.
 
 ## 🚢 Deployment notes
 

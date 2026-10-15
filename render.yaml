@@ -47,6 +47,26 @@ services:
       # Remove this once MSG91 is configured, or real OTPs will never be sent.
       - key: OTP_MODE
         value: dummy
+      # The OTP ceilings. Both are counted in the database, so neither can be
+      # reset by a restart or dodged by rotating an IP: 10 OTPs a day for one
+      # number, 300 an hour across everyone. Raise the second one if a lot of
+      # real users ever log in at the same time.
+      - key: OTP_PER_MOBILE_DAILY_MAX
+        value: "10"
+      - key: OTP_GLOBAL_HOURLY_MAX
+        value: "300"
+      # Where the app may be embedded. 'none' (nobody may frame it) is also the
+      # code default; it is spelled out here because it is a BUILD-time value -
+      # change it here and redeploy, or the build keeps the old one.
+      - key: FRAME_ANCESTORS
+        value: "'none'"
+      # Set in the Render dashboard to a long random string. Send it as the
+      # `x-health-token` header to /api/health to see the full diagnosis (the
+      # database host, which integrations are configured, the error text behind
+      # a failure). Without it, that detail is hidden from everyone, including
+      # the deploy verifier, which is why the public body carries the remedy.
+      - key: HEALTH_TOKEN
+        sync: false
       - key: MSG91_AUTH_KEY
         sync: false
       - key: MSG91_FLOW_ID
