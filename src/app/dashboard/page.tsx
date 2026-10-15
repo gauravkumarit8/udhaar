@@ -2,9 +2,31 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import BottomNav from "@/components/BottomNav";
+import {
+  ArrowUpRight,
+  BellRing,
+  ChevronRight,
+  HandCoins,
+  Plus,
+  ShieldCheck,
+  Wallet,
+} from "lucide-react";
 import MobileShell from "@/components/MobileShell";
 import EnableNotifications from "@/components/EnableNotifications";
+import { PaySheet, RemindSheet, type PayTarget, type RemindTarget } from "@/components/ActionSheets";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Notice,
+  SectionHeader,
+  Skeleton,
+  buttonClasses,
+  cx,
+  formatMoney,
+} from "@/components/ui";
 import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
 import { DASHBOARD_CACHE_KEY, UNREAD_EVENT } from "@/lib/client-cache";
@@ -26,6 +48,11 @@ interface DueItem {
   daysUntilDue: number;
   /** More than one installment unpaid on this loan (so the row can say so). */
   installmentsOutstanding?: number;
+  /** The lender's UPI id, so a borrower can pay from here. */
+  lenderUpiId?: string | null;
+  /** This installment's outstanding split, so "Interest only" is one tap. */
+  principalRemaining?: number;
+  interestRemaining?: number;
 }
 
 interface Loan {
@@ -63,15 +90,6 @@ interface DashboardData {
   loans: Loan[];
   /** True when the loan list is a page and the rest is behind "see all". */
   hasMoreLoans?: boolean;
-}
-
-function formatINR(amount: number): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount);
 }
 
 /**
@@ -124,6 +142,21 @@ function daysUntil(dateStr: string): number {
   return Math.floor((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+/** "3d overdue" / "Today" / "in 5 days" - short enough for a card row. */
+function dueLabel(days: number): string {
+  if (days < 0) return `${Math.abs(days)}d overdue`;
+  if (days === 0) return "Due today";
+  if (days === 1) return "Due tomorrow";
+  return `Due in ${days}d`;
+}
+
+function shortDate(dateStr: string): string {
+  return new Date(`${dateStr}T00:00:00`).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+  });
+}
+
 export default function DashboardPage() {
   /*
    * Start from what this device showed last time, then replace it when the
@@ -147,6 +180,13 @@ export default function DashboardPage() {
     if (hour < 17) return "Good afternoon";
     return "Good evening";
   });
+  /**
+   * The row being acted on, not a flag: which payment is being recorded and
+   * which reminder is being sent is the whole of this screen's state, and
+   * holding the row means the sheet cannot open against a stale one.
+   */
+  const [payTarget, setPayTarget] = useState<PayTarget | null>(null);
+  const [remindTarget, setRemindTarget] = useState<RemindTarget | null>(null);
   const haptics = useHaptics();
   usePushRegistration();
   /*
@@ -173,6 +213,7 @@ export default function DashboardPage() {
         if (dashResult.data.user) setUser(dashResult.data.user);
         rememberDashboard(dashResult.data);
         publishUnread(dashResult.data.unread);
+        setLoadError(null);
       } else if (dashResult.error) {
         // Previously this failed silently and the dashboard just looked empty.
         setLoadError(dashResult.error);
@@ -185,7 +226,9 @@ export default function DashboardPage() {
   }, []);
 
   // Refresh data when app comes to foreground
-  useAppResume(() => { loadData(); });
+  useAppResume(() => {
+    loadData();
+  });
 
   useEffect(() => {
     // Kicked off inside an async IIFE so the state updates all happen after an
@@ -195,43 +238,70 @@ export default function DashboardPage() {
     })();
   }, [loadData]);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center max-w-lg mx-auto">
-        <div className="text-center animate-scale-in">
-          <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4 animate-bounce">
-            💰
-          </div>
-          <p className="text-slate-400 text-sm">Loading your dashboard...</p>
-          <div className="mt-4 w-32 h-1.5 bg-slate-200 rounded-full mx-auto overflow-hidden">
-            <div className="h-full bg-emerald-500 rounded-full animate-[shimmer_1.5s_infinite]" style={{ width: "60%" }} />
-          </div>
-        </div>
+  const header = (
+    <div className="flex items-center gap-3 px-4 pb-1 pt-4">
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium text-ink-3">{greeting}</p>
+        <h1 className="truncate text-[22px] font-bold tracking-tight text-ink">
+          {user?.name || "Welcome"}
+        </h1>
       </div>
+      <Link
+        href="/activity"
+        aria-label="Activity and notifications"
+        className="tap flex size-10 items-center justify-center rounded-full text-ink-2 hover:bg-surface-2"
+      >
+        <BellRing className="size-5" />
+      </Link>
+      <Link href="/profile" aria-label="Your profile" className="tap">
+        <Avatar name={user?.name || "?"} size={40} />
+      </Link>
+    </div>
+  );
+
+  if (loading && !data) {
+    return (
+      <MobileShell bare>
+        {header}
+        <div className="space-y-3 px-4 pt-3">
+          <Skeleton className="h-36 rounded-card" />
+          <Skeleton className="h-20 rounded-card" />
+          <Skeleton className="h-20 rounded-card" />
+          <Skeleton className="h-20 rounded-card" />
+        </div>
+      </MobileShell>
     );
   }
 
   if (!data) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center max-w-lg mx-auto">
-        <div className="text-center">
-          <div className="text-5xl mb-4">😕</div>
-          <p className="text-slate-600 font-medium">
-            {loadError ?? "Failed to load dashboard"}
-          </p>
+      <MobileShell bare>
+        {header}
+        <div className="px-4 pt-4">
+          <Card>
+            <EmptyState
+              icon={<ShieldCheck className="size-6" />}
+              title="Couldn't load your dashboard"
+              body={loadError ?? "Something went wrong reaching the server."}
+              action={
+                <Button
+                  onClick={() => {
+                    setLoading(true);
+                    void loadData();
+                  }}
+                >
+                  Try again
+                </Button>
+              }
+            />
+          </Card>
           {loadError && (
-            <p className="text-slate-400 text-xs mt-2">
-              Open <span className="font-mono">/api/health</span> for details.
+            <p className="mt-3 text-center text-[11px] text-ink-3">
+              Server status: <span className="font-mono">/api/health</span>
             </p>
           )}
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-4 bg-emerald-600 text-white px-8 py-3 rounded-2xl font-semibold tap-highlight"
-          >
-            Retry
-          </button>
         </div>
-      </div>
+      </MobileShell>
     );
   }
 
@@ -241,319 +311,327 @@ export default function DashboardPage() {
   const dueItemCount = data.dueItemCount ?? dueItems.length;
   const moreDueItems = dueItemCount > dueItems.length;
   const hasMoreLoans = data.hasMoreLoans ?? summary.totalLoans > loans.length;
+  const net = summary.youWillReceive - summary.youWillPay;
+  const settled = summary.youWillReceive <= 0 && summary.youWillPay <= 0;
+
+  const openPay = (item: DueItem) => {
+    haptics.tap();
+    setPayTarget({
+      installmentId: item.installmentId,
+      installmentNumber: item.installmentNumber,
+      dueDate: item.dueDate,
+      principalRemaining: item.principalRemaining ?? item.amount,
+      interestRemaining: item.interestRemaining ?? 0,
+      counterparty: item.viewerRole === "lender" ? item.borrowerName : item.lenderName || "Lender",
+      viewerRole: item.viewerRole,
+      upiId: item.lenderUpiId ?? null,
+    });
+  };
+
+  const openRemind = (item: DueItem) => {
+    haptics.tap();
+    setRemindTarget({
+      installmentId: item.installmentId,
+      installmentNumber: item.installmentNumber,
+      dueDate: item.dueDate,
+      remaining: item.amount,
+      borrowerName: item.borrowerName,
+      canPush: true,
+    });
+  };
 
   return (
-    <MobileShell>
-      {/* Header Section */}
-      <div className="bg-gradient-to-b from-emerald-700 via-emerald-700 to-emerald-800 px-5 pt-5 pb-8 -mb-4">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <p className="text-emerald-200 text-sm">{greeting} 👋</p>
-            <h1 className="text-2xl font-extrabold text-white mt-0.5">
-              {user?.name || "User"}
-            </h1>
-          </div>
-          <div className="w-11 h-11 bg-white/20 backdrop-blur rounded-full flex items-center justify-center text-lg">
-            {user?.name?.charAt(0).toUpperCase() || "U"}
-          </div>
-        </div>
+    <MobileShell bare>
+      {header}
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-white/15 backdrop-blur-md rounded-2xl p-4 border border-white/10">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-7 h-7 bg-emerald-400/30 rounded-lg flex items-center justify-center text-sm">📥</div>
-              <span className="text-emerald-200 text-xs font-medium">You&apos;ll Receive</span>
-            </div>
-            <p className="text-2xl font-extrabold text-white">
-              {formatINR(summary.youWillReceive)}
+      <div className="space-y-6 px-4 pb-8 pt-3">
+        {loadError && (
+          <Notice tone="warn" onDismiss={() => setLoadError(null)}>
+            {loadError}
+          </Notice>
+        )}
+
+        {/*
+         * Where you stand, in one card: what is coming in, what is going out.
+         * These used to be two dashboard tiles plus a separate row of stats,
+         * three blocks of numbers with no relationship drawn between them. The
+         * centre of the card is the net - the single figure somebody opens this
+         * app to see - and the two halves beside it are tappable filters, so
+         * "who owes me" is a tap rather than a hunt.
+         */}
+        <Card padded={false} className="overflow-hidden bg-brand text-brand-ink">
+          <div className="px-5 pb-4 pt-5">
+            <p className="text-[12px] font-semibold uppercase tracking-wide opacity-70">
+              {settled ? "All settled up" : net >= 0 ? "You are owed" : "You owe"}
             </p>
-          </div>
-          <div className="bg-white/15 backdrop-blur-md rounded-2xl p-4 border border-white/10">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-7 h-7 bg-red-400/30 rounded-lg flex items-center justify-center text-sm">📤</div>
-              <span className="text-emerald-200 text-xs font-medium">You&apos;ll Pay</span>
-            </div>
-            <p className="text-2xl font-extrabold text-white">
-              {formatINR(summary.youWillPay)}
+            <p className="mt-1 text-[34px] font-bold leading-none tracking-tight tabular-nums">
+              {formatMoney(Math.abs(net))}
             </p>
-          </div>
-          <div className="bg-white/15 backdrop-blur-md rounded-2xl p-4 border border-white/10 col-span-2">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-7 h-7 bg-amber-400/30 rounded-lg flex items-center justify-center text-sm">⏰</div>
-              <span className="text-emerald-200 text-xs font-medium">
-                {summary.overdueAmount > 0 ? "Due in next 7 days" : "Due This Week (both sides)"}
+            <div className="mt-4 flex items-center gap-2 text-[12px]">
+              <span className="rounded-full bg-black/10 px-2 py-0.5 font-semibold">
+                {summary.activeLoans} active
               </span>
-            </div>
-            <p className="text-2xl font-extrabold text-white">
-              {formatINR(summary.dueThisWeek)}
-            </p>
-          </div>
-          {summary.overdueAmount > 0 && (
-            <div className="bg-red-500/25 backdrop-blur-md rounded-2xl p-4 border border-red-200/30 col-span-2">
-              <div className="flex items-center gap-2 mb-2">
-                <div className="w-7 h-7 bg-red-400/40 rounded-lg flex items-center justify-center text-sm">🔴</div>
-                <span className="text-red-50 text-xs font-medium">Overdue (already past due date)</span>
-              </div>
-              <p className="text-2xl font-extrabold text-white">
-                {formatINR(summary.overdueAmount)}
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="px-5 space-y-6 pb-8">
-        {/* Quick Stats */}
-        <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex items-center justify-around">
-          <div className="text-center">
-            <p className="text-2xl font-extrabold text-emerald-600">{summary.activeLoans}</p>
-            <p className="text-xs text-slate-400 font-medium">Active</p>
-          </div>
-          <div className="w-px h-8 bg-slate-100" />
-          <div className="text-center">
-            <p className="text-2xl font-extrabold text-slate-700">{summary.totalLoans}</p>
-            <p className="text-xs text-slate-400 font-medium">Total</p>
-          </div>
-          <div className="w-px h-8 bg-slate-100" />
-          <div className="text-center">
-            <p className="text-2xl font-extrabold text-amber-600">{formatINR(summary.totalInterestEarned)}</p>
-            <p className="text-xs text-slate-400 font-medium">Interest</p>
-          </div>
-        </div>
-
-        {/* Due Items */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-slate-800">Upcoming & Overdue</h2>
-            {/* One line per loan - the next payment on each - so this counts
-                loans. It used to count installments, which is how one loan with
-                ten EMIs could read as "10 items". */}
-            {dueItemCount > 1 && (
-              <span className="text-xs text-emerald-600 font-semibold">
-                {moreDueItems ? `showing ${dueItems.length} of ${dueItemCount} loans` : `${dueItemCount} loans`}
+              <span className="rounded-full bg-black/10 px-2 py-0.5 font-semibold">
+                {summary.totalLoans} total
               </span>
-            )}
+              {summary.overdueAmount > 0 && (
+                <span className="rounded-full bg-black/20 px-2 py-0.5 font-semibold">
+                  {formatMoney(summary.overdueAmount)} overdue
+                </span>
+              )}
+            </div>
           </div>
+
+          <div className="grid grid-cols-2 gap-px bg-black/10">
+            <Link
+              href="/loans?role=lender"
+              className="tap flex flex-col gap-0.5 bg-brand/95 px-5 py-3.5 hover:bg-brand-strong"
+            >
+              <span className="flex items-center gap-1.5 text-[11px] font-semibold opacity-70">
+                <ArrowUpRight className="size-3.5" /> You&apos;ll receive
+              </span>
+              <span className="text-[17px] font-bold tabular-nums">
+                {formatMoney(summary.youWillReceive)}
+              </span>
+            </Link>
+            <Link
+              href="/loans?role=borrower"
+              className="tap flex flex-col gap-0.5 bg-brand/95 px-5 py-3.5 hover:bg-brand-strong"
+            >
+              <span className="flex items-center gap-1.5 text-[11px] font-semibold opacity-70">
+                <Wallet className="size-3.5" /> You&apos;ll pay
+              </span>
+              <span className="text-[17px] font-bold tabular-nums">
+                {formatMoney(summary.youWillPay)}
+              </span>
+            </Link>
+          </div>
+        </Card>
+
+        {/*
+         * The tap-count argument for this screen lives here. Every row carries
+         * the one action its reader actually wants: a borrower pays (the sheet
+         * opens with the full amount filled in and their UPI app one tap
+         * away), a lender chases. Before this, both jobs were two screens deep.
+         */}
+        <section>
+          <SectionHeader
+            title="Payments"
+            count={
+              dueItemCount > 0
+                ? moreDueItems
+                  ? `showing ${dueItems.length} of ${dueItemCount} loans`
+                  : `${dueItemCount} ${dueItemCount === 1 ? "loan" : "loans"}`
+                : undefined
+            }
+            action={
+              moreDueItems ? (
+                <Link
+                  href="/loans?status=active"
+                  className="tap text-[12px] font-semibold text-brand-strong"
+                >
+                  See all
+                </Link>
+              ) : undefined
+            }
+          />
 
           {dueItems.length === 0 ? (
-            <div className="bg-white rounded-2xl p-8 text-center border border-slate-100">
-              <div className="text-5xl mb-3">🎉</div>
-              <p className="text-slate-700 font-semibold">All caught up!</p>
-              <p className="text-slate-400 text-sm mt-1">No pending payments right now</p>
-              <Link
-                href="/loans/new"
-                className="inline-flex items-center gap-2 mt-4 bg-emerald-600 text-white px-6 py-2.5 rounded-2xl font-semibold text-sm tap-highlight"
-              >
-                <span>+</span> Add Your First Loan
-              </Link>
-            </div>
+            <Card padded={false}>
+              <EmptyState
+                icon={<HandCoins className="size-6" />}
+                title="Nothing due right now"
+                body={
+                  summary.totalLoans === 0
+                    ? "Add the first loan and Udhaar keeps track of what is owed, and when."
+                    : "Every installment on your loans is paid up. We'll tell you when the next one is due."
+                }
+                action={
+                  <Link href="/loans/new" className={buttonClasses("primary", "md")}>
+                    <Plus className="size-4" />
+                    {summary.totalLoans === 0 ? "Add your first loan" : "Add a loan"}
+                  </Link>
+                }
+              />
+            </Card>
           ) : (
-            <div className="space-y-2.5">
-              {dueItems.map((item, idx) => {
+            <ul className="stagger space-y-2.5">
+              {dueItems.map((item) => {
                 const days = item.daysUntilDue ?? daysUntil(item.dueDate);
                 const isOverdue = item.computedStatus === "overdue" || days < 0;
-                const isDueSoon = item.computedStatus === "due_soon";
-                const displayName =
+                                const displayName =
                   item.viewerRole === "lender" ? item.borrowerName : item.lenderName || "Lender";
-                const dayLabel =
-                  days < 0
-                    ? `${Math.abs(days)}d overdue`
-                    : days === 0
-                    ? "Today"
-                    : days === 1
-                    ? "Tomorrow"
-                    : `${days}d left`;
+                const received = item.viewerRole === "lender";
 
                 return (
-                  <a
-                    /* one row per loan now, so the loan id is the stable key */
-                    key={item.loanId}
-                    href={`/loans/${item.loanId}`}
-                    className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex items-center gap-3.5 tap-highlight active:bg-slate-50 transition-all"
-                  >
-                    <div
-                      className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-sm text-white shrink-0 ${
-                        isOverdue
-                          ? "bg-red-500"
-                          : isDueSoon
-                          ? "bg-amber-500"
-                          : "bg-emerald-500"
-                      }`}
-                    >
-                      {displayName.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="font-semibold text-slate-800 text-[15px] truncate">
-                          {displayName}
-                        </p>
-                        <span
-                          className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
-                            item.viewerRole === "lender"
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-orange-100 text-orange-700"
-                          }`}
-                        >
-                          {item.viewerRole === "lender" ? "OWED TO YOU" : "YOU OWE"}
-                        </span>
+                  <Card as="li" key={item.loanId} padded={false} className="overflow-hidden">
+                    <Link href={`/loans/${item.loanId}`} className="tap block px-4 pt-4">
+                      <div className="flex items-start gap-3">
+                        <Avatar name={displayName} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="truncate text-[15px] font-semibold text-ink">
+                              {displayName}
+                            </p>
+                            <Badge tone={received ? "good" : "warn"}>
+                              {received ? "OWED TO YOU" : "YOU OWE"}
+                            </Badge>
+                          </div>
+                          <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-ink-3">
+                            <span className={cx("font-semibold", isOverdue && "text-bad")}>
+                              <span className="tabular-nums">{formatMoney(item.amount)}</span> ·{" "}
+                              {dueLabel(days)}
+                            </span>
+                            <span>
+                              EMI #{item.installmentNumber} · {shortDate(item.dueDate)}
+                            </span>
+                          </p>
+                          {item.moreOverdueCount > 0 && (
+                            <p className="mt-0.5 text-[11px] font-semibold text-bad">
+                              plus {item.moreOverdueCount} more overdue ·{" "}
+                              <span className="tabular-nums">
+                                {formatMoney(item.moreOverdueAmount)}
+                              </span>
+                            </p>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1.5 mt-0.5">
-                        <div
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            isOverdue
-                              ? "bg-red-500"
-                              : isDueSoon
-                              ? "bg-amber-400"
-                              : "bg-slate-300"
-                          }`}
-                        />
-                        <span
-                          className={`text-xs font-medium ${
-                            isOverdue
-                              ? "text-red-600"
-                              : isDueSoon
-                              ? "text-amber-600"
-                              : "text-slate-400"
-                          }`}
-                        >
-                          {dayLabel}
-                        </span>
-                        {item.moreOverdueCount > 0 && (
-                          <span className="text-xs font-semibold text-red-600 truncate">
-                            · {item.moreOverdueCount} more overdue{" "}
-                            {formatINR(item.moreOverdueAmount)}
-                          </span>
-                        )}
-                      </div>
+                    </Link>
+
+                    <div className="mt-3 flex items-center gap-2 border-t border-line px-4 py-2.5">
+                      <Link
+                        href={`/loans/${item.loanId}`}
+                        className="tap flex-1 text-[12px] font-semibold text-ink-3"
+                      >
+                        View loan
+                      </Link>
+                      {received ? (
+                        <Button size="sm" variant="secondary" onClick={() => openRemind(item)}>
+                          <BellRing className="size-3.5" />
+                          Remind
+                        </Button>
+                      ) : (
+                        <Button size="sm" onClick={() => openPay(item)}>
+                          Pay now
+                        </Button>
+                      )}
                     </div>
-                    <div className="text-right shrink-0">
-                      <p className="font-bold text-slate-800 text-[15px]">
-                        {formatINR(item.amount)}
-                      </p>
-                      <p className="text-xs text-slate-400">
-                        {isOverdue
-                          ? item.moreOverdueCount > 0
-                            ? "Overdue + more"
-                            : "Overdue"
-                          : isDueSoon
-                            ? "Due soon"
-                            : "Upcoming"}
-                      </p>
-                    </div>
-                  </a>
+                  </Card>
                 );
               })}
-            </div>
+            </ul>
           )}
-
-          {moreDueItems && (
-            <Link
-              href="/loans"
-              className="block text-center text-xs text-emerald-600 font-semibold mt-3 tap-highlight"
-            >
-              See all {dueItemCount} loans with a payment due
-            </Link>
-          )}
-        </div>
+        </section>
 
         <EnableNotifications />
 
-        {/* Your Loans */}
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-slate-800">Your Loans</h2>
-            <div className="flex items-center gap-3">
-              {hasMoreLoans && (
-                <Link href="/loans" className="text-xs text-emerald-600 font-semibold tap-highlight">
-                  See all {summary.totalLoans}
-                </Link>
-              )}
-              <Link href="/loans/new" className="text-xs text-emerald-600 font-semibold tap-highlight">
-                + New
+        {/*
+         * One page of loans, newest and still-running first, with the count of
+         * the rest behind "see all". The row no longer needs to carry every
+         * figure: the screen above it already answered "how much, and when",
+         * so this is a directory entry - who, how much, and which way.
+         */}
+        <section>
+          <SectionHeader
+            title="Your loans"
+            action={
+              <Link href="/loans" className="tap text-[12px] font-semibold text-brand-strong">
+                {hasMoreLoans ? `See all ${summary.totalLoans}` : "See all"}
               </Link>
-            </div>
-          </div>
+            }
+          />
 
           {loans.length === 0 ? (
-            <div className="bg-white rounded-2xl p-8 text-center border border-slate-100">
-              <div className="text-4xl mb-2">🤝</div>
-              <p className="text-slate-500 text-sm">No loans yet</p>
-              <p className="text-slate-400 text-xs mt-1">Tap + to add your first loan</p>
-            </div>
+            <Card padded={false}>
+              <EmptyState
+                icon={<HandCoins className="size-6" />}
+                title="No loans yet"
+                body="Udhaar tracks the money between you and the people you actually lend to or borrow from."
+                action={
+                  <Link href="/loans/new" className={buttonClasses("primary", "md")}>
+                    <Plus className="size-4" />
+                    Add a loan
+                  </Link>
+                }
+              />
+            </Card>
           ) : (
-            <div className="space-y-2.5">
+            <Card padded={false} className="divide-y divide-line">
               {loans.map((loan) => {
                 const displayName =
                   loan.viewerRole === "lender" ? loan.borrowerName : loan.lenderName || "Lender";
+                const closed = loan.status !== "active";
                 return (
-                <a
-                  key={loan.id}
-                  href={`/loans/${loan.id}`}
-                  className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 flex items-center gap-3.5 tap-highlight active:bg-slate-50 transition-all"
-                >
-                  <div
-                    className={`w-11 h-11 rounded-2xl flex items-center justify-center font-bold text-sm text-white shrink-0 ${
-                      loan.status === "active" ? "bg-emerald-500" : "bg-slate-400"
-                    }`}
+                  <Link
+                    key={loan.id}
+                    href={`/loans/${loan.id}`}
+                    className="tap flex items-center gap-3 px-4 py-3.5 hover:bg-surface-2"
                   >
-                    {displayName.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-semibold text-slate-800 text-[15px] truncate">
-                        {displayName}
+                    <Avatar name={displayName} size={40} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[14px] font-semibold text-ink">{displayName}</p>
+                      <p className="truncate text-[12px] text-ink-3">
+                        {formatMoney(parseFloat(loan.amount))} · {loan.interestRate}%
+                        {loan.interestRatePeriod === "monthly" ? "/mo" : "/yr"} ·{" "}
+                        {loan.tenureMonths}mo
                       </p>
-                      <span
-                        className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                          loan.viewerRole === "lender"
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-orange-100 text-orange-700"
-                        }`}
-                      >
-                        {loan.viewerRole === "lender" ? "LENT" : "BORROWED"}
-                      </span>
-                      {loan.viewerRole === "borrower" && !loan.lenderId && (
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 bg-slate-100 text-slate-500">
-                          NOT ON UDHAAR
-                        </span>
-                      )}
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          loan.status === "active"
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-slate-100 text-slate-500"
-                        }`}
-                      >
-                        {loan.status.toUpperCase()}
-                      </span>
                     </div>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      {formatINR(parseFloat(loan.amount))} · {loan.interestRate}%{loan.interestRatePeriod === "monthly" ? "/mo" : "/yr"} · {loan.tenureMonths}mo
-                    </p>
-                  </div>
-                  <svg
-                    className="w-5 h-5 text-slate-300"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9 5l7 7-7 7"
-                    />
-                  </svg>
-                </a>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {loan.viewerRole === "borrower" && !loan.lenderId && (
+                        <Badge>NOT ON UDHAAR</Badge>
+                      )}
+                      {closed ? (
+                        <Badge>CLOSED</Badge>
+                      ) : (
+                        <Badge tone={loan.viewerRole === "lender" ? "good" : "warn"}>
+                          {loan.viewerRole === "lender" ? "LENT" : "BORROWED"}
+                        </Badge>
+                      )}
+                      <ChevronRight className="size-4 text-ink-3" />
+                    </div>
+                  </Link>
                 );
               })}
-            </div>
+            </Card>
           )}
-        </div>
+        </section>
+
+        {summary.totalInterestEarned > 0 && (
+          <p className="px-1 text-center text-[11px] leading-relaxed text-ink-3">
+            Interest earned so far:{" "}
+            <span className="font-semibold tabular-nums text-ink-2">
+              {formatMoney(summary.totalInterestEarned)}
+            </span>
+            . Due in the next 7 days:{" "}
+            <span className="font-semibold tabular-nums text-ink-2">
+              {formatMoney(summary.dueThisWeek)}
+            </span>
+            .
+          </p>
+        )}
       </div>
 
-      <BottomNav />
+      {payTarget && (
+        <PaySheet
+          key={payTarget.installmentId}
+          target={payTarget}
+          onClose={() => setPayTarget(null)}
+          onRecorded={() => {
+            void loadData();
+          }}
+        />
+      )}
+
+      {remindTarget && (
+        <RemindSheet
+          key={remindTarget.installmentId}
+          target={remindTarget}
+          onClose={() => setRemindTarget(null)}
+          onSent={() => {
+            void loadData();
+          }}
+        />
+      )}
     </MobileShell>
   );
 }

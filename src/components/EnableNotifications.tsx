@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BellRing } from "lucide-react";
+import { Button, Card } from "@/components/ui";
 import { browserPushState, enableBrowserPush, type BrowserPushState } from "@/lib/webpush-client";
 
 const DISMISSED_KEY = "udhaar.pushPromptDismissed";
@@ -50,38 +52,35 @@ export default function EnableNotifications() {
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-emerald-100 p-4 mb-4 animate-scale-in">
+    <Card className="overflow-hidden border-brand/25 bg-brand-soft">
       <div className="flex items-start gap-3">
-        <div className="w-9 h-9 bg-emerald-50 rounded-xl flex items-center justify-center text-lg shrink-0">
-          🔔
-        </div>
-        <div className="flex-1">
-          <h3 className="font-bold text-sm text-slate-800">Turn on notifications</h3>
-          <p className="text-xs text-slate-500 mt-0.5">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-control bg-surface text-brand-strong">
+          <BellRing className="size-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-[14px] font-semibold text-brand-strong">Turn on notifications</h3>
+          <p className="mt-0.5 text-[12px] leading-relaxed text-brand-strong/85">
             Get told the moment someone adds a loan for you, marks a payment, or confirms one -
             even when Udhaar is closed.
           </p>
-          {note && <p className="text-xs text-amber-700 mt-2">{note}</p>}
-          <div className="flex items-center gap-2 mt-3">
-            <button
-              onClick={handleEnable}
-              disabled={busy}
-              className="bg-emerald-600 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight disabled:opacity-60"
-            >
-              {busy ? "Turning on…" : "Enable notifications"}
-            </button>
-            <button
+          {note && <p className="mt-2 text-[12px] font-medium text-bad">{note}</p>}
+          <div className="mt-3 flex items-center gap-2">
+            <Button size="sm" loading={busy} onClick={handleEnable}>
+              {busy ? "Turning on" : "Enable notifications"}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
               onClick={() => {
                 window.localStorage.setItem(DISMISSED_KEY, "1");
                 setState(null);
               }}
-              className="text-xs text-slate-400 font-medium px-2 py-2"
             >
               Not now
-            </button>
+            </Button>
           </div>
         </div>
       </div>
-    </div>
+    </Card>
   );
 }

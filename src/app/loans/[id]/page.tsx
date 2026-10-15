@@ -3,12 +3,42 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import BottomNav from "@/components/BottomNav";
-import BottomSheet from "@/components/BottomSheet";
+import {
+  BadgeIndianRupee,
+  BellRing,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  FileText,
+  Info,
+  Pencil,
+  Receipt,
+  Share2,
+  Trash2,
+  Wallet,
+  X,
+} from "lucide-react";
 import MobileShell from "@/components/MobileShell";
 import ProofUpload from "@/components/ProofUpload";
-import ShareButton from "@/components/ShareButton";
-import { useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
+import { PaySheet, RemindSheet, type PayTarget } from "@/components/ActionSheets";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  DetailRow,
+  EmptyState,
+  Field,
+  Input,
+  Notice,
+  Progress,
+  Sheet,
+  Skeleton,
+  buttonClasses,
+  cx,
+  formatMoney,
+} from "@/components/ui";
+import { useShare, useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
 import { UNREAD_EVENT } from "@/lib/client-cache";
 import { summarizeSettlement } from "@/lib/payments";
@@ -72,15 +102,6 @@ interface Payment {
   createdAt: string;
 }
 
-function formatINR(amount: number): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
 function formatDate(dateStr: string): string {
   return new Date(dateStr + "T00:00:00").toLocaleDateString("en-IN", {
     day: "numeric",
@@ -95,6 +116,36 @@ function daysUntil(dateStr: string): number {
   return Math.floor((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+/** The per-installment figures, netted of anything written off. */
+interface InstalmentView {
+  inst: Installment;
+  principalRemaining: number;
+  interestRemaining: number;
+  totalRemaining: number;
+  waived: number;
+  isPaid: boolean;
+}
+
+function viewOf(inst: Installment): InstalmentView {
+  const principalRemaining =
+    parseFloat(inst.principalAmount) -
+    parseFloat(inst.principalPaid) -
+    parseFloat(inst.principalWaived || "0");
+  const interestRemaining =
+    parseFloat(inst.interestAmount) -
+    parseFloat(inst.interestPaid) -
+    parseFloat(inst.interestWaived || "0");
+
+  return {
+    inst,
+    principalRemaining: Math.max(0, principalRemaining),
+    interestRemaining: Math.max(0, interestRemaining),
+    totalRemaining: Math.max(0, principalRemaining) + Math.max(0, interestRemaining),
+    waived: parseFloat(inst.principalWaived || "0") + parseFloat(inst.interestWaived || "0"),
+    isPaid: inst.computedStatus === "paid",
+  };
+}
+
 export default function LoanDetailPage() {
   const params = useParams();
   const loanId = params.id as string;
@@ -103,35 +154,13 @@ export default function LoanDetailPage() {
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
-  const [payModal, setPayModal] = useState<{
-    installment: Installment;
-    type: "interest" | "principal" | "both";
+  /** Which EMI the payment sheet is open for, and what it starts out applying. */
+  const [payFor, setPayFor] = useState<{
+    view: InstalmentView;
+    type: "both" | "interest";
   } | null>(null);
-  const [payAmount, setPayAmount] = useState("");
-  const [payNotes, setPayNotes] = useState("");
-  const [payProofId, setPayProofId] = useState<string | null>(null);
-  const [payLoading, setPayLoading] = useState(false);
-  const [payError, setPayError] = useState<string | null>(null);
-  const [reminderSent, setReminderSent] = useState<string | null>(null);
-  const [reminderNote, setReminderNote] = useState<{
-    installmentId: string;
-    text: string;
-    upiLink?: string;
-    /**
-     * Set when a WhatsApp/SMS link could not be opened automatically - a
-     * browser is entitled to block a pop-up that follows an `await`, so the
-     * lender always gets a link they can tap instead.
-     */
-    link?: { href: string; label: string };
-  } | null>(null);
-  /**
-   * Which EMI the reminder sheet is open for. The sheet exists because a
-   * reminder is something the *lender* sends, from their own phone: WhatsApp
-   * needs no app on the borrower's side, which is the only way this reaches
-   * someone who has never heard of Udhaar.
-   */
-  const [remindFor, setRemindFor] = useState<string | null>(null);
-  const [remindLoading, setRemindLoading] = useState(false);
+  /** Which EMI the reminder sheet is open for. */
+  const [remindFor, setRemindFor] = useState<Installment | null>(null);
   const [activeTab, setActiveTab] = useState<"schedule" | "payments">("schedule");
   const [paymentError, setPaymentError] = useState<string | null>(null);
   // "Settle in full" - one payment for the whole loan, which is how people
@@ -144,7 +173,8 @@ export default function LoanDetailPage() {
   const [payoffLoading, setPayoffLoading] = useState(false);
   const [payoffMessage, setPayoffMessage] = useState<string | null>(null);
   const [acceptExtra, setAcceptExtra] = useState(false);
-  const [showUPI, setShowUPI] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState<{
     borrowerName: string;
     borrowerMobile: string;
@@ -161,10 +191,13 @@ export default function LoanDetailPage() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
+  /** A line that confirms something just happened (a payment, a reminder). */
+  const [flash, setFlash] = useState<string | null>(null);
 
   // Native hooks
   const haptics = useHaptics();
   const reminders = useReminders();
+  const { share, shared } = useShare();
 
   // Declared before anything that calls it (it used to be referenced above its
   // own declaration, which the react-hooks lint rule flags).
@@ -214,147 +247,27 @@ export default function LoanDetailPage() {
     })();
   }, [loadData]);
 
-  const handlePay = async () => {
-    if (!payModal || !payAmount) return;
-
-    const amountNum = parseFloat(payAmount);
-    if (!Number.isFinite(amountNum) || amountNum <= 0) {
-      setPayError("Enter an amount greater than 0");
-      return;
-    }
-
-    setPayError(null);
-    setPayLoading(true);
-    try {
-      const result = await requestJson<{ applied: { principal: number; interest: number } }>(
-        `/api/installments/${payModal.installment.id}/pay`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            amount: payAmount,
-            paymentType: payModal.type,
-            notes: payNotes || undefined,
-            proofId: payProofId || undefined,
-          }),
-        }
-      );
-
-      if (!result.ok) {
-        setPayError(result.error ?? "Couldn't record the payment. Try again.");
-        haptics.notification("error");
-        return;
-      }
-
-      const data = result.data ?? { applied: { principal: 0, interest: 0 } };
-      haptics.notification("success");
-      setPayModal(null);
-      setPayAmount("");
-      setPayNotes("");
-      setPayProofId(null);
-      // Cancel reminders for this installment if fully paid
-      if (data.applied) {
-        const inst = payModal.installment;
-        const pRemaining = parseFloat(inst.principalAmount) - data.applied.principal;
-        const iRemaining = parseFloat(inst.interestAmount) - data.applied.interest;
-        if (pRemaining <= 0 && iRemaining <= 0) {
-          reminders.cancel(inst.id);
-        }
-      }
-      await loadData();
-    } catch {
-      setPayError("Network error - couldn't reach the server. Try again.");
-      haptics.notification("error");
-    } finally {
-      setPayLoading(false);
-    }
-  };
-
   /**
-   * Records the reminder and hands back the message to send.
+   * Say that something worked, then stop saying it.
    *
-   * `channel` decides what actually goes out: WhatsApp/SMS open the lender's
-   * own app with the text ready (nothing for the borrower to install), while
-   * push is the automatic path for a borrower who does have the app.
+   * The sheets close on success, so without this a recorded payment looks like
+   * nothing happened until the numbers behind it are read. Cleared on a timer
+   * from the handler that set it, rather than from an effect watching it.
    */
-  const handleRemind = async (installmentId: string, channel: "whatsapp" | "sms" | "push") => {
-    haptics.tap();
-    setRemindLoading(true);
-
-    try {
-      const result = await requestJson<{
-        delivered?: boolean;
-        reason?: string;
-        upiLink?: string;
-        share?: { text: string; whatsappUrl: string; smsUrl: string };
-      }>(`/api/installments/${installmentId}/remind`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel }),
-      });
-      const data = result.data ?? {};
-
-      if (!result.ok) {
-        setReminderNote({ installmentId, text: result.error ?? "Couldn't send that reminder." });
-        haptics.notification("error");
-        return;
-      }
-
-      setRemindFor(null);
-      setReminderSent(installmentId);
-
-      if (channel === "push") {
-        // The one case where delivery is knowable, so say exactly that.
-        haptics.notification(data.delivered ? "success" : "warning");
-        setReminderNote({
-          installmentId,
-          text: data.delivered
-            ? "Reminder delivered to the borrower's phone."
-            : data.reason || "Reminder recorded, but it couldn't be delivered.",
-          upiLink: data.upiLink ?? undefined,
-        });
-        if (data.delivered) {
-          const inst = installments.find((i) => i.id === installmentId);
-          if (inst && loan) {
-            const remaining =
-              parseFloat(inst.totalAmount) - parseFloat(inst.principalPaid) - parseFloat(inst.interestPaid);
-            reminders.schedule(installmentId, inst.dueDate, loan.borrowerName, remaining);
-          }
-        }
-      } else {
-        // Opened the lender's own app: honest wording, and a fallback link in
-        // case the browser blocked the pop-up or they changed their mind.
-        const url = channel === "whatsapp" ? data.share?.whatsappUrl : data.share?.smsUrl;
-        haptics.notification("success");
-
-        const opened = url ? window.open(url, "_blank") : null;
-        const appName = channel === "whatsapp" ? "WhatsApp" : "your messages";
-        setReminderNote({
-          installmentId,
-          text: opened
-            ? `Reminder ready in ${appName} - press send there.`
-            : `Reminder recorded. Tap below to open ${appName}.`,
-          link: !opened && url ? { href: url, label: `Open ${appName}` } : undefined,
-        });
-      }
-
-      setTimeout(() => setReminderSent(null), 3000);
-    } catch {
-      setReminderNote({ installmentId, text: "Network error - the reminder wasn't sent." });
-    } finally {
-      setRemindLoading(false);
-    }
-  };
+  const flashMessage = useCallback((text: string) => {
+    setFlash(text);
+    setTimeout(() => setFlash((current) => (current === text ? null : current)), 4000);
+  }, []);
 
   /**
    * Closing is two different things and the button says which one it is:
    * settling a loan that is paid up, or deliberately giving up on the balance.
    */
-  const handleCloseLoan = async () => {
-    const writeOff = principalOutstanding > 0.01;
+  const handleCloseLoan = async (outstanding: number, totalLoaned: number) => {
+    const writeOff = outstanding > 0.01;
 
     const question = writeOff
-      ? `Close this loan and write off ${formatINR(loanOutstanding)}?\n\n` +
+      ? `Close this loan and write off ${formatMoney(outstanding)}?\n\n` +
         `The unpaid balance is recorded as written off (not as paid), the loan stops ` +
         `reminding, and ${loan?.borrowerName ?? "the borrower"} is told. This cannot be undone.`
       : "Close this loan? Reminders stop and no further payments can be recorded.";
@@ -373,6 +286,11 @@ export default function LoanDetailPage() {
         return;
       }
       haptics.notification("success");
+      flashMessage(
+        writeOff
+          ? `Loan closed - ${formatMoney(totalLoaned)} written off.`
+          : "Loan closed. Reminders stop here."
+      );
       await loadData();
     } catch {
       alert("Network error - the loan wasn't closed.");
@@ -380,17 +298,17 @@ export default function LoanDetailPage() {
   };
 
   /** Record one payment that settles the whole loan. */
-  const handlePayoff = async () => {
+  const handlePayoff = async (outstanding: number) => {
     const amountNum = parseFloat(payoffAmount);
     if (!Number.isFinite(amountNum) || amountNum <= 0) {
       setPayoffError("Enter an amount greater than 0");
       return;
     }
 
-    const extra = Math.round((amountNum - loanOutstanding) * 100) / 100;
+    const extra = Math.round((amountNum - outstanding) * 100) / 100;
     if (extra > 0.01 && !acceptExtra) {
       setPayoffError(
-        `That is ${formatINR(extra)} more than this loan still owes. ` +
+        `That is ${formatMoney(extra)} more than this loan still owes. ` +
           `Tick the box below to record the extra as received but not applied.`
       );
       return;
@@ -439,22 +357,22 @@ export default function LoanDetailPage() {
     }
   };
 
-  const openEditForm = () => {
-    if (!loan) return;
+  const openEditForm = (current: Loan) => {
     setEditError("");
     setEditForm({
-      borrowerName: loan.borrowerName,
-      borrowerMobile: loan.borrowerMobile,
-      amount: loan.amount,
-      interestRate: loan.interestRate,
-      interestRatePeriod: loan.interestRatePeriod === "monthly" ? "monthly" : "yearly",
-      tenureMonths: String(loan.tenureMonths),
-      startDate: loan.startDate,
-      upiId: loan.upiId || "",
-      accountNumber: loan.accountNumber || "",
-      notes: loan.notes || "",
-      confirmationMode: loan.confirmationMode === "2-side" ? "2-side" : "1-side",
+      borrowerName: current.borrowerName,
+      borrowerMobile: current.borrowerMobile,
+      amount: current.amount,
+      interestRate: current.interestRate,
+      interestRatePeriod: current.interestRatePeriod === "monthly" ? "monthly" : "yearly",
+      tenureMonths: String(current.tenureMonths),
+      startDate: current.startDate,
+      upiId: current.upiId || "",
+      accountNumber: current.accountNumber || "",
+      notes: current.notes || "",
+      confirmationMode: current.confirmationMode === "2-side" ? "2-side" : "1-side",
     });
+    setEditOpen(true);
   };
 
   const handleSaveEdit = async () => {
@@ -474,7 +392,9 @@ export default function LoanDetailPage() {
         return;
       }
 
+      setEditOpen(false);
       setEditForm(null);
+      flashMessage("Loan updated.");
       await loadData();
     } catch {
       setEditError("Something went wrong while updating the loan");
@@ -484,7 +404,8 @@ export default function LoanDetailPage() {
   };
 
   const handleDeleteLoan = async () => {
-    if (!confirm("Delete this loan and all associated records? This action cannot be undone.")) return;
+    if (!confirm("Delete this loan and all associated records? This action cannot be undone."))
+      return;
 
     try {
       const result = await requestJson(`/api/loans/${loanId}`, { method: "DELETE" });
@@ -530,38 +451,35 @@ export default function LoanDetailPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center max-w-lg mx-auto">
-        <div className="text-center">
-          <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4 animate-bounce">
-            💰
-          </div>
-          <p className="text-slate-400 text-sm">Loading loan details...</p>
+      <MobileShell title="Loan">
+        <div className="space-y-3 px-4 pt-3">
+          <Skeleton className="h-40 rounded-card" />
+          <Skeleton className="h-12 rounded-control" />
+          <Skeleton className="h-24 rounded-card" />
+          <Skeleton className="h-24 rounded-card" />
         </div>
-      </div>
+      </MobileShell>
     );
   }
 
   if (!loan) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center max-w-lg mx-auto">
-        <div className="text-center">
-          <div className="text-5xl mb-4">😕</div>
-          <p className="text-slate-600 font-medium">
-            {loadError ?? "Loan not found"}
-          </p>
-          {loadError && (
-            <button
-              onClick={() => window.location.reload()}
-              className="mt-3 block mx-auto text-emerald-600 font-semibold"
-            >
-              Retry
-            </button>
-          )}
-          <a href="/dashboard" className="text-emerald-600 mt-4 inline-block font-semibold">
-            ← Back to Dashboard
-          </a>
+      <MobileShell title="Loan" back="/dashboard" showNav={false}>
+        <div className="px-4 pt-3">
+          <Card padded={false}>
+            <EmptyState
+              icon={<Info className="size-6" />}
+              title={loadError ?? "Loan not found"}
+              body="It may have been deleted, or the link may belong to another account."
+              action={
+                <Link href="/loans" className={buttonClasses("primary", "md")}>
+                  Back to loans
+                </Link>
+              }
+            />
+          </Card>
         </div>
-      </div>
+      </MobileShell>
     );
   }
 
@@ -574,6 +492,7 @@ export default function LoanDetailPage() {
   const noCounterparty = loan.noCounterparty ?? (isLender ? !loan.borrowerId : !loan.lenderId);
   // Who the loan is *with*, from this viewer's side.
   const counterpartyName = isLender ? loan.borrowerName : loan.lenderName || "the lender";
+  const counterpartyMobile = isLender ? loan.borrowerMobile : loan.lenderMobile;
   // Whoever typed the loan in may fix it, while nobody else depends on it.
   const mayManageRecord =
     loan.createdByUserId === currentUserId && (isLender || !loan.lenderId);
@@ -588,16 +507,15 @@ export default function LoanDetailPage() {
    */
   const canWaiveOnSettle = isLender || Boolean(loan.lenderId);
 
-  const paidInstallments = installments.filter((i) => i.computedStatus === "paid").length;
-  const progressPercent = installments.length > 0
-    ? Math.round((paidInstallments / installments.length) * 100)
-    : 0;
+  const views = installments.map(viewOf);
+  const paidInstallments = views.filter((v) => v.isPaid).length;
+  const progressPercent =
+    installments.length > 0 ? Math.round((paidInstallments / installments.length) * 100) : 0;
   // All of this is derived in one tested place (summarizeSettlement) rather
   // than inline: waivers must be netted out everywhere, consistently.
   const summary = summarizeSettlement(installments, loan.status);
   const {
     principalTotal: totalPrincipal,
-    principalPaid: totalPrincipalPaid,
     principalOutstanding,
     interestOutstanding,
     loanOutstanding,
@@ -612,1032 +530,920 @@ export default function LoanDetailPage() {
     ? `upi://pay?pa=${loan.upiId}&pn=${encodeURIComponent(loan.borrowerName)}`
     : null;
 
+  /**
+   * The next thing to pay, so the screen's main button never makes anybody
+   * scan a list to find out what it should say. Overdue first, then soonest.
+   */
+  const nextDue =
+    views
+      .filter((v) => !v.isPaid && v.totalRemaining > 0.01)
+      .sort(
+        (a, b) =>
+          daysUntil(a.inst.dueDate) - daysUntil(b.inst.dueDate) ||
+          a.inst.installmentNumber - b.inst.installmentNumber
+      )[0] ?? null;
+
+  const statusTone: Record<string, "neutral" | "good" | "warn" | "bad" | "brand"> = {
+    paid: "good",
+    overdue: "bad",
+    due_soon: "warn",
+    partially_paid: "brand",
+    pending: "neutral",
+  };
+
+  const shareInvite = () =>
+    share({
+      title: "Join me on Udhaar",
+      text:
+        `Hey! I'm tracking our loan on Udhaar - an easy way to manage EMIs and payments.\n\n` +
+        `Loan: ₹${parseFloat(loan.amount).toLocaleString("en-IN")} from ${loan.borrowerName}\n` +
+        `Mobile: ${loan.borrowerMobile}` +
+        (loan.upiId ? `\nUPI: ${loan.upiId}` : "") +
+        `\n\nDownload Udhaar to track your loans with auto-reminders!`,
+      url: typeof window === "undefined" ? undefined : window.location.origin,
+    });
+
   return (
     <MobileShell
-      title={loan.borrowerName}
-      showNav={false}
+      title={counterpartyName}
+      subtitle={counterpartyMobile ? `+91 ${counterpartyMobile}` : undefined}
+      back="/loans"
       rightAction={
-        <button
-          onClick={() => setShowUPI(true)}
-          className="text-sm text-emerald-600 font-medium tap-highlight"
-        >
-          ℹ️
-        </button>
+        <Button size="sm" variant="ghost" onClick={() => setDetailsOpen(true)}>
+          Details
+        </Button>
       }
     >
-      {/* Back button */}
-      <div className="px-5 pt-2">
-        <a
-          href="/dashboard"
-          className="text-emerald-600 text-sm font-medium tap-highlight inline-flex items-center gap-1"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
-          Dashboard
-        </a>
-      </div>
-
-      {!isLender && (
-        <div className="mx-5 mt-3 bg-blue-50 border border-blue-200 rounded-2xl px-4 py-2.5 text-xs font-medium text-blue-700 flex items-center gap-2">
-          <span>👤</span>
-          <span>This loan was added by the lender. You&apos;re viewing it as the borrower — you can mark payments, but only the lender can edit or close it.</span>
-        </div>
-      )}
-
-      {/* Loan Summary Card */}
-      <div className="mx-5 mt-3 bg-gradient-to-br from-emerald-600 to-emerald-700 rounded-3xl p-5 shadow-lg shadow-emerald-600/20">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center text-xl text-white font-bold">
-              {loan.borrowerName.charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-white">{loan.borrowerName}</h2>
-              <p className="text-emerald-200 text-xs">+91 {loan.borrowerMobile}</p>
-            </div>
-          </div>
-          <span
-            className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${
-              loan.status === "active"
-                ? "bg-emerald-400/30 text-emerald-100"
-                : "bg-slate-400/30 text-slate-200"
-            }`}
+      <div className="px-4 pb-8 pt-3">
+        {flash && (
+          <Notice
+            tone="good"
+            icon={<Check className="size-4" />}
+            onDismiss={() => setFlash(null)}
+            className="mb-3"
           >
-            {loan.status.toUpperCase()}
-          </span>
-        </div>
-
-        {/* Amount Grid */}
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <div className="text-center">
-            <p className="text-2xl font-extrabold text-white">{formatINR(parseFloat(loan.amount))}</p>
-            <p className="text-emerald-200 text-[10px] font-medium">PRINCIPAL</p>
-          </div>
-          <div className="text-center">
-            <p className="text-2xl font-extrabold text-white">{loan.interestRate}%</p>
-            <p className="text-emerald-200 text-[10px] font-medium">{loan.interestRatePeriod === "monthly" ? "MONTHLY" : "YEARLY"}</p>
-          </div>
-          <div className="text-center">
-            <p className="text-2xl font-extrabold text-white">{loan.tenureMonths}</p>
-            <p className="text-emerald-200 text-[10px] font-medium">MONTHS</p>
-          </div>
-        </div>
+            {flash}
+          </Notice>
+        )}
 
         {payoffMessage && (
-          <div className="mt-3 bg-white/15 border border-white/25 rounded-xl px-3 py-2 flex items-start gap-2">
-            <p className="text-[11px] text-white font-medium flex-1">{payoffMessage}</p>
-            <button
-              onClick={() => setPayoffMessage(null)}
-              className="text-[11px] font-bold text-emerald-100 shrink-0"
-            >
-              Dismiss
-            </button>
-          </div>
+          <Notice tone="brand" onDismiss={() => setPayoffMessage(null)} className="mb-3">
+            {payoffMessage}
+          </Notice>
         )}
 
-        {/* Progress */}
-        <div>
-          <div className="flex justify-between text-xs text-emerald-200 mb-1.5">
-            <span>{paidInstallments}/{installments.length} EMIs</span>
-            <span>{progressPercent}%</span>
-          </div>
-          <div className="h-2 bg-emerald-500/50 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-white rounded-full transition-all duration-500"
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
-          <p className="text-emerald-200 text-[10px] mt-1.5">
-            Principal: {formatINR(totalPrincipalPaid)} of {formatINR(totalPrincipal)} ({principalProgressPercent}%)
-          </p>
-        </div>
+        {!isLender && (
+          <Notice tone="neutral" icon={<Info className="size-4" />} className="mb-3">
+            This loan was added by the lender. You can record your payments and they confirm them -
+            only the lender can edit or close the loan.
+          </Notice>
+        )}
 
-        {loan.status === "closed" && totalWaived > 0.01 && (
-          <div className="mt-3 bg-amber-400/20 border border-amber-200/40 rounded-xl px-3 py-2">
-            <p className="text-[11px] text-amber-50 font-medium">
-              ⚖️ Closed with {formatINR(totalWaived)} written off
-              {totalPrincipalWaived > 0.01 && totalInterestWaived > 0.01
-                ? ` (${formatINR(totalPrincipalWaived)} principal, ${formatINR(totalInterestWaived)} interest)`
-                : totalPrincipalWaived > 0.01
-                  ? " (principal)"
-                  : " (interest)"}
-              .
+        {/*
+         * The one number that matters, then the two it is made of, then the
+         * action. The old card showed six figures of equal weight and put the
+         * buttons underneath them, so the outstanding balance was the same size
+         * as the interest rate.
+         */}
+        <Card padded={false} className="overflow-hidden bg-brand text-brand-ink">
+          <div className="px-5 pb-4 pt-5">
+            <div className="flex items-start gap-3">
+              <Avatar name={counterpartyName} size={40} className="bg-black/15 text-brand-ink" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <p className="truncate text-[15px] font-bold">{counterpartyName}</p>
+                  <Badge
+                    className={cx(
+                      "bg-black/15 text-brand-ink",
+                      loan.status === "active" && "bg-black/20"
+                    )}
+                  >
+                    {loan.status === "active" ? (isLender ? "OWED TO YOU" : "YOU OWE") : "CLOSED"}
+                  </Badge>
+                </div>
+                <p className="text-[11px] opacity-70">
+                  {loan.interestRate}% {loan.interestRatePeriod === "monthly" ? "monthly" : "yearly"}{" "}
+                  · {loan.tenureMonths} months · from {formatDate(loan.startDate)}
+                </p>
+              </div>
+            </div>
+
+            <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide opacity-70">
+              Outstanding
+            </p>
+            <p className="mt-0.5 text-[34px] font-bold leading-none tracking-tight tabular-nums">
+              {formatMoney(loanOutstanding)}
+            </p>
+
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[12px]">
+              <span className="opacity-80">
+                Principal <span className="font-bold tabular-nums">{formatMoney(principalOutstanding)}</span>
+              </span>
+              <span className="opacity-80">
+                Interest <span className="font-bold tabular-nums">{formatMoney(interestOutstanding)}</span>
+              </span>
+              <span className="opacity-80">
+                Paid <span className="font-bold tabular-nums">{paidInstallments}/{installments.length} EMIs</span>
+              </span>
+            </div>
+
+            <Progress value={progressPercent} tone="good" className="mt-3 bg-black/20" />
+            <p className="mt-1.5 text-[11px] opacity-70">
+              Principal repaid {principalProgressPercent}% ({formatMoney(totalPrincipal)} borrowed)
             </p>
           </div>
-        )}
 
-        {/* Action buttons */}
-        <div className="flex gap-2 mt-4">
-          {upiLink && !isLender && (
-            <a
-              href={upiLink}
-              className="flex-1 bg-white text-emerald-700 font-semibold py-2.5 rounded-2xl text-sm text-center tap-highlight active:bg-emerald-50 transition"
-            >
-              📱 Pay via UPI
-            </a>
-          )}
-          {canSettleInFull && (
-            <button
+          <div className="grid gap-px bg-black/10 sm:grid-cols-2">
+            {!isLender && upiLink && (
+              <a
+                href={upiLink}
+                className="tap flex items-center justify-center gap-2 bg-brand/95 px-4 py-3.5 text-[14px] font-semibold hover:bg-brand-strong"
+              >
+                <Wallet className="size-4" />
+                Pay via UPI
+              </a>
+            )}
+            {isLender && loan.status === "active" && mayManageRecord && (
+              <button
+                onClick={() => handleCloseLoan(principalOutstanding, loanOutstanding)}
+                className="tap flex items-center justify-center gap-2 bg-brand/95 px-4 py-3.5 text-[14px] font-semibold hover:bg-brand-strong"
+              >
+                {principalOutstanding > 0.01 ? "Close & write off" : "Close loan"}
+              </button>
+            )}
+            {canSettleInFull && loan.status === "active" && (
+              <button
+                onClick={() => {
+                  haptics.tap();
+                  setPayoffOpen(true);
+                  setPayoffAmount(loanOutstanding.toFixed(2));
+                  setPayoffError(null);
+                  setAcceptExtra(false);
+                }}
+                className="tap flex items-center justify-center gap-2 bg-brand/95 px-4 py-3.5 text-[14px] font-semibold hover:bg-brand-strong"
+              >
+                <BadgeIndianRupee className="size-4" />
+                Settle in full
+              </button>
+            )}
+          </div>
+        </Card>
+
+        {/*
+         * One tap to the thing this screen exists for. Before, paying the next
+         * EMI meant finding it in the list and tapping "Mark Paid" on the row -
+         * which then opened another sheet asking how much. The sheet that opens
+         * from here is already filled in with the amount, has the UPI shortcut
+         * inside it, and lets the amount be changed if it is a part payment.
+         */}
+        {nextDue && loan.status === "active" && (
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              block
+              size="lg"
               onClick={() => {
                 haptics.tap();
-                setPayoffOpen(true);
-                setPayoffAmount(loanOutstanding.toFixed(2));
-                setPayoffError(null);
-                setAcceptExtra(false);
+                setPayFor({ view: nextDue, type: "both" });
               }}
-              className="flex-1 bg-white text-emerald-700 font-semibold py-2.5 rounded-2xl text-sm tap-highlight active:bg-emerald-50 transition"
+              className={cx(daysUntil(nextDue.inst.dueDate) < 0 && "bg-bad hover:bg-bad/90")}
             >
-              💸 Settle in full
-            </button>
-          )}
-          {isLender && loan.status === "active" && (
-            <button
-              onClick={handleCloseLoan}
-              className="flex-1 bg-emerald-500/40 text-white font-semibold py-2.5 rounded-2xl text-sm tap-highlight active:bg-emerald-500/60 transition"
-            >
-              {principalOutstanding > 0.01 ? "🔒 Close & write off" : "🔒 Close Loan"}
-            </button>
-          )}
-        </div>
+              <Receipt className="size-4" />
+              {isLender ? "Record" : "Pay"} EMI #{nextDue.inst.installmentNumber} ·{" "}
+              {formatMoney(nextDue.totalRemaining)}
+            </Button>
+          </div>
+        )}
+        {nextDue && loan.status === "active" && (
+          <p className="mt-1.5 px-1 text-[11px] text-ink-3">
+            {daysUntil(nextDue.inst.dueDate) < 0
+              ? `Overdue since ${formatDate(nextDue.inst.dueDate)}`
+              : `Due ${formatDate(nextDue.inst.dueDate)}`}
+            {views.filter((v) => !v.isPaid).length > 1
+              ? ` · ${views.filter((v) => !v.isPaid).length} EMIs still open`
+              : ""}
+          </p>
+        )}
 
+        {loan.status === "closed" && totalWaived > 0.01 && (
+          <Notice tone="warn" className="mt-3">
+            Closed with {formatMoney(totalWaived)} written off
+            {totalPrincipalWaived > 0.01 && totalInterestWaived > 0.01
+              ? ` (${formatMoney(totalPrincipalWaived)} principal, ${formatMoney(totalInterestWaived)} interest)`
+              : totalPrincipalWaived > 0.01
+                ? " (principal)"
+                : " (interest)"}
+            .
+          </Notice>
+        )}
 
         {/* The whole record on one sheet: printable, and sendable as a summary. */}
         <Link
           href={`/loans/${loan.id}/statement`}
-          className="mt-3 flex items-center justify-between bg-white border border-slate-200 rounded-2xl px-4 py-3 tap-highlight active:bg-slate-50"
+          className="tap mt-4 flex items-center gap-3 rounded-card border border-line bg-surface px-4 py-3.5 shadow-card hover:bg-surface-2"
         >
-          <span className="text-sm font-semibold text-slate-700">📄 Statement &amp; receipts</span>
-          <span className="text-xs text-emerald-600 font-semibold">View / share →</span>
+          <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+            <FileText className="size-5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[14px] font-semibold text-ink">Statement &amp; receipts</span>
+            <span className="block text-[11px] text-ink-3">
+              Every EMI, payment and waiver - printable, and shareable
+            </span>
+          </span>
+          <ChevronRight className="size-4 text-ink-3" />
         </Link>
 
-        {/* Share / Invite - lender only, used to send loan details to the borrower */}
         {isLender && (
-          <div className="mt-3">
-            <ShareButton
-              borrowerName={loan.borrowerName}
-              borrowerMobile={loan.borrowerMobile}
-              amount={loan.amount}
-              upiId={loan.upiId}
-            />
-          </div>
+          <Button
+            block
+            variant="secondary"
+            className="mt-2.5"
+            onClick={shareInvite}
+            icon={<Share2 className="size-4" />}
+          >
+            {shared ? "Shared" : "Invite them to Udhaar"}
+          </Button>
         )}
-      </div>
 
-      {/* Tabs */}
-      <div className="mx-5 mt-5 mb-4 flex bg-slate-100 rounded-2xl p-1">
-        <button
-          onClick={() => setActiveTab("schedule")}
-          className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-            activeTab === "schedule"
-              ? "bg-white text-emerald-700 shadow-sm"
-              : "text-slate-400"
-          }`}
-        >
-          📅 EMI Schedule
-        </button>
-        <button
-          onClick={() => setActiveTab("payments")}
-          className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${
-            activeTab === "payments"
-              ? "bg-white text-emerald-700 shadow-sm"
-              : "text-slate-400"
-          }`}
-        >
-          💳 Payments ({payments.length})
-        </button>
-      </div>
+        {/* Tabs */}
+        <div className="mt-5 flex rounded-control bg-surface-2 p-1">
+          {(
+            [
+              ["schedule", `EMIs (${installments.length})`, <CalendarDays key="i" className="size-4" />],
+              ["payments", `Payments (${payments.length})`, <Receipt key="i" className="size-4" />],
+            ] as const
+          ).map(([id, label, icon]) => (
+            <button
+              key={id}
+              onClick={() => setActiveTab(id)}
+              aria-pressed={activeTab === id}
+              className={cx(
+                "tap flex flex-1 items-center justify-center gap-1.5 rounded-[10px] py-2 text-[13px] font-semibold",
+                activeTab === id ? "bg-surface text-ink shadow-card" : "text-ink-3"
+              )}
+            >
+              {icon}
+              {label}
+            </button>
+          ))}
+        </div>
 
-      {/* Schedule */}
-      {activeTab === "schedule" && (
-        <div className="px-5 pb-24 space-y-2.5">
-          {reminderNote && (
-            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-3.5 animate-scale-in">
-              <p className="text-xs text-blue-800">{reminderNote.text}</p>
-              <div className="flex items-center gap-3 mt-2">
-                {reminderNote.link && (
-                  <a
-                    href={reminderNote.link.href}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-semibold text-blue-700 underline"
-                  >
-                    {reminderNote.link.label}
-                  </a>
-                )}
-                {reminderNote.upiLink && (
-                  <a
-                    href={reminderNote.upiLink}
-                    className="text-xs font-semibold text-blue-700 underline"
-                  >
-                    Open UPI link
-                  </a>
-                )}
-                <button
-                  onClick={() => setReminderNote(null)}
-                  className="text-xs font-semibold text-slate-500"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          )}
-          {installments.map((inst) => {
-            const days = daysUntil(inst.dueDate);
-            const waived =
-              parseFloat(inst.principalWaived || "0") + parseFloat(inst.interestWaived || "0");
-            const principalRemaining =
-              parseFloat(inst.principalAmount) -
-              parseFloat(inst.principalPaid) -
-              parseFloat(inst.principalWaived || "0");
-            const interestRemaining =
-              parseFloat(inst.interestAmount) -
-              parseFloat(inst.interestPaid) -
-              parseFloat(inst.interestWaived || "0");
-            const totalRemaining = Math.max(0, principalRemaining) + Math.max(0, interestRemaining);
-            // "Settled" covers both: money received, and money the lender gave up.
-            const isPaid = inst.computedStatus === "paid";
-            const isOverdue = inst.computedStatus === "overdue";
-            const isDueSoon = inst.computedStatus === "due_soon";
+        {/* Schedule */}
+        {activeTab === "schedule" && (
+          <div className="stagger mt-3 space-y-2.5">
+            {views.map((view) => {
+              const { inst } = view;
+              const days = daysUntil(inst.dueDate);
+              const paid = parseFloat(inst.principalPaid) + parseFloat(inst.interestPaid);
+              const label =
+                inst.computedStatus === "paid"
+                  ? view.waived > 0
+                    ? "SETTLED"
+                    : "PAID"
+                  : inst.computedStatus === "overdue"
+                    ? `${Math.abs(days)}d overdue`
+                    : inst.computedStatus === "due_soon"
+                      ? days === 0
+                        ? "TODAY"
+                        : `IN ${days}D`
+                      : inst.computedStatus === "partially_paid"
+                        ? "PARTIAL"
+                        : `IN ${days}D`;
 
-            const bgColors: Record<string, string> = {
-              paid: "bg-emerald-50 border-emerald-200",
-              overdue: "bg-red-50 border-red-200",
-              due_soon: "bg-amber-50 border-amber-200",
-              partially_paid: "bg-blue-50 border-blue-200",
-              pending: "bg-white border-slate-100",
-            };
-
-            const dotColors: Record<string, string> = {
-              paid: "bg-emerald-500",
-              overdue: "bg-red-500",
-              due_soon: "bg-amber-400",
-              partially_paid: "bg-blue-400",
-              pending: "bg-slate-300",
-            };
-
-            const statusLabel: Record<string, string> = {
-              paid: waived > 0 ? "SETTLED" : "PAID ✓",
-              overdue: "OVERDUE",
-              due_soon: days === 0 ? "TODAY" : `${days}d`,
-              partially_paid: "PARTIAL",
-              pending: `${days}d`,
-            };
-
-            return (
-              <div
-                key={inst.id}
-                className={`rounded-2xl p-4 border ${bgColors[inst.computedStatus]} transition-all`}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-3">
-                    <div
-                      className={`w-2.5 h-2.5 rounded-full mt-1.5 ${dotColors[inst.computedStatus]}`}
+              return (
+                <Card key={inst.id} padded={false} className="overflow-hidden">
+                  <div className="flex items-start gap-3 px-4 pt-3.5">
+                    <span
+                      className={cx(
+                        "mt-1 size-2.5 shrink-0 rounded-full",
+                        inst.computedStatus === "paid"
+                          ? "bg-good"
+                          : inst.computedStatus === "overdue"
+                            ? "bg-bad"
+                            : inst.computedStatus === "due_soon"
+                              ? "bg-warn"
+                              : inst.computedStatus === "partially_paid"
+                                ? "bg-brand"
+                                : "bg-line-strong"
+                      )}
                     />
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <p className="font-bold text-slate-800 text-[15px]">
+                        <p className="text-[14px] font-semibold text-ink">
                           EMI #{inst.installmentNumber}
                         </p>
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            isPaid
-                              ? "bg-emerald-100 text-emerald-700"
-                              : isOverdue
-                              ? "bg-red-100 text-red-700"
-                              : isDueSoon
-                              ? "bg-amber-100 text-amber-700"
-                              : "bg-slate-100 text-slate-500"
-                          }`}
-                        >
-                          {statusLabel[inst.computedStatus]}
-                        </span>
+                        <Badge tone={statusTone[inst.computedStatus] ?? "neutral"}>{label}</Badge>
                       </div>
-                      <p className="text-xs text-slate-400 mt-0.5">{formatDate(inst.dueDate)}</p>
-                      <div className="mt-2 space-y-0.5">
-                        <p className="text-xs text-slate-500">
-                          Interest: ₹{parseFloat(inst.interestAmount).toLocaleString("en-IN")}
+                      <p className="mt-0.5 text-[12px] text-ink-3">
+                        Due {formatDate(inst.dueDate)}
+                      </p>
+
+                      <div className="mt-2 space-y-0.5 text-[12px] text-ink-2">
+                        <p>
+                          Interest <span className="tabular-nums">{formatMoney(parseFloat(inst.interestAmount))}</span>
                           {parseFloat(inst.interestPaid) > 0 && (
-                            <span className="text-emerald-600"> (₹{parseFloat(inst.interestPaid).toLocaleString("en-IN")} paid)</span>
+                            <span className="font-semibold text-good">
+                              {" "}
+                              · <span className="tabular-nums">{formatMoney(parseFloat(inst.interestPaid))}</span> paid
+                            </span>
                           )}
                         </p>
-                        <p className="text-xs text-slate-500">
-                          Principal: ₹{parseFloat(inst.principalAmount).toLocaleString("en-IN")}
+                        <p>
+                          Principal{" "}
+                          <span className="tabular-nums">
+                            {formatMoney(parseFloat(inst.principalAmount))}
+                          </span>
                           {parseFloat(inst.principalPaid) > 0 && (
-                            <span className="text-emerald-600"> (₹{parseFloat(inst.principalPaid).toLocaleString("en-IN")} paid)</span>
+                            <span className="font-semibold text-good">
+                              {" "}
+                              · <span className="tabular-nums">{formatMoney(parseFloat(inst.principalPaid))}</span> paid
+                            </span>
                           )}
                         </p>
-                        {waived > 0 && (
-                          <p className="text-xs text-amber-600 font-medium">
-                            ⚖️ ₹{waived.toLocaleString("en-IN")} written off
+                        {view.waived > 0 && (
+                          <p className="font-semibold text-warn">
+                            Written off <span className="tabular-nums">{formatMoney(view.waived)}</span>
+                          </p>
+                        )}
+                        {paid > 0 && !view.isPaid && (
+                          <p className="text-ink-3">
+                            Part paid: <span className="tabular-nums">{formatMoney(paid)}</span> of{" "}
+                            <span className="tabular-nums">
+                              {formatMoney(
+                                parseFloat(inst.principalAmount) + parseFloat(inst.interestAmount)
+                              )}
+                            </span>
                           </p>
                         )}
                       </div>
                     </div>
+
+                    {!view.isPaid && (
+                      <p className="shrink-0 text-[17px] font-bold tabular-nums text-ink">
+                        {formatMoney(view.totalRemaining)}
+                      </p>
+                    )}
                   </div>
 
-                  {!isPaid && (
-                    <p className="font-bold text-slate-800 text-lg shrink-0">
-                      {formatINR(totalRemaining)}
-                    </p>
-                  )}
-                </div>
-
-                {/* Action buttons */}
-                {!isPaid && (
-                  <div className="flex gap-2 mt-3 ml-5">
-                    <button
-                      onClick={() => {
-                        setPayModal({ installment: inst, type: "both" });
-                        setPayAmount(totalRemaining.toFixed(2));
-                        setPayError(null);
-                      }}
-                      className="bg-emerald-600 active:bg-emerald-800 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                    >
-                      Mark Paid
-                    </button>
-                    {interestRemaining > 0 && (
-                      <button
-                        onClick={() => {
-                          setPayModal({ installment: inst, type: "interest" });
-                          setPayAmount(interestRemaining.toFixed(2));
-                          setPayError(null);
-                        }}
-                        className="bg-blue-600 active:bg-blue-800 text-white text-xs font-semibold px-4 py-2 rounded-xl tap-highlight"
-                      >
-                        Interest Only
-                      </button>
-                    )}
-                    {isLender && (
-                      <button
+                  {!view.isPaid && loan.status === "active" && (
+                    <div className="mt-3 flex items-center gap-2 border-t border-line px-4 py-2.5">
+                      <Button
+                        size="sm"
                         onClick={() => {
                           haptics.tap();
-                          setRemindFor(inst.id);
+                          setPayFor({ view, type: "both" });
                         }}
-                        className="bg-white active:bg-slate-100 text-slate-600 text-xs font-semibold px-4 py-2 rounded-xl border border-slate-200 tap-highlight"
                       >
-                        {reminderSent === inst.id ? "✓ Sent!" : "🔔 Remind"}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Payments Tab */}
-      {activeTab === "payments" && (
-        <div className="px-5 pb-24 space-y-2.5">
-          {paymentError && (
-            <div className="bg-red-50 border border-red-200 rounded-2xl p-3.5 text-xs text-red-700 animate-scale-in">
-              {paymentError}
-            </div>
-          )}
-          {payments.length === 0 ? (
-            <div className="bg-white rounded-2xl p-8 text-center border border-slate-100">
-              <div className="text-4xl mb-2">💳</div>
-              <p className="text-slate-400 text-sm">No payments recorded yet</p>
-            </div>
-          ) : (
-            payments.map((payment) => (
-              <div
-                key={payment.id}
-                className={`bg-white rounded-2xl p-4 border ${
-                  payment.status === "confirmed"
-                    ? "border-emerald-200"
-                    : payment.status === "rejected"
-                    ? "border-red-200"
-                    : "border-amber-200"
-                }`}
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="font-bold text-slate-800">
-                      {formatINR(parseFloat(payment.amount))}
-                      <span className="text-xs text-slate-400 font-normal ml-1.5">
-                        {payment.paymentType === "payoff" ? "full settlement" : payment.paymentType}
-                      </span>
-                    </p>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      EMI #{installments.find((i) => i.id === payment.installmentId)?.installmentNumber ?? "?"}
-                      {" · "}
-                      {new Date(payment.createdAt).toLocaleDateString("en-IN", {
-                        day: "numeric",
-                        month: "short",
-                      })}
-                    </p>
-                  </div>
-                  <span
-                    className={`text-[10px] font-bold px-2 py-1 rounded-full ${
-                      payment.status === "confirmed"
-                        ? "bg-emerald-100 text-emerald-700"
-                        : payment.status === "rejected"
-                        ? "bg-red-100 text-red-700"
-                        : "bg-amber-100 text-amber-700"
-                    }`}
-                  >
-                    {payment.status.toUpperCase()}
-                  </span>
-                </div>
-                {parseFloat(payment.unappliedAmount || "0") > 0.01 && (
-                  <p className="text-[11px] text-amber-600 font-medium mt-2">
-                    ₹{parseFloat(payment.unappliedAmount).toFixed(2)} was received but not applied to
-                    this loan.
-                  </p>
-                )}
-                {(payment.proofPublicId || payment.proofUrl) && (
-                  <a
-                    href={`/api/payments/${payment.id}/proof`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 mt-3 text-xs font-semibold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl tap-highlight"
-                  >
-                    🧾 View proof
-                  </a>
-                )}
-                {payment.status === "pending" &&
-                  (payment.markedByUserId !== currentUserId || noCounterparty) && (
-                  <div className="flex gap-2 mt-3">
-                    <button
-                      onClick={() => handleConfirmPayment(payment.id, "confirm")}
-                      className="flex-1 bg-emerald-600 text-white text-xs font-semibold py-2 rounded-xl tap-highlight"
-                    >
-                      ✓ Confirm
-                    </button>
-                    <button
-                      onClick={() => handleConfirmPayment(payment.id, "reject")}
-                      className="flex-1 bg-red-50 text-red-600 text-xs font-semibold py-2 rounded-xl border border-red-200 tap-highlight"
-                    >
-                      ✗ Reject
-                    </button>
-                  </div>
-                )}
-                {payment.status === "pending" &&
-                  payment.markedByUserId === currentUserId &&
-                  !noCounterparty && (
-                    /* Marked by mistake? Take it back rather than waiting for
-                       the other side to act - a pending claim blocks every
-                       later payment on the loan. */
-                    <div className="flex items-center justify-between gap-2 mt-3">
-                      <p className="text-[11px] text-amber-600 font-medium">
-                        ⏳ Waiting for {isLender ? "borrower" : "lender"} to confirm
-                      </p>
-                      <button
-                        onClick={() => handleConfirmPayment(payment.id, "withdraw")}
-                        className="shrink-0 text-[11px] font-semibold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl tap-highlight active:bg-slate-200"
-                      >
-                        Withdraw
-                      </button>
+                        {isLender ? "Record payment" : "Pay this EMI"}
+                      </Button>
+                      {view.interestRemaining > 0 && view.principalRemaining > 0 && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => {
+                            haptics.tap();
+                            setPayFor({ view, type: "interest" });
+                          }}
+                        >
+                          Interest only
+                        </Button>
+                      )}
+                      {isLender && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="ml-auto"
+                          onClick={() => {
+                            haptics.tap();
+                            setRemindFor(inst);
+                          }}
+                        >
+                          <BellRing className="size-3.5" />
+                          Remind
+                        </Button>
+                      )}
                     </div>
                   )}
-                {payment.status === "pending" &&
-                  payment.markedByUserId === currentUserId &&
-                  noCounterparty && (
-                    <p className="text-[11px] text-amber-600 font-medium mt-3">
-                      {loan.borrowerName} hasn&apos;t joined Udhaar yet, so you can confirm this
-                      yourself.
-                    </p>
-                  )}
-              </div>
-            ))
-          )}
-        </div>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Payments Tab */}
+        {activeTab === "payments" && (
+          <div className="stagger mt-3 space-y-2.5">
+            {paymentError && <Notice tone="bad">{paymentError}</Notice>}
+
+            {payments.length === 0 ? (
+              <Card padded={false}>
+                <EmptyState
+                  icon={<Receipt className="size-6" />}
+                  title="No payments recorded yet"
+                  body="When either of you records a payment it appears here, with its status and any proof attached."
+                />
+              </Card>
+            ) : (
+              payments.map((payment) => {
+                const confirmed = payment.status === "confirmed";
+                const rejected = payment.status === "rejected";
+                const mine = payment.markedByUserId === currentUserId;
+
+                return (
+                  <Card key={payment.id} padded={false} className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-[16px] font-bold tabular-nums text-ink">
+                          {formatMoney(parseFloat(payment.amount))}
+                          <span className="ml-1.5 text-[12px] font-medium text-ink-3">
+                            {payment.paymentType === "payoff"
+                              ? "full settlement"
+                              : payment.paymentType}
+                          </span>
+                        </p>
+                        <p className="mt-0.5 text-[12px] text-ink-3">
+                          EMI #
+                          {installments.find((i) => i.id === payment.installmentId)
+                            ?.installmentNumber ?? "?"}{" "}
+                          ·{" "}
+                          {new Date(payment.createdAt).toLocaleDateString("en-IN", {
+                            day: "numeric",
+                            month: "short",
+                          })}
+                          {payment.notes ? ` · ${payment.notes}` : ""}
+                        </p>
+                      </div>
+                      <Badge tone={confirmed ? "good" : rejected ? "bad" : "warn"}>
+                        {payment.status.toUpperCase()}
+                      </Badge>
+                    </div>
+
+                    {parseFloat(payment.unappliedAmount || "0") > 0.01 && (
+                      <p className="mt-2 text-[12px] font-medium text-warn">
+                        {formatMoney(parseFloat(payment.unappliedAmount))} was received but not
+                        applied to this loan.
+                      </p>
+                    )}
+
+                    {(payment.proofPublicId || payment.proofUrl) && (
+                      <a
+                        href={`/api/payments/${payment.id}/proof`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-strong"
+                      >
+                        <Receipt className="size-3.5" />
+                        View proof
+                      </a>
+                    )}
+
+                    {payment.status === "pending" && (!mine || noCounterparty) && (
+                      <div className="mt-3 flex gap-2">
+                        <Button
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => handleConfirmPayment(payment.id, "confirm")}
+                        >
+                          <Check className="size-3.5" />
+                          Confirm
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="flex-1 text-bad"
+                          onClick={() => handleConfirmPayment(payment.id, "reject")}
+                        >
+                          <X className="size-3.5" />
+                          Reject
+                        </Button>
+                      </div>
+                    )}
+
+                    {payment.status === "pending" && mine && !noCounterparty && (
+                      /* Marked by mistake? Take it back rather than waiting for
+                         the other side to act - a pending claim blocks every
+                         later payment on the loan. */
+                      <div className="mt-3 flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-medium text-warn">
+                          Waiting for {isLender ? "the borrower" : "the lender"} to confirm
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handleConfirmPayment(payment.id, "withdraw")}
+                        >
+                          Withdraw
+                        </Button>
+                      </div>
+                    )}
+
+                    {payment.status === "pending" && mine && noCounterparty && (
+                      <p className="mt-3 text-[12px] font-medium text-warn">
+                        {loan.borrowerName} hasn&apos;t joined Udhaar yet, so you can confirm this
+                        yourself.
+                      </p>
+                    )}
+                  </Card>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {mayManageRecord && (
+          <div className="mt-6 flex gap-2">
+            <Button
+              variant="secondary"
+              className="flex-1"
+              icon={<Pencil className="size-4" />}
+              onClick={() => openEditForm(loan)}
+            >
+              Edit
+            </Button>
+            <Button
+              variant="ghost"
+              className="flex-1 text-bad"
+              icon={<Trash2 className="size-4" />}
+              onClick={handleDeleteLoan}
+            >
+              Delete
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/*
+       * The payment sheet: the same component the home screen opens, so
+       * "record a payment" means one thing everywhere. Its target carries the
+       * per-installment figures this screen already worked out (net of waivers)
+       * rather than making the sheet derive them again.
+       */}
+      {payFor && (
+        <PaySheet
+          key={payFor.view.inst.id}
+          initialType={payFor.type}
+          target={
+            {
+              installmentId: payFor.view.inst.id,
+              installmentNumber: payFor.view.inst.installmentNumber,
+              dueDate: payFor.view.inst.dueDate,
+              principalRemaining: payFor.view.principalRemaining,
+              interestRemaining: payFor.view.interestRemaining,
+              counterparty: counterpartyName,
+              viewerRole: loan.viewerRole,
+              upiId: isLender ? null : loan.upiId,
+            } satisfies PayTarget
+          }
+          onClose={() => setPayFor(null)}
+          onRecorded={(_applied, amount) => {
+            flashMessage(`Payment of ${formatMoney(amount)} recorded.`);
+            void loadData();
+          }}
+        />
       )}
 
-      {/* Reminder sheet: the lender sends it, from their own phone */}
-      <BottomSheet
-        open={!!remindFor}
-        onClose={() => setRemindFor(null)}
-        title="Send a reminder"
-        subtitle={
-          loan
-            ? `To ${loan.borrowerName} · ${loan.borrowerMobile}`
-            : undefined
-        }
-      >
-        <div className="space-y-2.5">
-          <p className="text-xs text-slate-500">
-            {loan?.borrowerId
-              ? "WhatsApp needs nothing installed on their phone - the message comes from yours."
-              : `${loan?.borrowerName ?? "The borrower"} hasn't joined Udhaar, so notifications can't reach them. WhatsApp works on any phone.`}
-          </p>
-
-          <button
-            onClick={() => remindFor && handleRemind(remindFor, "whatsapp")}
-            disabled={remindLoading}
-            className="w-full flex items-center gap-3 py-3.5 px-4 rounded-2xl bg-[#25D366] text-white font-semibold tap-highlight disabled:opacity-60"
-          >
-            <span className="text-xl">💬</span>
-            <span className="flex-1 text-left">
-              WhatsApp
-              <span className="block text-[11px] font-normal opacity-90">
-                Opens WhatsApp with the amount, due date and UPI link written out
-              </span>
-            </span>
-          </button>
-
-          <button
-            onClick={() => remindFor && handleRemind(remindFor, "sms")}
-            disabled={remindLoading}
-            className="w-full flex items-center gap-3 py-3.5 px-4 rounded-2xl border border-slate-200 text-slate-700 font-semibold tap-highlight disabled:opacity-60"
-          >
-            <span className="text-xl">✉️</span>
-            <span className="flex-1 text-left">
-              Text message
-              <span className="block text-[11px] font-normal text-slate-500">
-                Opens your messages app with the same text
-              </span>
-            </span>
-          </button>
-
-          <button
-            onClick={() => remindFor && handleRemind(remindFor, "push")}
-            disabled={remindLoading}
-            className="w-full flex items-center gap-3 py-3.5 px-4 rounded-2xl border border-slate-200 text-slate-700 font-semibold tap-highlight disabled:opacity-60"
-          >
-            <span className="text-xl">🔔</span>
-            <span className="flex-1 text-left">
-              In-app notification
-              <span className="block text-[11px] font-normal text-slate-500">
-                {loan?.borrowerId
-                  ? "Free and instant - only if they installed Udhaar and allowed notifications"
-                  : "They haven't joined Udhaar yet, so this can't reach them"}
-              </span>
-            </span>
-          </button>
-
-          {remindLoading && (
-            <p className="text-xs text-slate-400 text-center">Preparing the reminder…</p>
-          )}
-
-          <button
-            onClick={() => setRemindFor(null)}
-            className="w-full py-3 rounded-2xl text-slate-500 font-semibold text-sm"
-          >
-            Cancel
-          </button>
-        </div>
-      </BottomSheet>
+      {remindFor && (
+        <RemindSheet
+          key={remindFor.id}
+          target={{
+            installmentId: remindFor.id,
+            installmentNumber: remindFor.installmentNumber,
+            dueDate: remindFor.dueDate,
+            remaining: viewOf(remindFor).totalRemaining,
+            borrowerName: loan.borrowerName,
+            canPush: Boolean(loan.borrowerId),
+          }}
+          onClose={() => setRemindFor(null)}
+          onSent={() => {
+            void loadData();
+          }}
+        />
+      )}
 
       {/* Settle in full - one payment for the whole loan */}
-      <BottomSheet
+      <Sheet
         open={payoffOpen}
-        onClose={() => { setPayoffOpen(false); setPayoffProofId(null); setPayoffError(null); }}
+        onClose={() => {
+          setPayoffOpen(false);
+          setPayoffProofId(null);
+          setPayoffError(null);
+        }}
         title="Settle in full"
-        subtitle={`${formatINR(principalOutstanding)} principal + ${formatINR(interestOutstanding)} interest outstanding`}
+        subtitle={`${formatMoney(principalOutstanding)} principal + ${formatMoney(interestOutstanding)} interest outstanding`}
+        size="tall"
+        footer={
+          <Button
+            block
+            size="lg"
+            loading={payoffLoading}
+            disabled={!payoffAmount}
+            onClick={() => handlePayoff(loanOutstanding)}
+          >
+            {payoffLoading ? "Recording" : `Settle loan · ${formatMoney(parseFloat(payoffAmount) || 0)}`}
+          </Button>
+        }
       >
-        <div className="space-y-4">
-          <div className={`grid gap-2 ${canWaiveOnSettle ? "grid-cols-2" : "grid-cols-1"}`}>
+        <div className="space-y-4 pt-1">
+          <div className={cx("grid gap-2", canWaiveOnSettle ? "grid-cols-2" : "grid-cols-1")}>
             {canWaiveOnSettle && (
-            <button
-              onClick={() => {
-                setPayoffAmount(principalOutstanding.toFixed(2));
-                setPayoffError(null);
-              }}
-              className={`py-3 px-3 rounded-2xl border text-left tap-highlight ${
-                Math.abs(parseFloat(payoffAmount || "0") - principalOutstanding) < 0.005
-                  ? "bg-emerald-50 border-emerald-500"
-                  : "border-slate-200"
-              }`}
-            >
-              <div className="text-sm font-bold text-slate-800">
-                {formatINR(principalOutstanding)}
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                {canWaiveOnSettle ? (
-                  <>
-                    Settle the principal
-                    {interestOutstanding > 0.01
-                      ? ` · waives ${formatINR(interestOutstanding)} interest`
-                      : ""}
-                  </>
-                ) : (
-                  <>Only {counterpartyName} can waive interest — pay the full amount</>
+              <button
+                onClick={() => {
+                  setPayoffAmount(principalOutstanding.toFixed(2));
+                  setPayoffError(null);
+                }}
+                className={cx(
+                  "tap rounded-control border p-3 text-left",
+                  Math.abs(parseFloat(payoffAmount || "0") - principalOutstanding) < 0.005
+                    ? "border-brand bg-brand-soft"
+                    : "border-line bg-surface"
                 )}
-              </div>
-            </button>
+              >
+                <span className="block text-[14px] font-bold tabular-nums text-ink">
+                  {formatMoney(principalOutstanding)}
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-snug text-ink-2">
+                  Settle the principal
+                  {interestOutstanding > 0.01
+                    ? ` · waives ${formatMoney(interestOutstanding)} interest`
+                    : ""}
+                </span>
+              </button>
             )}
             <button
               onClick={() => {
                 setPayoffAmount(loanOutstanding.toFixed(2));
                 setPayoffError(null);
               }}
-              className={`py-3 px-3 rounded-2xl border text-left tap-highlight ${
+              className={cx(
+                "tap rounded-control border p-3 text-left",
                 Math.abs(parseFloat(payoffAmount || "0") - loanOutstanding) < 0.005
-                  ? "bg-emerald-50 border-emerald-500"
-                  : "border-slate-200"
-              }`}
+                  ? "border-brand bg-brand-soft"
+                  : "border-line bg-surface"
+              )}
             >
-              <div className="text-sm font-bold text-slate-800">{formatINR(loanOutstanding)}</div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
+              <span className="block text-[14px] font-bold tabular-nums text-ink">
+                {formatMoney(loanOutstanding)}
+              </span>
+              <span className="mt-0.5 block text-[11px] leading-snug text-ink-2">
                 Pay everything, interest included
-              </div>
+              </span>
             </button>
           </div>
 
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-              Amount received (₹)
-            </label>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
+          {!canWaiveOnSettle && interestOutstanding > 0.01 && (
+            <p className="text-[12px] text-ink-3">
+              Only {counterpartyName} can waive the interest - pay the full amount and they can
+              settle it from their side.
+            </p>
+          )}
+
+          <Field label="Amount received" hint="₹">
+            <Input
+              inputMode="decimal"
               value={payoffAmount}
-              onChange={(e) => {
-                setPayoffAmount(e.target.value);
+              onChange={(event) => {
+                setPayoffAmount(event.target.value);
                 setPayoffError(null);
                 setAcceptExtra(false);
               }}
-              className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-2xl font-bold"
-              autoFocus
+              className="text-[20px] font-bold"
             />
-            {payoffError && (
-              <p className="text-xs text-red-500 font-medium mt-1.5">{payoffError}</p>
-            )}
-          </div>
+          </Field>
 
           {parseFloat(payoffAmount || "0") - loanOutstanding > 0.01 && (
-            <label className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-2xl p-3">
+            <label className="flex items-start gap-2.5 rounded-control bg-warn-soft p-3">
               <input
                 type="checkbox"
                 checked={acceptExtra}
-                onChange={(e) => {
-                  setAcceptExtra(e.target.checked);
+                onChange={(event) => {
+                  setAcceptExtra(event.target.checked);
                   setPayoffError(null);
                 }}
-                className="mt-0.5 w-4 h-4 accent-emerald-600"
+                className="mt-0.5 size-4 accent-[var(--brand)]"
               />
-              <span className="text-[11px] text-amber-800 font-medium">
-                {formatINR(parseFloat(payoffAmount) - loanOutstanding)} more arrived than the loan
+              <span className="text-[12px] font-medium text-warn">
+                {formatMoney(parseFloat(payoffAmount) - loanOutstanding)} more arrived than the loan
                 owes. It will be recorded as received but not applied, so the history matches the
                 bank statement.
               </span>
             </label>
           )}
 
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-              Notes (optional)
-            </label>
-            <input
-              type="text"
+          <Field label="Notes" hint="optional">
+            <Input
               value={payoffNotes}
-              onChange={(e) => setPayoffNotes(e.target.value)}
+              onChange={(event) => setPayoffNotes(event.target.value)}
               placeholder="Cleared the balance by UPI..."
-              className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
             />
-          </div>
+          </Field>
 
-          {/* Proof Upload */}
-          <ProofUpload onCapture={setPayoffProofId} />
+          <ProofUpload
+            onCapture={(id) => setPayoffProofId(id || null)}
+            onClear={() => setPayoffProofId(null)}
+          />
 
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={() => setPayoffOpen(false)}
-              className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-600 font-semibold tap-highlight"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handlePayoff}
-              disabled={payoffLoading || !payoffAmount}
-              className="flex-[2] bg-emerald-600 active:bg-emerald-800 disabled:bg-slate-200 text-white font-bold py-3.5 rounded-2xl tap-highlight"
-            >
-              {payoffLoading ? "Recording..." : "Settle loan ✓"}
-            </button>
-          </div>
+          {payoffError && <Notice tone="bad">{payoffError}</Notice>}
         </div>
-      </BottomSheet>
+      </Sheet>
 
-      {/* Pay Bottom Sheet */}
-      <BottomSheet
-        open={!!payModal}
-        onClose={() => { setPayModal(null); setPayProofId(null); setPayError(null); }}
-        title="Record Payment"
-        subtitle={
-          payModal
-            ? `EMI #${payModal.installment.installmentNumber} · ${payModal.type === "interest" ? "Interest" : payModal.type === "principal" ? "Principal" : "Full Payment"}`
-            : ""
+      {/* Edit - whoever entered the record, while it is only theirs */}
+      <Sheet
+        open={editOpen && Boolean(editForm)}
+        onClose={() => {
+          setEditOpen(false);
+          setEditError("");
+        }}
+        title="Edit loan"
+        subtitle="Borrower and repayment details"
+        size="tall"
+        footer={
+          <Button
+            block
+            size="lg"
+            loading={savingEdit}
+            onClick={handleSaveEdit}
+          >
+            {savingEdit ? "Saving" : "Save changes"}
+          </Button>
         }
       >
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-              Amount (₹)
-            </label>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              value={payAmount}
-              onChange={(e) => { setPayAmount(e.target.value); setPayError(null); }}
-              className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none text-2xl font-bold"
-              autoFocus
-            />
-            {payError && (
-              <p className="text-xs text-red-500 font-medium mt-1.5">{payError}</p>
-            )}
-          </div>
-
-          <div className="flex gap-2">
-            {(["both", "interest", "principal"] as const).map((t) => {
-              const labels = { both: "Full", interest: "Interest", principal: "Principal" };
-              const icons = { both: "💰", interest: "📊", principal: "🏦" };
-              return (
-                <button
-                  key={t}
-                  onClick={() => {
-                    if (!payModal) return;
-                    setPayModal({ ...payModal, type: t });
-                    const p = parseFloat(payModal.installment.principalAmount) - parseFloat(payModal.installment.principalPaid);
-                    const i = parseFloat(payModal.installment.interestAmount) - parseFloat(payModal.installment.interestPaid);
-                    if (t === "both") setPayAmount((p + i).toFixed(2));
-                    else if (t === "interest") setPayAmount(i.toFixed(2));
-                    else setPayAmount(p.toFixed(2));
-                  }}
-                  className={`flex-1 py-2.5 rounded-xl text-xs font-semibold border transition-all tap-highlight ${
-                    payModal?.type === t
-                      ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                      : "border-slate-200 text-slate-400"
-                  }`}
-                >
-                  <div className="text-base mb-0.5">{icons[t]}</div>
-                  {labels[t]}
-                </button>
-              );
-            })}
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-              Notes (optional)
-            </label>
-            <input
-              type="text"
-              value={payNotes}
-              onChange={(e) => setPayNotes(e.target.value)}
-              placeholder="Paid via UPI, cheque #123..."
-              className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none"
-            />
-          </div>
-
-          {/* Proof Upload */}
-          <ProofUpload onCapture={setPayProofId} />
-
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={() => setPayModal(null)}
-              className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-600 font-semibold tap-highlight"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handlePay}
-              disabled={payLoading || !payAmount}
-              className="flex-[2] bg-emerald-600 active:bg-emerald-800 disabled:bg-slate-200 text-white font-bold py-3.5 rounded-2xl tap-highlight"
-            >
-              {payLoading ? "Recording..." : "Record Payment ✓"}
-            </button>
-          </div>
-        </div>
-      </BottomSheet>
-
-      {/* Edit/Delete - whoever entered the record, while it is only theirs */}
-      {mayManageRecord && (
-        <div className="fixed left-0 right-0 z-40 px-3" style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}>
-          <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur-xl">
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={openEditForm}
-                className="bg-emerald-600 text-white font-semibold py-3 rounded-xl text-sm tap-highlight"
-              >
-                ✏️ Edit Loan
-              </button>
-              <button
-                onClick={handleDeleteLoan}
-                className="bg-red-50 text-red-600 font-semibold py-3 rounded-xl border border-red-200 text-sm tap-highlight"
-              >
-                🗑️ Delete Loan
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <BottomSheet
-        open={!!editForm}
-        onClose={() => { setEditForm(null); setEditError(""); }}
-        title="Edit Loan"
-        subtitle="Update borrower and repayment details"
-      >
         {editForm && (
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Borrower Name</label>
-              <input
+          <div className="space-y-3.5 pt-1">
+            <Field label="Name">
+              <Input
                 value={editForm.borrowerName}
-                onChange={(e) => setEditForm({ ...editForm, borrowerName: e.target.value })}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                onChange={(event) =>
+                  setEditForm({ ...editForm, borrowerName: event.target.value })
+                }
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Mobile Number</label>
-              <input
+            <Field label="Mobile number">
+              <Input
+                inputMode="numeric"
                 value={editForm.borrowerMobile}
-                onChange={(e) => setEditForm({ ...editForm, borrowerMobile: e.target.value.replace(/\D/g, "").slice(0, 10) })}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                onChange={(event) =>
+                  setEditForm({
+                    ...editForm,
+                    borrowerMobile: event.target.value.replace(/\D/g, "").slice(0, 10),
+                  })
+                }
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Amount (₹)</label>
-              <input
-                type="number"
-                value={editForm.amount}
-                onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Amount" hint="₹">
+                <Input
+                  inputMode="decimal"
+                  value={editForm.amount}
+                  onChange={(event) => setEditForm({ ...editForm, amount: event.target.value })}
+                />
+              </Field>
+              <Field label="Tenure" hint="months">
+                <Input
+                  inputMode="numeric"
+                  value={editForm.tenureMonths}
+                  onChange={(event) =>
+                    setEditForm({ ...editForm, tenureMonths: event.target.value })
+                  }
+                />
+              </Field>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Interest Rate</label>
-                <input
-                  type="number"
+              <Field label="Interest rate" hint="%">
+                <Input
+                  inputMode="decimal"
                   value={editForm.interestRate}
-                  onChange={(e) => setEditForm({ ...editForm, interestRate: e.target.value })}
-                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                  onChange={(event) =>
+                    setEditForm({ ...editForm, interestRate: event.target.value })
+                  }
                 />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Tenure (months)</label>
-                <input
-                  type="number"
-                  value={editForm.tenureMonths}
-                  onChange={(e) => setEditForm({ ...editForm, tenureMonths: e.target.value })}
-                  className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
+              </Field>
+              <Field label="Charged">
+                <div className="flex gap-2">
+                  {(["yearly", "monthly"] as const).map((period) => (
+                    <button
+                      key={period}
+                      onClick={() => setEditForm({ ...editForm, interestRatePeriod: period })}
+                      aria-pressed={editForm.interestRatePeriod === period}
+                      className={cx(
+                        "tap h-[46px] flex-1 rounded-control border text-[13px] font-semibold capitalize",
+                        editForm.interestRatePeriod === period
+                          ? "border-brand bg-brand-soft text-brand-strong"
+                          : "border-line text-ink-3"
+                      )}
+                    >
+                      {period === "yearly" ? "Yearly" : "Monthly"}
+                    </button>
+                  ))}
+                </div>
+              </Field>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setEditForm({ ...editForm, interestRatePeriod: "yearly" })}
-                className={`py-2.5 rounded-xl text-sm font-semibold border ${
-                  editForm.interestRatePeriod === "yearly"
-                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                    : "border-slate-200 text-slate-400"
-                }`}
-              >
-                Yearly
-              </button>
-              <button
-                onClick={() => setEditForm({ ...editForm, interestRatePeriod: "monthly" })}
-                className={`py-2.5 rounded-xl text-sm font-semibold border ${
-                  editForm.interestRatePeriod === "monthly"
-                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                    : "border-slate-200 text-slate-400"
-                }`}
-              >
-                Monthly
-              </button>
-            </div>
-
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Start Date</label>
-              <input
+            <Field label="Start date">
+              <Input
                 type="date"
                 value={editForm.startDate}
-                onChange={(e) => setEditForm({ ...editForm, startDate: e.target.value })}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                onChange={(event) => setEditForm({ ...editForm, startDate: event.target.value })}
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">UPI ID</label>
-              <input
+            <Field label="UPI id" hint="for payments">
+              <Input
                 value={editForm.upiId}
-                onChange={(e) => setEditForm({ ...editForm, upiId: e.target.value })}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                onChange={(event) => setEditForm({ ...editForm, upiId: event.target.value })}
+                placeholder="name@bank"
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Account Number</label>
-              <input
+            <Field label="Account number" hint="optional">
+              <Input
                 value={editForm.accountNumber}
-                onChange={(e) => setEditForm({ ...editForm, accountNumber: e.target.value })}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                onChange={(event) =>
+                  setEditForm({ ...editForm, accountNumber: event.target.value })
+                }
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">Notes</label>
-              <textarea
+            <Field label="Notes" hint="optional">
+              <Input
                 value={editForm.notes}
-                onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                rows={3}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 outline-none focus:ring-2 focus:ring-emerald-500"
+                onChange={(event) => setEditForm({ ...editForm, notes: event.target.value })}
+                placeholder="Why the money was borrowed"
               />
-            </div>
+            </Field>
 
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setEditForm({ ...editForm, confirmationMode: "1-side" })}
-                className={`py-2.5 rounded-xl text-sm font-semibold border ${
-                  editForm.confirmationMode === "1-side"
-                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                    : "border-slate-200 text-slate-400"
-                }`}
-              >
-                1-side
-              </button>
-              <button
-                onClick={() => setEditForm({ ...editForm, confirmationMode: "2-side" })}
-                className={`py-2.5 rounded-xl text-sm font-semibold border ${
-                  editForm.confirmationMode === "2-side"
-                    ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                    : "border-slate-200 text-slate-400"
-                }`}
-              >
-                2-side
-              </button>
-            </div>
+            <Field label="Confirmation" hint="who signs off a payment">
+              <div className="flex gap-2">
+                {(["1-side", "2-side"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setEditForm({ ...editForm, confirmationMode: mode })}
+                    aria-pressed={editForm.confirmationMode === mode}
+                    className={cx(
+                      "tap h-[46px] flex-1 rounded-control border text-[13px] font-semibold",
+                      editForm.confirmationMode === mode
+                        ? "border-brand bg-brand-soft text-brand-strong"
+                        : "border-line text-ink-3"
+                    )}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </Field>
 
-            {editError && (
-              <div className="bg-red-50 text-red-600 text-sm rounded-2xl p-3">{editError}</div>
-            )}
-
-            <div className="flex gap-3 pt-2">
-              <button
-                onClick={() => { setEditForm(null); setEditError(""); }}
-                className="flex-1 py-3.5 rounded-2xl border border-slate-200 text-slate-600 font-semibold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveEdit}
-                disabled={savingEdit}
-                className="flex-[2] bg-emerald-600 text-white font-bold py-3.5 rounded-2xl"
-              >
-                {savingEdit ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
+            {editError && <Notice tone="bad">{editError}</Notice>}
           </div>
         )}
-      </BottomSheet>
+      </Sheet>
 
-      {/* UPI/Info Bottom Sheet */}
-      <BottomSheet
-        open={showUPI}
-        onClose={() => setShowUPI(false)}
-        title="Loan Details"
+      {/* Details: the record itself - ids, dates, notes, invite */}
+      <Sheet
+        open={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        title="Loan details"
         subtitle={`${loan.borrowerName} · +91 ${loan.borrowerMobile}`}
       >
-        <div className="space-y-3 text-sm">
-          {loan.upiId && (
-            <div className="flex items-center justify-between bg-slate-50 rounded-xl p-3">
-              <span className="text-slate-500">UPI ID</span>
-              <span className="font-mono font-semibold text-slate-800">{loan.upiId}</span>
-            </div>
-          )}
+        <div className="pt-1">
+          {loan.upiId && <DetailRow label="UPI id" value={<span className="font-mono">{loan.upiId}</span>} />}
           {loan.accountNumber && (
-            <div className="flex items-center justify-between bg-slate-50 rounded-xl p-3">
-              <span className="text-slate-500">Account</span>
-              <span className="font-mono font-semibold text-slate-800">{loan.accountNumber}</span>
-            </div>
+            <DetailRow
+              label="Account"
+              value={<span className="font-mono">{loan.accountNumber}</span>}
+            />
           )}
-          <div className="flex items-center justify-between bg-slate-50 rounded-xl p-3">
-            <span className="text-slate-500">Start Date</span>
-            <span className="font-semibold text-slate-800">{formatDate(loan.startDate)}</span>
-          </div>
-          <div className="flex items-center justify-between bg-slate-50 rounded-xl p-3">
-            <span className="text-slate-500">Confirmation</span>
-            <span className="font-semibold text-slate-800">{loan.confirmationMode}</span>
-          </div>
-          {loan.notes && (
-            <div className="bg-slate-50 rounded-xl p-3">
-              <p className="text-slate-500 mb-1">Notes</p>
-              <p className="text-slate-800">{loan.notes}</p>
-            </div>
-          )}
+          <DetailRow label="Start date" value={formatDate(loan.startDate)} />
+          <DetailRow
+            label="Confirmation"
+            value={loan.confirmationMode}
+            note={loan.confirmationMode === "2-side" ? "Both sides sign off" : "One side records"}
+          />
+          <DetailRow label="Interest" value={`${loan.interestRate}% ${loan.interestRatePeriod}`} />
+          <DetailRow label="Tenure" value={`${loan.tenureMonths} months`} />
+          {loan.notes && <DetailRow label="Notes" value={loan.notes} />}
 
           {upiLink && (
-            <a
-              href={upiLink}
-              className="block w-full bg-emerald-600 text-white font-bold py-3.5 rounded-2xl text-center mt-4 tap-highlight"
-            >
-              📱 Open UPI App to Pay
+            <a href={upiLink} className={buttonClasses("primary", "lg", "mt-4 w-full")}>
+              <Wallet className="size-4" />
+              Open UPI app to pay
             </a>
           )}
-        </div>
-      </BottomSheet>
 
-      <BottomNav />
+          {isLender && (
+            <Button
+              block
+              variant="secondary"
+              className="mt-2"
+              icon={<Share2 className="size-4" />}
+              onClick={shareInvite}
+            >
+              {shared ? "Shared" : "Invite them to Udhaar"}
+            </Button>
+          )}
+        </div>
+      </Sheet>
     </MobileShell>
   );
 }

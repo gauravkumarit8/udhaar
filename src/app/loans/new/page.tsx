@@ -1,11 +1,35 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import BottomNav from "@/components/BottomNav";
+import { ArrowLeft, ArrowRight, Check, Info, Sparkles, TrendingUp } from "lucide-react";
 import MobileShell from "@/components/MobileShell";
+import {
+  Badge,
+  Button,
+  Card,
+  Chip,
+  Field,
+  Input,
+  Notice,
+  cx,
+  formatMoney,
+} from "@/components/ui";
 import { generateInstallmentSchedule } from "@/lib/calculations";
 import { requestJson } from "@/lib/http";
 
+/**
+ * Adding a loan, in three short steps.
+ *
+ * The order is the order the conversation happens in: who, then how much and
+ * on what terms, then how the money travels. Two things on this screen exist
+ * purely to save typing on a phone - the quick amount chips (₹5,000, ₹10,000,
+ * ₹50,000) and the quick durations (3 months, 1 year) - and the EMI preview
+ * updates as you type, so the terms are agreed before the record is written
+ * rather than discovered on the next screen.
+ *
+ * Interest-free is the default: most loans between friends and family in India
+ * carry none (CMIE, 2024), so charging it is the deliberate act.
+ */
 export default function NewLoanPage() {
   const [form, setForm] = useState({
     borrowerName: "",
@@ -55,7 +79,9 @@ export default function NewLoanPage() {
     const totalInterest =
       rate === 0 ? 0 : schedule.reduce((sum, installment) => sum + installment.interestAmount, 0);
     const totalAmount =
-      rate === 0 ? principal : schedule.reduce((sum, installment) => sum + installment.totalAmount, 0);
+      rate === 0
+        ? principal
+        : schedule.reduce((sum, installment) => sum + installment.totalAmount, 0);
 
     return {
       emi: Math.round(emi * 100) / 100,
@@ -116,120 +142,114 @@ export default function NewLoanPage() {
     window.location.href = `/loans/${result.data?.loan.id}`;
   };
 
-  const steps = [
-    { num: 1, label: "Borrower" },
-    { num: 2, label: "Loan" },
-    { num: 3, label: "Payment" },
-  ];
+  const steps = ["Who", "Terms", "Payment"];
+  const partnerName = side === "lender" ? form.borrowerName : form.lenderName;
 
   return (
     <MobileShell
-      title="New Loan"
+      title="New loan"
+      subtitle={`Step ${step} of 3 · ${steps[step - 1]}`}
+      back="/dashboard"
       showNav={false}
-      rightAction={
-        <a href="/dashboard" className="text-sm text-emerald-600 font-medium tap-highlight">
-          Cancel
-        </a>
-      }
     >
-      <div className="px-5 py-4">
-        {/* Step Indicator */}
-        <div className="flex items-center gap-2 mb-6">
-          {steps.map((s, idx) => (
-            <div key={s.num} className="flex items-center flex-1">
-              <div
-                className={`flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold shrink-0 transition-all ${
-                  step >= s.num
-                    ? "bg-emerald-600 text-white"
-                    : "bg-slate-200 text-slate-400"
-                }`}
-              >
-                {step > s.num ? "✓" : s.num}
+      <div className="px-4 pb-8 pt-3">
+        {/* Where you are, in one line, with the parts already answered ticked. */}
+        <div className="mb-5 flex items-center gap-1.5">
+          {steps.map((label, idx) => {
+            const num = idx + 1;
+            const done = step > num;
+            const current = step === num;
+            return (
+              <div key={label} className="flex flex-1 items-center gap-1.5">
+                <span
+                  className={cx(
+                    "flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold",
+                    done
+                      ? "bg-good text-white"
+                      : current
+                        ? "bg-brand text-brand-ink"
+                        : "bg-surface-3 text-ink-3"
+                  )}
+                >
+                  {done ? <Check className="size-3.5" /> : num}
+                </span>
+                <span
+                  className={cx(
+                    "text-[11px] font-semibold",
+                    current ? "text-ink" : "text-ink-3"
+                  )}
+                >
+                  {label}
+                </span>
+                {idx < steps.length - 1 && (
+                  <span className={cx("h-px flex-1", done ? "bg-good" : "bg-line")} />
+                )}
               </div>
-              {idx < steps.length - 1 && (
-                <div
-                  className={`flex-1 h-0.5 mx-2 rounded-full transition-all ${
-                    step > s.num ? "bg-emerald-500" : "bg-slate-200"
-                  }`}
-                />
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        {/* Step 1: Borrower Details */}
         {step === 1 && (
-          <div className="space-y-4 animate-fade-in">
-            <div className="text-center mb-4">
-              <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-3">
-                {side === "lender" ? "👤" : "🙋"}
-              </div>
-              <h2 className="text-xl font-bold text-slate-800">
+          <div className="animate-rise space-y-4">
+            <div>
+              <h2 className="text-[19px] font-bold tracking-tight text-ink">
                 {side === "lender" ? "Who are you lending to?" : "Who did you borrow from?"}
               </h2>
-              <p className="text-slate-400 text-sm mt-1">
+              <p className="mt-1 text-[13px] text-ink-2">
                 {side === "lender"
-                  ? "We'll set the reminders up for you"
-                  : "Keep your own record of what you owe — they don't need the app"}
+                  ? "We'll set the reminders up for you - they don't need the app."
+                  : "Keep your own record of what you owe - they don't need the app."}
               </p>
             </div>
 
             {/* Which side of the loan this is. Both are useful: the lender
                 tracks what's coming back, the borrower tracks what they owe. */}
-            <div className="flex gap-2">
-              {([
-                { value: "lender" as const, label: "I lent money", icon: "💰" },
-                { value: "borrower" as const, label: "I borrowed", icon: "🙋" },
-              ]).map((option) => (
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  { value: "lender" as const, label: "I lent money" },
+                  { value: "borrower" as const, label: "I borrowed" },
+                ] as const
+              ).map((option) => (
                 <button
                   key={option.value}
                   type="button"
                   onClick={() => {
                     setSide(option.value);
                     setError("");
-                    if (option.value === "borrower" && !chargeInterest) {
-                      // Most loans between family and friends charge nothing -
-                      // but a loan *you* owe is more likely to carry interest,
-                      // so offer the rate rather than assuming.
-                      setChargeInterest(false);
-                    }
                   }}
-                  className={`flex-1 py-3 rounded-2xl border text-sm font-semibold tap-highlight ${
+                  aria-pressed={side === option.value}
+                  className={cx(
+                    "tap rounded-card border py-3 text-[14px] font-semibold",
                     side === option.value
-                      ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                      : "border-slate-200 text-slate-500"
-                  }`}
+                      ? "border-brand bg-brand-soft text-brand-strong"
+                      : "border-line bg-surface text-ink-2"
+                  )}
                 >
-                  <span className="mr-1.5">{option.icon}</span>
                   {option.label}
                 </button>
               ))}
             </div>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                {side === "lender" ? "Friend's Name *" : "Lender's Name *"}
-              </label>
-              <input
+            <Field label={side === "lender" ? "Their name" : "Lender's name"}>
+              <Input
                 type="text"
-                value={side === "lender" ? form.borrowerName : form.lenderName}
+                value={partnerName}
                 onChange={(e) =>
                   updateField(side === "lender" ? "borrowerName" : "lenderName", e.target.value)
                 }
                 placeholder={side === "lender" ? "Rahul Sharma" : "Uncle Suresh"}
-                className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
+                autoComplete="off"
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Mobile Number *
-              </label>
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-1 focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-transparent">
-                <span className="text-slate-500 font-semibold text-sm">+91</span>
-                <div className="w-px h-6 bg-slate-200" />
+            <Field label="Mobile number">
+              <div className="flex items-center gap-2.5 rounded-control border border-line bg-surface px-3.5 focus-within:border-brand focus-within:ring-4 focus-within:ring-[var(--ring)]">
+                <span className="text-[15px] font-semibold text-ink-3">+91</span>
+                <span className="h-6 w-px bg-line" />
                 <input
                   type="tel"
+                  inputMode="numeric"
                   value={side === "lender" ? form.borrowerMobile : form.lenderMobile}
                   onChange={(e) =>
                     updateField(
@@ -238,405 +258,363 @@ export default function NewLoanPage() {
                     )
                   }
                   placeholder="9876543210"
-                  className="w-full py-2.5 bg-transparent outline-none"
                   maxLength={10}
+                  className="w-full bg-transparent py-3 text-[15px] text-ink outline-none placeholder:text-ink-3"
                 />
               </div>
-            </div>
+            </Field>
 
-            {error && (
-              <div className="bg-red-50 text-red-600 text-sm p-3.5 rounded-2xl animate-scale-in">
-                {error}
-              </div>
-            )}
+            {error && <Notice tone="bad">{error}</Notice>}
 
-            <button
-              onClick={nextStep}
-              className="w-full bg-emerald-600 active:bg-emerald-800 text-white font-bold py-4 rounded-2xl text-base tap-highlight"
-            >
-              Continue →
-            </button>
+            <Button block size="lg" onClick={nextStep} icon={<ArrowRight className="size-4" />}>
+              Continue
+            </Button>
           </div>
         )}
 
-        {/* Step 2: Loan Details */}
         {step === 2 && (
-          <div className="space-y-4 animate-fade-in">
-            <div className="text-center mb-4">
-              <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-3">
-                💵
-              </div>
-              <h2 className="text-xl font-bold text-slate-800">Loan Details</h2>
-              <p className="text-slate-400 text-sm mt-1">Set the amount, interest and tenure</p>
+          <div className="animate-rise space-y-4">
+            <div>
+              <h2 className="text-[19px] font-bold tracking-tight text-ink">Loan details</h2>
+              <p className="mt-1 text-[13px] text-ink-2">Amount, interest and how long for.</p>
             </div>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Loan Amount (₹) *
-              </label>
-              <input
-                type="number"
+            <Field label="Loan amount" hint="₹">
+              <Input
+                inputMode="decimal"
                 value={form.amount}
                 onChange={(e) => updateField("amount", e.target.value)}
                 placeholder="50000"
-                min="1"
-                className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none text-2xl font-bold"
+                className="text-[20px] font-bold"
               />
-              {/* The amounts people actually lend each other. Typing "10000"
-                  on a phone keypad is the slowest part of this screen. */}
-              <div className="flex flex-wrap gap-2 mt-2">
-                {["1000", "2000", "5000", "10000", "25000", "50000"].map((quick) => (
-                  <button
-                    key={quick}
-                    type="button"
-                    onClick={() => updateField("amount", quick)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border tap-highlight ${
-                      form.amount === quick
-                        ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                        : "border-slate-200 text-slate-500"
-                    }`}
-                  >
-                    ₹{Number(quick).toLocaleString("en-IN")}
-                  </button>
-                ))}
-              </div>
+            </Field>
+
+            {/* The amounts people actually lend each other. Typing "10000" on a
+                phone keypad is the slowest part of this screen. */}
+            <div className="-mt-1 flex flex-wrap gap-2">
+              {["1000", "2000", "5000", "10000", "25000", "50000"].map((quick) => (
+                <Chip
+                  key={quick}
+                  active={form.amount === quick}
+                  onClick={() => updateField("amount", quick)}
+                >
+                  {formatMoney(Number(quick))}
+                </Chip>
+              ))}
             </div>
 
-            {/* Interest Toggle */}
-            <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
-              <div className="flex items-center justify-between">
+            {/* Interest: off by default, because most loans between friends and
+                family are interest-free. */}
+            <Card>
+              <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center text-lg">
-                    📊
-                  </div>
+                  <span
+                    className={cx(
+                      "flex size-10 items-center justify-center rounded-control",
+                      chargeInterest ? "bg-warn-soft text-warn" : "bg-surface-2 text-ink-2"
+                    )}
+                  >
+                    <TrendingUp className="size-5" />
+                  </span>
                   <div>
-                    <p className="font-semibold text-slate-700 text-sm">
+                    <p className="text-[14px] font-semibold text-ink">
                       {chargeInterest ? "Interest is charged" : "Interest-free"}
                     </p>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-[11px] leading-snug text-ink-3">
                       {chargeInterest
                         ? "Set the rate below"
-                        : "You get back exactly what you lend — the usual loan between friends and family"}
+                        : "You get back exactly what you lend - the usual loan between friends and family"}
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setChargeInterest((prev) => !prev)}
-                  className={`relative w-14 h-8 rounded-full transition-colors ${
-                    chargeInterest ? "bg-emerald-500" : "bg-slate-300"
-                  }`}
+                  aria-pressed={chargeInterest}
+                  aria-label="Charge interest"
+                  className={cx(
+                    "tap relative h-7 w-12 shrink-0 rounded-full transition-colors",
+                    chargeInterest ? "bg-good" : "bg-line-strong"
+                  )}
                 >
-                  <div
-                    className={`absolute top-1 w-6 h-6 bg-white rounded-full shadow transition-transform ${
-                      chargeInterest ? "translate-x-7" : "translate-x-1"
-                    }`}
+                  <span
+                    className={cx(
+                      "absolute top-1 size-5 rounded-full bg-white shadow transition-transform",
+                      chargeInterest ? "translate-x-6" : "translate-x-1"
+                    )}
                   />
                 </button>
               </div>
 
               {chargeInterest && (
-                <div className="mt-4 animate-scale-in space-y-3">
-                  <div>
-                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                      Interest Rate (%)
-                    </label>
-                    <input
-                      type="number"
+                <div className="animate-rise mt-4 space-y-3">
+                  <Field label="Interest rate" hint="%">
+                    <Input
+                      inputMode="decimal"
                       value={form.interestRate}
                       onChange={(e) => updateField("interestRate", e.target.value)}
                       placeholder={form.interestRatePeriod === "yearly" ? "12" : "1"}
-                      step="0.5"
-                      min="0"
-                      className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
                     />
+                  </Field>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    {(["yearly", "monthly"] as const).map((period) => (
+                      <button
+                        key={period}
+                        type="button"
+                        onClick={() => setForm((p) => ({ ...p, interestRatePeriod: period }))}
+                        aria-pressed={form.interestRatePeriod === period}
+                        className={cx(
+                          "tap rounded-control border py-2.5 text-[13px] font-semibold capitalize",
+                          form.interestRatePeriod === period
+                            ? "border-brand bg-brand-soft text-brand-strong"
+                            : "border-line text-ink-3"
+                        )}
+                      >
+                        {period === "yearly" ? "Per year" : "Per month"}
+                      </button>
+                    ))}
                   </div>
 
-                  {/* Monthly / Yearly Toggle */}
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setForm((p) => ({ ...p, interestRatePeriod: "yearly" }));
-                      }}
-                      className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition-all tap-highlight ${
-                        form.interestRatePeriod === "yearly"
-                          ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                          : "border-slate-200 text-slate-400"
-                      }`}
-                    >
-                      📅 Yearly
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setForm((p) => ({ ...p, interestRatePeriod: "monthly" }));
-                      }}
-                      className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border transition-all tap-highlight ${
-                        form.interestRatePeriod === "monthly"
-                          ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                          : "border-slate-200 text-slate-400"
-                      }`}
-                    >
-                      📆 Monthly
-                    </button>
-                  </div>
-
-                  <p className="text-xs text-slate-400 bg-slate-50 rounded-xl p-2.5">
+                  <Notice tone="neutral" icon={<Info className="size-4" />}>
                     {form.interestRatePeriod === "yearly" ? (
-                      <>💡 <span className="font-semibold">Yearly rate</span> — e.g. 12% yearly = 1% per month. This is the standard bank rate (like home loans).</>
+                      <>
+                        <span className="font-semibold">Yearly</span> - 12% a year is 1% a month,
+                        like a bank home loan.
+                      </>
                     ) : (
-                      <>💡 <span className="font-semibold">Monthly rate</span> — e.g. 2% monthly = 24% yearly. Common for informal loans between friends.</>
+                      <>
+                        <span className="font-semibold">Monthly</span> - 2% a month is 24% a year,
+                        common for informal loans.
+                      </>
                     )}
-                  </p>
+                  </Notice>
                 </div>
               )}
-            </div>
+            </Card>
 
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                  Tenure (months)
-                </label>
-                <input
-                  type="number"
+              <Field label="How long" hint="months">
+                <Input
+                  inputMode="numeric"
                   value={form.tenureMonths}
                   onChange={(e) => updateField("tenureMonths", e.target.value)}
                   placeholder="12"
-                  min="1"
-                  className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
                 />
-                {/* "Return it in 3 months" is how the borrower actually says
-                    it, so offer the durations people use. */}
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {[
-                    { months: "1", label: "1 month" },
-                    { months: "3", label: "3 months" },
-                    { months: "6", label: "6 months" },
-                    { months: "12", label: "1 year" },
-                    { months: "24", label: "2 years" },
-                  ].map((quick) => (
-                    <button
-                      key={quick.months}
-                      type="button"
-                      onClick={() => updateField("tenureMonths", quick.months)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border tap-highlight ${
-                        form.tenureMonths === quick.months
-                          ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                          : "border-slate-200 text-slate-500"
-                      }`}
-                    >
-                      {quick.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                  Start Date
-                </label>
-                <input
+              </Field>
+              <Field label="First EMI from">
+                <Input
                   type="date"
                   value={form.startDate}
                   onChange={(e) => updateField("startDate", e.target.value)}
-                  className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
                 />
-              </div>
+              </Field>
             </div>
 
-            {/* EMI Preview */}
+            {/* "Return it in 3 months" is how the borrower actually says it. */}
+            <div className="-mt-1 flex flex-wrap gap-2">
+              {[
+                { months: "1", label: "1 month" },
+                { months: "3", label: "3 months" },
+                { months: "6", label: "6 months" },
+                { months: "12", label: "1 year" },
+                { months: "24", label: "2 years" },
+              ].map((quick) => (
+                <Chip
+                  key={quick.months}
+                  active={form.tenureMonths === quick.months}
+                  onClick={() => updateField("tenureMonths", quick.months)}
+                >
+                  {quick.label}
+                </Chip>
+              ))}
+            </div>
+
             {preview && (
-              <div className="bg-emerald-50 rounded-2xl p-4 border border-emerald-200 animate-scale-in">
-                <p className="text-xs font-bold text-emerald-700 uppercase tracking-wide mb-3">
-                  💡 EMI Preview
+              <Card className="animate-pop border-brand/25 bg-brand-soft">
+                <p className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-wide text-brand-strong">
+                  <Sparkles className="size-3.5" />
+                  What this works out to
                 </p>
-                <p className="text-[11px] text-emerald-600 mb-3">
-                  {form.interestRate}% {form.interestRatePeriod} rate
-                  {form.interestRatePeriod === "monthly" && (
-                    <span className="text-slate-400"> (effective {(parseFloat(form.interestRate) * 12).toFixed(1)}% yearly)</span>
-                  )}
-                  {form.interestRatePeriod === "yearly" && (
-                    <span className="text-slate-400"> ({(parseFloat(form.interestRate) / 12).toFixed(2)}% monthly)</span>
-                  )}
-                </p>
-                <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="mt-3 grid grid-cols-3 gap-2 text-center">
                   <div>
-                    <p className="text-xl font-extrabold text-emerald-700">
-                      ₹{Math.round(preview.emi).toLocaleString("en-IN")}
+                    <p className="text-[17px] font-bold tabular-nums text-brand-strong">
+                      {formatMoney(preview.emi)}
                     </p>
-                    <p className="text-[10px] text-emerald-600 font-medium">Monthly EMI</p>
+                    <p className="text-[11px] font-medium text-brand-strong/75">Each month</p>
                   </div>
                   <div>
-                    <p className="text-xl font-extrabold text-amber-600">
-                      ₹{Math.round(preview.totalInterest).toLocaleString("en-IN")}
+                    <p className="text-[17px] font-bold tabular-nums text-brand-strong">
+                      {formatMoney(preview.totalInterest)}
                     </p>
-                    <p className="text-[10px] text-amber-500 font-medium">Total Interest</p>
+                    <p className="text-[11px] font-medium text-brand-strong/75">Interest</p>
                   </div>
                   <div>
-                    <p className="text-xl font-extrabold text-slate-700">
-                      ₹{Math.round(preview.totalAmount).toLocaleString("en-IN")}
+                    <p className="text-[17px] font-bold tabular-nums text-brand-strong">
+                      {formatMoney(preview.totalAmount)}
                     </p>
-                    <p className="text-[10px] text-slate-500 font-medium">Total Amount</p>
+                    <p className="text-[11px] font-medium text-brand-strong/75">Repaid in all</p>
                   </div>
                 </div>
-              </div>
+                <p className="mt-2.5 text-[11px] leading-snug text-brand-strong/80">
+                  {chargeInterest
+                    ? `${form.interestRate}% ${form.interestRatePeriod} · ${
+                        form.interestRatePeriod === "monthly"
+                          ? `${(parseFloat(form.interestRate) * 12).toFixed(1)}% a year`
+                          : `${(parseFloat(form.interestRate) / 12).toFixed(2)}% a month`
+                      }`
+                    : "Interest-free, so the total repaid equals the amount lent."}
+                </p>
+              </Card>
             )}
 
-            {error && (
-              <div className="bg-red-50 text-red-600 text-sm p-3.5 rounded-2xl animate-scale-in">
-                {error}
-              </div>
-            )}
+            {error && <Notice tone="bad">{error}</Notice>}
 
-            <div className="flex gap-3">
-              <button
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="lg"
+                icon={<ArrowLeft className="size-4" />}
                 onClick={() => {
                   setStep(1);
                   setError("");
                 }}
-                className="flex-1 py-4 rounded-2xl border border-slate-200 text-slate-600 font-semibold tap-highlight"
               >
-                ← Back
-              </button>
-              <button
+                Back
+              </Button>
+              <Button
+                block
+                size="lg"
+                icon={<ArrowRight className="size-4" />}
                 onClick={nextStep}
-                className="flex-[2] bg-emerald-600 active:bg-emerald-800 text-white font-bold py-4 rounded-2xl tap-highlight"
+                className="flex-1"
               >
-                Continue →
-              </button>
+                Continue
+              </Button>
             </div>
           </div>
         )}
 
-        {/* Step 3: Payment Info */}
         {step === 3 && (
-          <div className="space-y-4 animate-fade-in">
-            <div className="text-center mb-4">
-              <div className="w-16 h-16 bg-emerald-100 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-3">
-                🏦
-              </div>
-              <h2 className="text-xl font-bold text-slate-800">Payment Info</h2>
-              <p className="text-slate-400 text-sm mt-1">
+          <div className="animate-rise space-y-4">
+            <div>
+              <h2 className="text-[19px] font-bold tracking-tight text-ink">Payment details</h2>
+              <p className="mt-1 text-[13px] text-ink-2">
                 {side === "lender"
-                  ? "How should they pay you back?"
-                  : "Where does the money go when you pay them back?"}
+                  ? "How should they pay you back? Optional - it can be added later."
+                  : "Where does the money go when you pay them back? Optional."}
               </p>
             </div>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                {side === "lender" ? "Your UPI ID" : "Their UPI ID"}
-              </label>
-              <input
+            <Field label={side === "lender" ? "Your UPI id" : "Their UPI id"} hint="optional">
+              <Input
                 type="text"
                 value={form.upiId}
                 onChange={(e) => updateField("upiId", e.target.value)}
                 placeholder={side === "lender" ? "yourname@paytm" : "theirname@paytm"}
-                className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
+                autoComplete="off"
               />
-            </div>
+            </Field>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                {side === "lender" ? "Account Number" : "Their Account Number"}
-              </label>
-              <input
+            <Field label="Account number" hint="optional">
+              <Input
                 type="text"
                 value={form.accountNumber}
                 onChange={(e) => updateField("accountNumber", e.target.value)}
                 placeholder="XXXX-XXXX-XXXX"
-                className="w-full px-4 py-3.5 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none"
+                autoComplete="off"
               />
-            </div>
+            </Field>
 
-            {/* Confirmation Mode */}
-            <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-sm">
-              <p className="font-semibold text-slate-700 text-sm mb-3">Confirmation Mode</p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setForm((p) => ({ ...p, confirmationMode: "1-side" }))}
-                  className={`flex-1 py-3 rounded-xl text-sm font-semibold border transition-all tap-highlight ${
-                    form.confirmationMode === "1-side"
-                      ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                      : "border-slate-200 text-slate-400"
-                  }`}
-                >
-                  <div className="text-lg mb-1">👤</div>
-                  1-Side
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setForm((p) => ({ ...p, confirmationMode: "2-side" }))}
-                  className={`flex-1 py-3 rounded-xl text-sm font-semibold border transition-all tap-highlight ${
-                    form.confirmationMode === "2-side"
-                      ? "bg-emerald-50 border-emerald-500 text-emerald-700"
-                      : "border-slate-200 text-slate-400"
-                  }`}
-                >
-                  <div className="text-lg mb-1">👥</div>
-                  2-Side
-                </button>
+            <Card>
+              <p className="text-[13px] font-semibold text-ink">Who signs off a payment</p>
+              <div className="mt-2.5 grid grid-cols-2 gap-2">
+                {(["1-side", "2-side"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setForm((p) => ({ ...p, confirmationMode: mode }))}
+                    aria-pressed={form.confirmationMode === mode}
+                    className={cx(
+                      "tap rounded-control border py-2.5 text-[13px] font-semibold",
+                      form.confirmationMode === mode
+                        ? "border-brand bg-brand-soft text-brand-strong"
+                        : "border-line text-ink-3"
+                    )}
+                  >
+                    {mode}
+                  </button>
+                ))}
               </div>
-              <p className="text-xs text-slate-400 mt-2">
+              <p className="mt-2 text-[11px] leading-snug text-ink-3">
                 {form.confirmationMode === "1-side"
-                  ? "Either party can confirm payments"
-                  : "Both lender and borrower must confirm"}
+                  ? "Either of you can record a payment and it counts straight away."
+                  : "A payment waits for the other person to confirm it - the safer choice when the amounts are large."}
               </p>
               {side === "borrower" && (
                 // Honest about what a 2-side choice means before the lender has
                 // an account: there is nobody else to confirm, so the borrower
                 // records their own payments until the lender joins.
-                <p className="text-xs text-slate-400 mt-1.5">
-                  {form.lenderName || "Your lender"} isn&apos;t on Udhaar yet — until they join,
-                  you record your own payments.
+                <p className="mt-1.5 text-[11px] leading-snug text-ink-3">
+                  {form.lenderName || "Your lender"} isn&apos;t on Udhaar yet - until they join, you
+                  record your own payments.
                 </p>
               )}
-            </div>
+            </Card>
 
-            <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                Notes
-              </label>
+            <Field label="Notes" hint="optional">
               <textarea
                 value={form.notes}
                 onChange={(e) => updateField("notes", e.target.value)}
-                placeholder="Any notes about this loan..."
-                rows={2}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none"
+                placeholder="Why the money was borrowed, anything agreed verbally..."
+                rows={3}
+                maxLength={500}
+                className="w-full resize-none rounded-control border border-line bg-surface px-3.5 py-3 text-[15px] text-ink placeholder:text-ink-3 focus:border-brand focus:outline-none focus:ring-4 focus:ring-[var(--ring)]"
               />
-            </div>
+            </Field>
 
-            {error && (
-              <div className="bg-red-50 text-red-600 text-sm p-3.5 rounded-2xl animate-scale-in">
-                {error}
-              </div>
+            {/* The terms, repeated once more at the end: this is the last
+                screen before the record exists, and the numbers are the point. */}
+            {preview && (
+              <Card className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-semibold text-ink">
+                    {partnerName} · {formatMoney(parseFloat(form.amount) || 0)}
+                  </p>
+                  <p className="text-[11px] text-ink-3">
+                    {form.tenureMonths} months ·{" "}
+                    {chargeInterest ? `${form.interestRate}% ${form.interestRatePeriod}` : "no interest"}{" "}
+                    · {form.confirmationMode}
+                  </p>
+                </div>
+                <Badge tone="brand">{formatMoney(preview.emi)}/mo</Badge>
+              </Card>
             )}
 
-            <div className="flex gap-3">
-              <button
+            {error && <Notice tone="bad">{error}</Notice>}
+
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="lg"
+                icon={<ArrowLeft className="size-4" />}
                 onClick={() => {
                   setStep(2);
                   setError("");
                 }}
-                className="flex-1 py-4 rounded-2xl border border-slate-200 text-slate-600 font-semibold tap-highlight"
               >
-                ← Back
-              </button>
-              <button
+                Back
+              </Button>
+              <Button
+                block
+                size="lg"
+                loading={loading}
                 onClick={handleSubmit}
-                disabled={loading}
-                className="flex-[2] bg-emerald-600 active:bg-emerald-800 disabled:bg-slate-300 text-white font-bold py-4 rounded-2xl tap-highlight"
+                className="flex-1"
+                icon={loading ? undefined : <Check className="size-4" />}
               >
-                {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Creating...
-                  </span>
-                ) : (
-                  "Create Loan ✓"
-                )}
-              </button>
+                {loading ? "Creating" : "Create loan"}
+              </Button>
             </div>
           </div>
         )}

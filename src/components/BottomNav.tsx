@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useHaptics } from "@/hooks/useNative";
+import { Home, HandCoins, Plus, Bell, User, type LucideIcon } from "lucide-react";
 import {
   isUnreadFresh,
   readUnreadAt,
@@ -10,13 +11,17 @@ import {
   UNREAD_CACHE_KEY,
   UNREAD_EVENT,
 } from "@/lib/client-cache";
+import { cx } from "@/components/ui";
 
-const tabs = [
-  { href: "/dashboard", label: "Home", icon: "home" },
-  { href: "/loans/new", label: "Add", icon: "plus" },
-  { href: "/activity", label: "Activity", icon: "bell" },
-  { href: "/profile", label: "Profile", icon: "person" },
-];
+/**
+ * Five destinations, one of them the thing people actually came to do.
+ *
+ * The bar is the app's only navigation. Loans got its own tab because "where
+ * is that loan" was a two-tap question (Home → see all) for the thing people
+ * look at most, and because a list is somewhere you go, not somewhere you
+ * land. The centre is a raised add button, which is one tap from anywhere in
+ * the app - the same number of taps as before, without taking a tab slot.
+ */
 
 /**
  * The Activity tab's badge: how many notifications arrived since this person
@@ -36,8 +41,6 @@ function rememberUnread(count: number): void {
     // Private mode, storage full - the badge just isn't pre-painted.
   }
 }
-
-
 
 function useUnreadCount(): number {
   // Starts from what this device last saw: a badge that appears instantly and
@@ -111,54 +114,85 @@ function useUnreadCount(): number {
   return unread;
 }
 
+interface Tab {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  /** Also counts as active for these paths. */
+  matches?: string[];
+  badge?: number;
+}
+
 export default function BottomNav() {
   const pathname = usePathname();
   const haptics = useHaptics();
   const unread = useUnreadCount();
 
-  return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-xl border-t border-slate-200/60 safe-area-bottom">
-      <div className="max-w-lg mx-auto flex items-center justify-around h-16">
-        {tabs.map((tab) => {
-          const isActive =
-            tab.href === "/dashboard"
-              ? pathname === "/dashboard" || pathname === "/"
-              : pathname.startsWith(tab.href);
+  const tabs: Tab[] = [
+    { href: "/dashboard", label: "Home", icon: Home, matches: ["/"] },
+    { href: "/loans", label: "Loans", icon: HandCoins },
+    { href: "/loans/new", label: "Add", icon: Plus },
+    { href: "/activity", label: "Activity", icon: Bell, badge: unread },
+    { href: "/profile", label: "You", icon: User },
+  ];
 
-          const handleClick = () => {
-            haptics.tap();
-          };
+  return (
+    <nav
+      aria-label="Main"
+      className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line bg-surface/85 backdrop-blur-xl"
+    >
+      <div className="mx-auto flex h-[58px] w-full max-w-lg items-stretch">
+        {tabs.map((tab) => {
+          const isAdd = tab.href === "/loans/new";
+          const isActive = isAdd
+            ? pathname === "/loans/new"
+            : [tab.href, ...(tab.matches ?? [])].some(
+                (href) => pathname === href || (href !== "/" && pathname.startsWith(`${href}/`))
+              ) ||
+              // /loans must not light up while adding one.
+              (tab.href === "/loans" && pathname === "/loans");
+
+          const Icon = tab.icon;
 
           return (
             <a
               key={tab.href}
               href={tab.href}
-              onClick={handleClick}
-              className={`flex flex-col items-center justify-center w-16 h-full transition-all tap-highlight ${
-                isActive ? "text-emerald-600" : "text-slate-400"
-              }`}
+              onClick={() => haptics.tap()}
+              aria-current={isActive ? "page" : undefined}
+              className={cx(
+                "tap relative flex flex-1 flex-col items-center justify-center gap-1",
+                isActive ? "text-brand" : "text-ink-3 hover:text-ink-2"
+              )}
             >
-              {tab.icon === "bell" && unread > 0 && (
+              {isAdd ? (
                 <span
-                  aria-label={`${unread} unread notification${unread === 1 ? "" : "s"}`}
-                  className="absolute top-2 right-2 min-w-4 h-4 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center"
+                  className={cx(
+                    "flex size-11 items-center justify-center rounded-2xl bg-brand text-brand-ink",
+                    "shadow-[0_6px_18px_-6px_var(--brand)]",
+                    isActive && "ring-4 ring-[var(--ring)]"
+                  )}
                 >
-                  {unread > 9 ? "9+" : unread}
+                  <Icon className="size-6" strokeWidth={2.6} />
+                </span>
+              ) : (
+                <span className="relative">
+                  <Icon className="size-[22px]" strokeWidth={isActive ? 2.4 : 2} />
+                  {tab.badge !== undefined && tab.badge > 0 && (
+                    <span
+                      aria-label={`${tab.badge} unread notification${tab.badge === 1 ? "" : "s"}`}
+                      className="absolute -top-1.5 -right-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-bad px-1 text-[10px] font-bold text-white"
+                    >
+                      {tab.badge > 9 ? "9+" : tab.badge}
+                    </span>
+                  )}
                 </span>
               )}
-              {tab.icon === "plus" ? (
-                <div className="absolute -top-3 w-12 h-12 bg-emerald-600 rounded-full flex items-center justify-center shadow-lg shadow-emerald-600/30">
-                  <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                  </svg>
-                </div>
-              ) : (
-                <TabIcon name={tab.icon} active={isActive} className="w-6 h-6" />
-              )}
               <span
-                className={`text-[10px] mt-0.5 font-medium ${
-                  tab.icon === "plus" ? "mt-7" : ""
-                } ${isActive ? "text-emerald-600" : "text-slate-400"}`}
+                className={cx(
+                  "text-[10px] font-semibold tracking-tight",
+                  isAdd ? "-mt-0.5" : ""
+                )}
               >
                 {tab.label}
               </span>
@@ -167,42 +201,5 @@ export default function BottomNav() {
         })}
       </div>
     </nav>
-  );
-}
-
-function TabIcon({ name, active, className }: { name: string; active: boolean; className?: string }) {
-  if (name === "home") {
-    return active ? (
-      <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12.71 2.29a1 1 0 00-1.42 0l-9 9a1 1 0 001.42 1.42L4 12.41V21a1 1 0 001 1h4a1 1 0 001-1v-4h4v4a1 1 0 001 1h4a1 1 0 001-1v-8.59l.29.3a1 1 0 001.42-1.42l-9-9z" />
-      </svg>
-    ) : (
-      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12l8.954-8.955a1.126 1.126 0 011.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
-      </svg>
-    );
-  }
-
-  if (name === "bell") {
-    return active ? (
-      <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z" />
-      </svg>
-    ) : (
-      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
-      </svg>
-    );
-  }
-
-  // person
-  return active ? (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
-    </svg>
-  ) : (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-    </svg>
   );
 }

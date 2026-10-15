@@ -1,118 +1,293 @@
 @import "tailwindcss";
 
-/* Safe area for notch devices */
-.safe-area-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+/*
+ * Udhaar's design tokens.
+ *
+ * One place decides colour, radius, elevation and motion, and every screen
+ * spends them through the primitives in `src/components/ui.tsx`. The point is
+ * not tidiness: a money app that is drawn in fifty slightly different greys
+ * reads as untrustworthy, and the fastest way to look dated is to keep
+ * inventing wheels.
+ *
+ * Light and dark are the same tokens with different values - `@theme inline`
+ * makes the utilities point straight at the variables, so `bg-surface` flips
+ * by itself when the system says so. No `dark:` variants anywhere: a component
+ * that needs one is a component that hard-coded a colour.
+ */
+
+:root {
+  /* Surfaces, from the page up to things that float above it. */
+  --bg: oklch(98.4% 0.004 250);
+  --surface: oklch(100% 0 0);
+  --surface-2: oklch(96.7% 0.006 250);
+  --surface-3: oklch(94.4% 0.008 250);
+
+  /* Text, in three weights of importance. */
+  --ink: oklch(24% 0.02 260);
+  --ink-2: oklch(48% 0.02 260);
+  --ink-3: oklch(62% 0.017 260);
+
+  /* Hairlines. Two weights: a card edge and a divider inside one. */
+  --line: oklch(92.5% 0.008 260);
+  --line-strong: oklch(87% 0.012 260);
+
+  /* Brand: the emerald the app is known by, in a deeper, less neon mix. */
+  --brand: oklch(54% 0.13 165);
+  --brand-strong: oklch(45% 0.12 165);
+  --brand-soft: oklch(95.5% 0.03 165);
+  --brand-ink: oklch(99% 0.01 165);
+
+  /* Status. Each has a text tone and a tinted background. */
+  --good: oklch(52% 0.12 155);
+  --good-soft: oklch(95% 0.035 155);
+  --warn: oklch(60% 0.13 75);
+  --warn-soft: oklch(96% 0.045 85);
+  --bad: oklch(55% 0.19 25);
+  --bad-soft: oklch(96% 0.035 25);
+
+  --ring: oklch(54% 0.13 165 / 0.35);
 }
 
-.safe-area-top {
-  padding-top: env(safe-area-inset-top, 0px);
+/*
+ * Printing is a document.
+ *
+ * A statement printed from a phone in dark mode would otherwise come out as a
+ * black rectangle - and it is the one screen in the app whose whole point is
+ * to end up on paper or in an email. So printing re-declares the light values,
+ * whatever the device prefers. The contrast overrides are trimmed back too:
+ * heavy shadows and translucent panels cost ink and print as grey mush.
+ */
+@media print {
+  :root,
+  :root[data-theme] {
+    --bg: oklch(1 0 0);
+    --surface: oklch(1 0 0);
+    --surface-2: oklch(0.97 0.002 250);
+    --surface-3: oklch(0.93 0.004 250);
+    --ink: oklch(0.2 0.01 260);
+    --ink-2: oklch(0.38 0.01 260);
+    --ink-3: oklch(0.52 0.01 260);
+    --line: oklch(0.9 0.004 250);
+    --line-strong: oklch(0.82 0.006 250);
+    --brand: oklch(0.62 0.15 165);
+    --brand-strong: oklch(0.42 0.13 165);
+    --brand-soft: oklch(0.96 0.02 165);
+    --brand-ink: oklch(0.99 0 0);
+    --shadow-card: none;
+    --shadow-float: none;
+  }
+
+  body {
+    background: #fff;
+  }
 }
 
-/* Animations */
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: oklch(17.5% 0.014 260);
+    --surface: oklch(21.5% 0.016 260);
+    --surface-2: oklch(25% 0.017 260);
+    --surface-3: oklch(29% 0.018 260);
+
+    --ink: oklch(96% 0.006 260);
+    --ink-2: oklch(76% 0.012 260);
+    --ink-3: oklch(60% 0.014 260);
+
+    --line: oklch(29% 0.016 260);
+    --line-strong: oklch(36% 0.018 260);
+
+    --brand: oklch(72% 0.14 165);
+    --brand-strong: oklch(80% 0.15 165);
+    --brand-soft: oklch(30% 0.05 165);
+    --brand-ink: oklch(18% 0.02 165);
+
+    --good: oklch(78% 0.13 155);
+    --good-soft: oklch(30% 0.045 155);
+    --warn: oklch(82% 0.13 85);
+    --warn-soft: oklch(31% 0.05 85);
+    --bad: oklch(72% 0.16 25);
+    --bad-soft: oklch(31% 0.055 25);
+
+    --ring: oklch(72% 0.14 165 / 0.45);
+  }
 }
 
-@keyframes slide-up {
-  from { transform: translateY(100%); }
-  to { transform: translateY(0); }
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-brand: var(--brand);
+  --color-brand-strong: var(--brand-strong);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-ink: var(--brand-ink);
+
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+
+  /* Radii: cards are generous, controls are squarer, pills are pills. */
+  --radius-card: 1.25rem;
+  --radius-control: 0.875rem;
+  --radius-sheet: 1.75rem;
+
+  /* Elevation. Two levels only - a card, and something floating over it. */
+  --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.04), 0 1px 3px oklch(0% 0 0 / 0.03);
+  --shadow-float: 0 10px 30px -12px oklch(0% 0 0 / 0.25), 0 2px 8px oklch(0% 0 0 / 0.06);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
 }
 
-@keyframes slide-down {
-  from { transform: translateY(-20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+/* ── Base ────────────────────────────────────────────────────────────────── */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: none;
 }
 
-@keyframes scale-in {
-  from { transform: scale(0.95); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  /* Money is read in columns and compared at a glance: digits of equal width
+     stop the numbers from dancing as balances change. Set globally, because
+     the one place it is forgotten is the place it is noticed. */
+  font-variant-numeric: tabular-nums;
 }
 
-@keyframes bounce-in {
-  0% { transform: scale(0.3); opacity: 0; }
-  50% { transform: scale(1.05); }
-  70% { transform: scale(0.9); }
-  100% { transform: scale(1); opacity: 1; }
-}
-
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-
-.animate-fade-in {
-  animation: fade-in 0.2s ease-out;
-}
-
-.animate-slide-up {
-  animation: slide-up 0.35s cubic-bezier(0.32, 0.72, 0, 1);
-}
-
-.animate-slide-down {
-  animation: slide-down 0.3s ease-out;
-}
-
-.animate-scale-in {
-  animation: scale-in 0.2s ease-out;
-}
-
-.animate-bounce-in {
-  animation: bounce-in 0.5s ease-out;
-}
-
-/* Skeleton shimmer */
-.skeleton {
-  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-}
-
-/* Touch feedback */
-.tap-highlight {
-  -webkit-tap-highlight-color: transparent;
-}
-
-.tap-highlight:active {
-  opacity: 0.7;
-  transform: scale(0.98);
-  transition: all 0.1s ease;
-}
-
-/* Disable text selection on interactive elements */
-.no-select {
+/* Touch ergonomics: no accidental text selection when tapping rows, but
+   selection stays available inside inputs and anywhere text is content. */
+button,
+[role="button"],
+label {
   -webkit-user-select: none;
   user-select: none;
 }
 
-/* Smooth scrolling */
-html {
-  scroll-behavior: smooth;
-  -webkit-overflow-scrolling: touch;
+input,
+textarea,
+select {
+  font-size: 16px; /* below 16px, iOS zooms the page on focus */
+  -webkit-appearance: none;
+  appearance: none;
 }
 
-/* Mobile viewport fix */
-html, body {
-  overscroll-behavior-y: contain;
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
-/* Custom scrollbar */
-::-webkit-scrollbar {
-  width: 0;
-  height: 0;
+/* ── Motion ──────────────────────────────────────────────────────────────── */
+
+@keyframes u-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-/* PWA standalone mode adjustments */
-@media (display-mode: standalone) {
-  body {
-    padding-top: env(safe-area-inset-top);
+@keyframes u-rise {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes u-sheet {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+@keyframes u-pop {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes u-shimmer {
+  0% { background-position: -180% 0; }
+  100% { background-position: 180% 0; }
+}
+
+@keyframes u-spin {
+  to { transform: rotate(360deg); }
+}
+
+.animate-fade { animation: u-fade 0.18s ease-out both; }
+.animate-rise { animation: u-rise 0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-sheet { animation: u-sheet 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-pop { animation: u-pop 0.2s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-spin-slow { animation: u-spin 0.9s linear infinite; }
+
+/* A stagger utility for lists: each row lands a hair after the one above. */
+.stagger > * { animation: u-rise 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 35ms; }
+.stagger > *:nth-child(3) { animation-delay: 70ms; }
+.stagger > *:nth-child(4) { animation-delay: 105ms; }
+.stagger > *:nth-child(5) { animation-delay: 140ms; }
+.stagger > *:nth-child(6) { animation-delay: 175ms; }
+.stagger > *:nth-child(n + 7) { animation-delay: 200ms; }
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--surface-2) 25%,
+    var(--surface-3) 50%,
+    var(--surface-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: u-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Somebody who asked the system for less motion gets none of it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
-/* Input styles for mobile */
-input, textarea, select {
-  font-size: 16px !important; /* Prevents iOS zoom */
+/* ── Utilities ───────────────────────────────────────────────────────────── */
+
+/* The press feedback used by every tappable surface. */
+.tap {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: transform 0.12s ease, background-color 0.12s ease, opacity 0.12s ease;
+}
+.tap:active {
+  transform: scale(0.98);
+}
+
+.safe-top { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+
+/* A hairline that stays 1 physical pixel on dense screens. */
+.hairline-top { box-shadow: inset 0 1px 0 var(--line); }
+.hairline-bottom { box-shadow: inset 0 -1px 0 var(--line); }
+
+::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Number inputs: no spinners, they are only ever used with a keypad. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
-  appearance: none;
+  margin: 0;
+}
+input[type="number"] { -moz-appearance: textfield; }
+
+@media (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top); }
 }

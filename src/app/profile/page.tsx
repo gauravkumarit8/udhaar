@@ -1,8 +1,28 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import BottomNav from "@/components/BottomNav";
+import Link from "next/link";
+import {
+  BellRing,
+  ChevronRight,
+  Download,
+  HandCoins,
+  LogOut,
+  MessageSquare,
+  Smartphone,
+  Star,
+  Trash2,
+} from "lucide-react";
 import MobileShell from "@/components/MobileShell";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Card,
+  Notice,
+  SectionHeader,
+  cx,
+} from "@/components/ui";
 import { requestJson } from "@/lib/http";
 import { clearClientCaches } from "@/lib/client-cache";
 import {
@@ -25,6 +45,15 @@ interface Channels {
   whatsapp: boolean;
 }
 
+/**
+ * You, and everything about your account.
+ *
+ * The switches are real - the push one writes a preference the server checks
+ * before it sends anything, and also subscribes or unsubscribes *this* browser,
+ * because a switch that claims to have done something it hasn't is the kind of
+ * lie this screen used to tell. Your own data is one tap away, and the two
+ * irreversible things (delete, log out) are at the bottom, in that order.
+ */
 export default function ProfilePage() {
   const [user, setUser] = useState<User | null>(null);
   const [channels, setChannels] = useState<Channels>({ push: true, sms: false, whatsapp: false });
@@ -152,206 +181,208 @@ export default function ProfilePage() {
     window.location.assign("/login");
   };
 
+  const pushHint =
+    browserPush === "granted-subscribed"
+      ? "this device is registered"
+      : browserPush === "denied"
+        ? "blocked in your browser settings"
+        : browserPush === "not-configured"
+          ? "the server has no notification keys yet"
+          : browserPush === "unsupported"
+            ? "this browser can't show notifications"
+            : undefined;
+
   return (
-    <MobileShell title="Profile">
-      <div className="px-5 pb-24">
-        {/* Profile Card */}
-        <div className="bg-gradient-to-br from-emerald-600 to-emerald-700 rounded-3xl p-6 text-center mb-6 shadow-lg shadow-emerald-600/20">
-          <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center text-3xl text-white font-bold mx-auto mb-3">
-            {user?.name?.charAt(0).toUpperCase() || "U"}
-          </div>
-          <h2 className="text-2xl font-extrabold text-white">{user?.name || "User"}</h2>
-          <p className="text-emerald-200 mt-1">+91 {user?.mobile || "—"}</p>
-        </div>
-
-        {/* Settings Sections */}
-        <div className="space-y-3">
-          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide px-4 pt-4 pb-2">
-              Notification Preferences
-            </h3>
-            <ToggleRow
-              label="Push Notifications"
-              icon="📱"
-              on={user?.pushEnabled ?? true}
-              disabled={!loading && !user}
-              onToggle={togglePush}
-              hint={
-                browserPush === "granted-subscribed"
-                  ? "This device is registered"
-                  : browserPush === "denied"
-                    ? "Blocked in your browser settings"
-                    : browserPush === "not-configured"
-                      ? "The server has no VAPID keys yet"
-                      : browserPush === "unsupported"
-                        ? "This browser can't show notifications"
-                        : undefined
-              }
-            />
-            {pushNote && (
-              <p className="px-4 py-3 text-xs text-amber-700 border-t border-slate-50">{pushNote}</p>
-            )}
-            {/* Reminders on WhatsApp/SMS are sent from the lender's own
-                phone, so they are not a preference to toggle - they are how
-                the reminder reaches someone who never installed Udhaar. */}
-            <div className="px-4 py-3 border-t border-slate-50">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">📲</span>
-                <span className="text-sm text-slate-700">WhatsApp reminders</span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1 ml-8">
-                The reminder opens in your own WhatsApp, ready to send — so the borrower
-                doesn&apos;t need this app installed.
-              </p>
+    <MobileShell title="You">
+      <div className="px-4 pb-8 pt-3">
+        <Card padded={false} className="overflow-hidden bg-brand text-brand-ink">
+          <div className="flex items-center gap-4 px-5 py-5">
+            <Avatar name={user?.name || "?"} size={56} className="bg-black/15 text-brand-ink" />
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-[20px] font-bold tracking-tight">
+                {loading ? "…" : user?.name || "You"}
+              </h2>
+              <p className="text-[13px] opacity-80">+91 {user?.mobile || "-"}</p>
             </div>
-            <div className="px-4 py-3 border-t border-slate-50">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">💬</span>
-                <span className="text-sm text-slate-700">Automatic SMS</span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1 ml-8">
+            <Badge className="bg-black/15 text-brand-ink">
+              <span className="size-1.5 rounded-full bg-current" />
+              {user?.pushEnabled ? "notifications on" : "notifications off"}
+            </Badge>
+          </div>
+        </Card>
+
+        <SectionHeader title="Notifications" className="mt-6" />
+        <Card padded={false} className="divide-y divide-line">
+          <button
+            type="button"
+            onClick={togglePush}
+            disabled={savingPush || !user}
+            aria-pressed={user?.pushEnabled ?? false}
+            className="tap flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-surface-2 disabled:opacity-60"
+          >
+            <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+              <Smartphone className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-ink">Push notifications</span>
+              <span className="block text-[11px] text-ink-3">
+                {pushHint ?? "Told the moment a payment is marked or confirmed"}
+              </span>
+            </span>
+            <Switch on={user?.pushEnabled ?? false} busy={savingPush} />
+          </button>
+
+          <div className="flex items-center gap-3 px-4 py-3.5">
+            <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+              <MessageSquare className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-ink">WhatsApp reminders</span>
+              <span className="block text-[11px] leading-snug text-ink-3">
+                Sent from your own WhatsApp, so the borrower needs nothing installed
+              </span>
+            </span>
+          </div>
+
+          {pushNote && (
+            <div className="px-4 py-3.5">
+              <Notice tone="warn">{pushNote}</Notice>
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 px-4 py-3.5">
+            <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+              <BellRing className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-ink">Automatic SMS</span>
+              <span className="block text-[11px] leading-snug text-ink-3">
                 {channels.sms
-                  ? "MSG91 is configured — OTPs are sent for real."
+                  ? "MSG91 is configured - OTPs are sent for real."
                   : "Not set up: SMS is only used for OTPs once MSG91 keys are added. Reminders go through your own phone."}
-              </p>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide px-4 pt-4 pb-2">
-              Reminder Schedule
-            </h3>
-            <p className="px-4 pb-4 text-xs text-slate-400">
-              Udhaar nudges the borrower 2 days before, 1 day before and on the due date, then daily
-              while it stays unpaid. From a loan page you can send a reminder on WhatsApp or by SMS,
-              or as an in-app notification if the borrower installed Udhaar.
-            </p>
-          </div>
-
-          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide px-4 pt-4 pb-2">
-              About
-            </h3>
-            <div className="px-4 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">💰</span>
-                <span className="text-sm text-slate-700">Version</span>
-              </div>
-              <span className="text-sm text-slate-400 font-mono">1.0.0 MVP</span>
-            </div>
-            <div className="px-4 py-3 flex items-center justify-between border-t border-slate-50">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">⭐</span>
-                <span className="text-sm text-slate-700">Rate Udhaar</span>
-              </div>
-              <svg className="w-4 h-4 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </div>
-            <div className="px-4 py-3 flex items-center justify-between border-t border-slate-50">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">🤝</span>
-                <span className="text-sm text-slate-700">Invite a Friend</span>
-              </div>
-              <svg className="w-4 h-4 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wide px-4 pt-4 pb-2">
-              Your data
-            </h3>
-            <p className="px-4 pb-3 text-xs text-slate-400">
-              Yours to take with you: loans, payments, reminders — everything the app holds about
-              you, as one file.
-            </p>
-            <button
-              onClick={handleExport}
-              className="w-full text-left px-4 py-3 flex items-center justify-between border-t border-slate-50 tap-highlight active:bg-slate-50"
-            >
-              <span className="flex items-center gap-3">
-                <span className="text-lg">⬇️</span>
-                <span className="text-sm text-slate-700 font-medium">Download my data</span>
               </span>
-              <span className="text-[10px] text-slate-400 font-medium">JSON</span>
-            </button>
-            <button
-              onClick={handleDelete}
-              disabled={deleting}
-              className="w-full text-left px-4 py-3 flex items-center justify-between border-t border-slate-50 tap-highlight active:bg-red-50 disabled:opacity-60"
-            >
-              <span className="flex items-center gap-3">
-                <span className="text-lg">🗑️</span>
-                <span className="text-sm text-red-600 font-medium">
-                  {deleting ? "Deleting…" : "Delete my account"}
-                </span>
-              </span>
-            </button>
-            {deleteError && (
-              <div className="px-4 py-3 border-t border-red-100 bg-red-50">
-                <p className="text-xs text-red-700">{deleteError}</p>
-                <a href="/dashboard" className="text-xs font-semibold text-red-700 underline mt-1 inline-block">
-                  Go to my loans
-                </a>
-              </div>
-            )}
+            </span>
           </div>
+        </Card>
+
+        <SectionHeader title="Reminders" className="mt-6" />
+        <Card>
+          <p className="text-[13px] leading-relaxed text-ink-2">
+            Udhaar nudges the borrower 2 days before, 1 day before and on the due date, then daily
+            while it stays unpaid. From any payment you can also send one on WhatsApp or by SMS, or
+            as an in-app notification if the borrower installed Udhaar.
+          </p>
+          <div className="mt-3 grid grid-cols-4 gap-2">
+            {["T-2", "T-1", "T0", "7d"].map((tag) => (
+              <span
+                key={tag}
+                className="rounded-control bg-surface-2 py-1.5 text-center text-[11px] font-bold text-ink-2"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        </Card>
+
+        <SectionHeader title="Your data" className="mt-6" />
+        <Card padded={false} className="divide-y divide-line">
+          <button
+            onClick={handleExport}
+            className="tap flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-surface-2"
+          >
+            <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+              <Download className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-ink">Download my data</span>
+              <span className="block text-[11px] text-ink-3">
+                Loans, payments and reminders as one JSON file
+              </span>
+            </span>
+            <ChevronRight className="size-4 text-ink-3" />
+          </button>
 
           <button
-            onClick={handleLogout}
-            className="w-full bg-white border border-red-200 rounded-2xl py-4 text-red-600 font-semibold text-sm tap-highlight active:bg-red-50 transition"
+            onClick={handleDelete}
+            disabled={deleting}
+            className="tap flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-surface-2 disabled:opacity-60"
           >
-            🚪 Logout
+            <span className="flex size-10 items-center justify-center rounded-control bg-bad-soft text-bad">
+              <Trash2 className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-bad">
+                {deleting ? "Deleting…" : "Delete my account"}
+              </span>
+              <span className="block text-[11px] text-ink-3">
+                Refused while a loan is still running - a loan belongs to two people
+              </span>
+            </span>
           </button>
-        </div>
-      </div>
 
-      <BottomNav />
+          {deleteError && (
+            <div className="px-4 py-3.5">
+              <Notice tone="bad">
+                {deleteError}
+                <Link href="/dashboard" className="mt-1 block font-semibold underline">
+                  Go to my loans
+                </Link>
+              </Notice>
+            </div>
+          )}
+        </Card>
+
+        <SectionHeader title="About" className="mt-6" />
+        <Card padded={false} className="divide-y divide-line">
+          <div className="flex items-center gap-3 px-4 py-3.5">
+            <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+              <HandCoins className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-ink">Udhaar</span>
+              <span className="block text-[11px] font-mono text-ink-3">1.0.0 MVP</span>
+            </span>
+          </div>
+          <div className="flex items-center gap-3 px-4 py-3.5">
+            <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+              <Star className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1 text-[14px] font-semibold text-ink">Rate Udhaar</span>
+            <ChevronRight className="size-4 text-ink-3" />
+          </div>
+        </Card>
+
+        <Button
+          block
+          variant="secondary"
+          className="mt-4 text-bad"
+          icon={<LogOut className="size-4" />}
+          onClick={handleLogout}
+        >
+          Log out
+        </Button>
+      </div>
     </MobileShell>
   );
 }
 
-function ToggleRow({
-  label,
-  icon,
-  on,
-  disabled = false,
-  hint,
-  onToggle,
-}: {
-  label: string;
-  icon: string;
-  on: boolean;
-  disabled?: boolean;
-  hint?: string;
-  onToggle?: () => void;
-}) {
+/** A switch that says what it is actually doing while it does it. */
+function Switch({ on, busy }: { on: boolean; busy?: boolean }) {
   return (
-    <div className="px-4 py-3 flex items-center justify-between border-t border-slate-50">
-      <div className="flex items-center gap-3">
-        <span className="text-lg">{icon}</span>
-        <span className={`text-sm ${disabled ? "text-slate-400" : "text-slate-700"}`}>{label}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        {hint && <span className="text-[10px] text-slate-400 font-medium">{hint}</span>}
-        <button
-          type="button"
-          disabled={disabled || !onToggle}
-          aria-pressed={on}
-          onClick={onToggle}
-          className={`relative w-12 h-7 rounded-full transition-colors disabled:opacity-40 ${
-            on ? "bg-emerald-500" : "bg-slate-300"
-          }`}
-        >
-          <div
-            className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-              on ? "translate-x-6" : "translate-x-1"
-            }`}
-          />
-        </button>
-      </div>
-    </div>
+    <span
+      aria-hidden
+      className={cx(
+        "relative h-7 w-12 shrink-0 rounded-full transition-colors",
+        on ? "bg-good" : "bg-line-strong",
+        busy && "opacity-60"
+      )}
+    >
+      <span
+        className={cx(
+          "absolute top-1 size-5 rounded-full bg-white shadow transition-transform",
+          on ? "translate-x-6" : "translate-x-1"
+        )}
+      />
+    </span>
   );
 }

@@ -28,6 +28,20 @@ export interface DueCandidate {
   amount: number;
   computedStatus: string;
   viewerRole: "lender" | "borrower";
+  /*
+   * Everything below is optional and does not affect the pick rule. It is what
+   * the dashboard's single query already has in hand, carried through untouched
+   * so the due card can act on the row it is showing - pay without opening the
+   * loan, or send a reminder without leaving home - instead of sending the
+   * person into a detail screen to fetch the same numbers again. Any other
+   * caller can ignore them, and the unit tests below build candidates without
+   * them exactly as before.
+   */
+  /** The lender's UPI id, when the lender has one. */
+  lenderUpiId?: string | null;
+  /** What is still owed on this installment, split the way a payment is applied. */
+  principalRemaining?: number;
+  interestRemaining?: number;
 }
 
 export interface DueItem extends DueCandidate {
