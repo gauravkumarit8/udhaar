@@ -3,7 +3,7 @@
 /**
  * The primitives every screen is built from.
  *
- * Deliberately small and dependency-free: money apps are read in a hurry, and
+ * Deliberately small: money apps are read in a hurry, and
  * a handful of parts that always behave the same way (a row that is always
  * tappable, a button that always shows its pressed state, a sheet that always
  * traps focus) is worth more than a long tail of bespoke markup. It is also
@@ -12,10 +12,61 @@
  */
 import type { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes } from "react";
 import { useEffect, useRef } from "react";
+import { extendTailwindMerge } from "tailwind-merge";
 import { Loader2, X } from "lucide-react";
 
+/**
+ * The class-name joiner, which also reconciles.
+ *
+ * Two Tailwind utilities that set the same property do not resolve by the order
+ * they are written in an element's class list - they resolve by the order
+ * Tailwind happened to emit them in the stylesheet, which is not something a
+ * component can see. So `<Card className="bg-brand">`, whose base is
+ * `bg-surface`, was a coin toss: when this was written the stylesheet put
+ * `bg-surface` last, and every brand-coloured hero rendered as a white card
+ * with near-white text on it.
+ *
+ * `twMerge` removes the guesswork by dropping the earlier of two conflicting
+ * utilities, so a caller's override always wins - which is the only sensible
+ * contract for a design system built out of overridable primitives.
+ *
+ * The custom scales are declared because they are not in Tailwind's default
+ * theme: `rounded-card` and friends are this app's own radius steps, and the
+ * semantic colour names are its tokens. Everything else `twMerge` already
+ * knows, and unknown classes (`tap`, `stagger`, `animate-rise`) are passed
+ * through untouched.
+ */
+const merge = extendTailwindMerge({
+  extend: {
+    theme: {
+      radius: ["card", "control", "sheet"],
+      color: [
+        "bg",
+        "surface",
+        "surface-2",
+        "surface-3",
+        "ink",
+        "ink-2",
+        "ink-3",
+        "line",
+        "line-strong",
+        "brand",
+        "brand-strong",
+        "brand-soft",
+        "brand-ink",
+        "good",
+        "good-soft",
+        "warn",
+        "warn-soft",
+        "bad",
+        "bad-soft",
+      ],
+    },
+  },
+});
+
 export function cx(...parts: Array<string | false | null | undefined>): string {
-  return parts.filter(Boolean).join(" ");
+  return merge(parts.filter(Boolean).join(" "));
 }
 
 /* ── Money ───────────────────────────────────────────────────────────────── */
