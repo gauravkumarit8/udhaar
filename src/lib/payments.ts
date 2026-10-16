@@ -141,6 +141,29 @@ export function allocatePayment({
  * reminder sweep. `principalWaived`/`interestWaived` are optional so callers
  * holding a pre-0005 row (or a test fixture) still work.
  */
+/**
+ * The payments sitting on this viewer's confirmation.
+ *
+ * In 2-side mode a marked payment is a *claim*: it reaches the schedule only
+ * once the other side confirms, and until then the EMI is still open and the
+ * person who paid is waiting on an answer. The marker may confirm their own
+ * payment in exactly one case - when there is nobody else on the loan to ask
+ * (the counterparty never joined Udhaar), because otherwise it would sit
+ * pending forever. Both the loan screen's payment list and the "waiting for
+ * your yes" card at the top of it come from here, so they can never disagree
+ * about what is waiting.
+ */
+export function awaitingConfirmation<T extends { markedByUserId: string; status: string }>(
+  payments: T[],
+  viewerId: string | null | undefined,
+  noCounterparty: boolean
+): T[] {
+  return payments.filter(
+    (payment) =>
+      payment.status === "pending" && (payment.markedByUserId !== viewerId || noCounterparty)
+  );
+}
+
 export function remainingFor(inst: {
   principalAmount: string;
   interestAmount: string;
