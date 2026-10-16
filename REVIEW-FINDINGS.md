@@ -6,6 +6,7 @@
 > | Fixed | Still open |
 > |-------|-----------|
 > | **C1, C2** (sessions, OTP_MODE incl. explicit dummy mode) | Low: Capacitor remote-URL shell (`server.url` points at the hosted app) |
+|  | Dependency advisories - five high, fourteen moderate, all in tooling or in code paths this app does not run; checked one by one on 2026-10-15, see [Dependency advisories](#dependency-advisories-and-why-they-stand) |
 > | **H1–H6** (FK 500s, payment allocation, 2-side dead-end, Render static assets, release workflows, lint/CI) | |
 > | **M1–M8, M10, M11, M13, M14** | |
 > | **M9** — server-side scheduled reminders: `POST /api/reminders/run` + the free `.github/workflows/reminders.yml` clock (09:00 IST daily), `CRON_SECRET`-guarded, idempotent per EMI per day via `reminders.dedupe_key` | |
@@ -338,6 +339,32 @@ No test runner, no `test` script, no test files — and the riskiest logic in th
 - ~~**`deploy-web.yml` sets `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true`** — worth removing once the underlying action is updated.~~ **Fixed in the workflow-hygiene pass:** every action is on its Node 24 release and the escape hatch is gone.
 
 ---
+
+## Dependency advisories, and why they stand
+
+`npm audit` reports five high and fourteen moderate advisories. They were each
+traced to the code that would have to run for them to matter, on 2026-10-15,
+because "there is an advisory" and "there is a reachable bug" are different
+statements - and because `npm audit fix --force` "fixes" two of these chains by
+*downgrading* the package that needs them.
+
+| Advisory | Severity | What it would take to matter here |
+|---|---|---|
+| `braces` → `micromatch` → `fast-glob` → `@next/eslint-plugin-next` → `eslint-config-next` | high | A deeply nested glob pattern, in ESLint, on a developer's machine. **There is no fixed release to move to**: `braces 3.0.3` *is* the newest, which is why the audit's remedy is a downgrade to `eslint-config-next@14`. Lint tooling only: it is not in the runtime image and never handles a request. |
+| `esbuild` ← `@esbuild-kit/core-utils` ← `drizzle-kit` | moderate | The advisory is in esbuild's *dev server* (`GHSA-67mh-4wv8-2f99`), and nothing here runs it: `drizzle-kit` uses esbuild once, to load `drizzle.config.ts` for a migration. The newest `drizzle-kit` (0.31.11) still depends on `@esbuild-kit@3.3.2` with its own esbuild 0.18, vendored below the top-level one; an `overrides` entry would force a pairing upstream never tested. |
+| `uuid <11.1.1` ← `google-gax`/`gaxios` ← `firebase-admin`, and ← `xcode` ← `@capacitor/cli` | moderate | The bug is a missing bounds check in `uuid.v3/v5/v6` **when the caller passes a buffer**. Nothing in either tree calls those overloads - they mint request ids with `v4()`. Measured, not assumed: `firebase-admin@14` removes six *audit lines* and leaves the `uuid` finding exactly where it was, while deleting the `credential.cert` / `messaging()` namespace API that `src/lib/push.ts` uses. Not a trade worth making blind. |
+| `xcode` ← `@capacitor/cli` (`>=0.9.2`, no fix published), `@esbuild-kit/*` | moderate | Native project generation and a config loader. Neither is in a request path. |
+
+Fixed on 2026-10-15: `postcss` 8.5.8 → 8.5.30, which clears three advisories
+including a high (arbitrary file read through an attacker-controlled
+`sourceMappingURL`, and the incomplete fix of it). It is a build-time
+dependency, so the guard is the build itself plus `npm run verify:ui`.
+
+Two things worth knowing before touching any of this again: `npm audit fix
+--force` downgrades `eslint-config-next` and `drizzle-kit`, and a
+`firebase-admin` major bump needs `src/lib/push.ts` ported to the modular API
+(`firebase-admin/app` + `firebase-admin/messaging`) before it will send
+anything - see the table above for what it would buy.
 
 ## Evidence log
 
