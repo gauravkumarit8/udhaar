@@ -36,6 +36,12 @@ const REQUIRED_COLUMNS = [
   { table: "installments", column: "principal_waived" },
   { table: "installments", column: "interest_waived" },
   { table: "payments", column: "unapplied_amount" },
+  // WhatsApp reminders (migration 0008): the provider's message id, its status,
+  // and why it failed. Export reads whole rows, so a database without these
+  // answers 503 on "download my data" for every account that has a loan.
+  { table: "reminders", column: "provider_message_id" },
+  { table: "reminders", column: "provider_status" },
+  { table: "reminders", column: "provider_error" },
 ];
 
 const REQUIRED_TABLES = [
@@ -47,6 +53,7 @@ const REQUIRED_TABLES = [
   "payments",
   "reminders",
   "device_tokens",
+  "whatsapp_opt_outs",
 ];
 
 const GREEN = "\x1b[32m";

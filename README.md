@@ -1090,6 +1090,30 @@ prints the reason without a secret having to exist in the repository.
 
 ## 🚢 Deployment notes
 
+- **The database is migrated at boot, and the boot says what it did.** Every
+  boot runs `node scripts/migrate-at-boot.mjs` first (`render.yaml`'s start
+  command and the container entrypoint both do it), which retries three times -
+  a suspended Neon database can refuse the first connection while it wakes - and
+  writes what happened to `MIGRATION_REPORT_PATH`
+  (`/tmp/udhaar-migration-report.json` by default). When the schema is behind,
+  `/api/health` reads that file back and says **which of four things happened**:
+
+  | `/api/health` says | What it means | What to do |
+  |---|---|---|
+  | `no report - the host may not be migrating at start-up` | the start command is not running the script | fix the host's start command, or run `npm run db:migrate` once |
+  | `the boot migration failed: <reason>` | it ran and could not connect (or DDL failed) | the reason is in the line: unreachable host, refused password, and so on |
+  | `applied ... yet this app still cannot see it` | it migrated a *different* database | compare `DATABASE_URL` on the service with the one the migration used |
+  | `found nothing to apply, yet the schema is behind` | the journal claims a migration that never ran | `npm run check-deploy` names every missing table and column |
+
+  The reason itself is detail, so it is only shown to a caller who sends the
+  health token; the public line stays generic and carries the fix.
+- **A data export never fails wholesale.** `GET /api/account/export` reads whole
+  rows, so a column added by a migration the database has not applied would
+  otherwise turn "download my data" into a 503 for every account with a loan -
+  which is exactly what happened on 2026-10-15. Each section is now fetched
+  independently: whatever cannot be read is named in the payload's `warnings`
+  array and the rest still exports. The data is not lost, and the export says so
+  rather than silently returning less.
 - **A deploy is not finished until the app says it is.** The `verify-production`
   job in `deploy-web.yml` polls the deployed `/api/health` until it reports the
   commit that was just released *and* a healthy schema, and fails the workflow

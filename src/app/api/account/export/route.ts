@@ -18,6 +18,39 @@ import { withErrors } from "@/lib/api-handler";
  * fetched through the loan screen; and anything belonging to the other person
  * (their profile, their other loans) - only the shared loan records.
  */
+/** A query whose failure is reported, not fatal - see the comment in the handler. */
+async function readOrWarn<T>(label: string, query: Promise<T[]>): Promise<{ rows: T[]; warnings: string[] }> {
+  try {
+    return { rows: await query, warnings: [] };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    // The driver's message names the column; that is what makes this fixable.
+    console.error(`[export] ${label} could not be read: ${detail}`);
+    return {
+      rows: [],
+      warnings: [
+        `${label} could not be included: the database is missing something this version of the app needs ` +
+          `(transient - it does not mean the data is gone; it is still on the loan). Run npm run db:migrate against the database.`,
+      ],
+    };
+  }
+}
+
+async function fetchSections(loanIds: string[]) {
+  const [installmentsResult, paymentsResult, remindersResult] = await Promise.all([
+    readOrWarn("instalments", db.select().from(installments).where(inArray(installments.loanId, loanIds))),
+    readOrWarn("payments", db.select().from(payments).where(inArray(payments.loanId, loanIds))),
+    readOrWarn("notifications", db.select().from(reminders).where(inArray(reminders.loanId, loanIds))),
+  ]);
+
+  return {
+    installments: installmentsResult.rows,
+    payments: paymentsResult.rows,
+    notifications: remindersResult.rows,
+    warnings: [...installmentsResult.warnings, ...paymentsResult.warnings, ...remindersResult.warnings],
+  };
+}
+
 async function handleGET() {
   const session = await getSession();
   if (!session) {
@@ -48,14 +81,22 @@ async function handleGET() {
 
   const loanIds = myLoans.map((l) => l.id);
 
-  const [myInstallments, myPayments, myNotifications] =
-    loanIds.length > 0
-      ? await Promise.all([
-          db.select().from(installments).where(inArray(installments.loanId, loanIds)),
-          db.select().from(payments).where(inArray(payments.loanId, loanIds)),
-          db.select().from(reminders).where(inArray(reminders.loanId, loanIds)),
-        ])
-      : [[], [], []];
+  /*
+   * Each section is fetched on its own so that one unreadable table cannot take
+   * the whole export with it.
+   *
+   * Why this exists: on 2026-10-15 a release shipped a migration for a column
+   * this query reads only incidentally - it selects whole rows - and every
+   * account with a loan got a 503 from "download my data" until the migration
+   * was applied. Failing honestly is right for a *write* path; for a data
+   * export it means the person gets nothing at all, over a column some other
+   * feature happens to own. So the export still answers, and says in the
+   * payload what it could not include - the same principle as the reminder
+   * feed: never overstate, never silently drop.
+   */
+  const empty = { installments: [], payments: [], notifications: [], warnings: [] as string[] };
+  const sections = loanIds.length > 0 ? await fetchSections(loanIds) : empty;
+  const { installments: myInstallments, payments: myPayments, notifications: myNotifications, warnings } = sections;
 
   // Rows written before recipient_id existed have NULL there, and belong to
   // whichever side of the loan the viewer is - the same rule the feed uses.
@@ -92,6 +133,7 @@ async function handleGET() {
     notifications: notifications.sort(
       (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
     ),
+    ...(warnings.length > 0 ? { warnings } : {}),
     counts: {
       loans: myLoans.length,
       installments: myInstallments.length,

@@ -20,7 +20,7 @@
  * a caller can tell the difference in its logs.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -38,9 +38,30 @@ function warn(message) {
   console.warn(`[migrate] ${message}`);
 }
 
+/*
+ * Write down what happened, where the app can read it.
+ *
+ * `/api/health` is the only thing anybody looks at when a deploy goes wrong,
+ * and "schema: not up to date" does not distinguish "the migration was never
+ * run" from "it ran and failed" from "it ran against another database" - three
+ * failures with three different fixes. This file is the difference. It is
+ * best-effort: a host that cannot write it still boots.
+ */
+const reportPath = process.env.MIGRATION_REPORT_PATH || "/tmp/udhaar-migration-report.json";
+
+function writeReport(report) {
+  try {
+    writeFileSync(reportPath, JSON.stringify({ at: new Date().toISOString(), ...report }, null, 2));
+    log(`wrote the boot migration report to ${reportPath}`);
+  } catch (error) {
+    warn(`could not write the boot migration report (${error.message}) - continuing`);
+  }
+}
+
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   warn("DATABASE_URL is not set - skipping migrations. /api/health will explain.");
+  writeReport({ ok: false, applied: [], attempts: 0, message: "DATABASE_URL is not set" });
   process.exit(1);
 }
 
@@ -78,12 +99,64 @@ const pool = new pg.Pool({
   ssl: useSsl ? { rejectUnauthorized: false } : undefined,
 });
 
-try {
-  log("applying migrations");
-  await migrate(drizzle(pool), { migrationsFolder: path.join(projectRoot, "drizzle") });
-  log("migrations applied - the database matches the code");
-  process.exit(0);
-} catch (error) {
+/**
+ * How many rows the journal holds, so we can say whether anything was applied
+ * rather than assuming it. Returns null when the table is not there yet, which
+ * itself means "nothing has ever been applied".
+ */
+async function appliedCount() {
+  try {
+    const { rows } = await pool.query('select count(*)::int as count from "drizzle"."__drizzle_migrations"');
+    return rows[0]?.count ?? 0;
+  } catch {
+    return null;
+  }
+}
+
+const ATTEMPTS = 3;
+const RETRY_DELAY_MS = [3_000, 10_000];
+
+let lastError = null;
+
+for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+  const before = await appliedCount();
+
+  try {
+    log(`applying migrations${attempt > 1 ? ` (attempt ${attempt} of ${ATTEMPTS})` : ""}`);
+    await migrate(drizzle(pool), { migrationsFolder: path.join(projectRoot, "drizzle") });
+
+    const after = await appliedCount();
+    const applied = before !== null && after !== null && after > before ? [`${after - before} migration(s)`] : [];
+
+    log("migrations applied - the database matches the code");
+    writeReport({
+      ok: true,
+      applied,
+      attempts: attempt,
+      message: applied.length > 0 ? `applied ${applied[0]}` : "nothing was pending - the schema already matched the code",
+    });
+    await pool.end().catch(() => {});
+    process.exit(0);
+  } catch (error) {
+    lastError = error;
+
+    /*
+     * Retry: the first connection to a suspended Neon database (or any host
+     * that cold-starts its database alongside the app) can fail while the
+     * compute wakes. Postgres DDL is transactional, so a failed attempt left
+     * nothing half-applied - trying again is safe rather than hopeful.
+     */
+    if (attempt < ATTEMPTS) {
+      const wait = RETRY_DELAY_MS[attempt - 1] ?? 10_000;
+      const reason = error instanceof Error ? error.message : String(error);
+      warn(`migrations did not apply on attempt ${attempt} (${reason}) - retrying in ${wait / 1000}s`);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+}
+
+{
+  const error = lastError;
   // The message is the whole point: a boot log that says "failed" with no
   // reason is how a deploy reaches production with the schema behind it.
   // drizzle wraps the driver error, so the cause is where "connection refused"
@@ -94,9 +167,9 @@ try {
           .filter(Boolean)
           .join(" ")
       : String(error);
-  warn(`migrations did NOT apply: ${detail}`);
+  warn(`migrations did NOT apply after ${ATTEMPTS} attempt(s): ${detail}`);
   warn("the app will still start; check /api/health, then run npm run db:migrate or npm run db:push");
-  process.exit(1);
-} finally {
+  writeReport({ ok: false, applied: [], attempts: ATTEMPTS, message: detail });
   await pool.end().catch(() => {});
+  process.exit(1);
 }
