@@ -67,6 +67,27 @@ export function toNumber(input: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * Does this look like a uuid?
+ *
+ * Every route that takes an id in its path hands it straight to Postgres, and
+ * a uuid column rejects anything else with error 22P02 - which the API wrapper
+ * reports as "something went wrong on the server", a 500 for what is really
+ * "there is no such loan". Asking this first turns a malformed link into the
+ * honest 404, and keeps the logs free of unhandled database errors that look
+ * like outages.
+ *
+ * Shape only, any version: the ids here are v4 from gen_random_uuid(), but the
+ * point is to reject "abc" and ";;; drop table" before the database sees them,
+ * not to police which uuid variant arrived.
+ */
+export function isUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
 /** True only for a real calendar date in YYYY-MM-DD form. */
 export function isValidDateString(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;

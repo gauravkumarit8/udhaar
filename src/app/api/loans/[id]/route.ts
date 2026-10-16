@@ -5,7 +5,7 @@ import { getSession } from "@/lib/auth";
 import { countUnreadNotifications } from "@/lib/unread-count";
 import { computeInstallmentStatus, generateInstallmentSchedule } from "@/lib/calculations";
 import { and, eq } from "drizzle-orm";
-import { parseLoanInput } from "@/lib/validation";
+import { isUuid, parseLoanInput } from "@/lib/validation";
 import { hasNoCounterparty, isLoanAuthor, isLoanLender, isLoanParty, loanRole } from "@/lib/loan-access";
 import { withErrors } from "@/lib/api-handler";
 import { loanAddedNotice, loanUpdatedNotice, notifyCounterparty } from "@/lib/notify";
@@ -20,6 +20,12 @@ async function handleGET(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Loan not found" }, { status: 404 });
+  }
+
 
   const [loan] = await db.select().from(loans).where(eq(loans.id, id)).limit(1);
   if (!loan) {
@@ -96,6 +102,12 @@ async function handlePATCH(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Loan not found" }, { status: 404 });
+  }
+
 
   const [loan] = await db.select().from(loans).where(eq(loans.id, id)).limit(1);
   if (!loan) {
@@ -360,6 +372,12 @@ async function handleDELETE(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Loan not found" }, { status: 404 });
+  }
+
 
   const [loan] = await db.select().from(loans).where(eq(loans.id, id)).limit(1);
   if (!loan) {

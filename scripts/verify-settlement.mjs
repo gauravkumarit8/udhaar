@@ -421,6 +421,32 @@ async function main() {
     check("the borrower marks a payment", marked.status, 200);
     check("...which waits for the lender", marked.json.payment?.status, "pending");
 
+    /*
+     * The feed is where that news arrives, so the feed is where it can be
+     * answered: the notification carries the payment it is waiting on (additive
+     * and optional - the reminders table has no payment id, so it is matched on
+     * the installment) and the amount, so the buttons need no second request.
+     */
+    const claimId = marked.json.payment.id;
+    const lenderFeed = await call("GET", "/api/notifications", { token: LENDER_TOKEN });
+    const waitingOn = (lenderFeed.json.notifications ?? []).find((n) => n.paymentId === claimId);
+    check("the claim reaches the lender's feed as a payable row", Boolean(waitingOn), true);
+    check("...naming the payment", waitingOn?.paymentId, claimId);
+    check("...and what it is for", Number(waitingOn?.paymentAmount ?? 0), 1000);
+    check("...on the installment the claim is against", waitingOn?.installmentId, emi.id);
+
+    /*
+     * The rule that must never bend: the marker is not offered their own claim,
+     * because confirming it is a 403 - offered anyway it reads as a broken
+     * button. pendingPaymentByInstallment() is where that lives.
+     */
+    const markerFeed = await call("GET", "/api/notifications", { token: BORROWER_TOKEN });
+    check(
+      "the marker's own feed is not offered the claim",
+      (markerFeed.json.notifications ?? []).some((n) => n.paymentId === claimId),
+      false
+    );
+
     const blocked = await call("POST", `/api/installments/${emi.id}/pay`, {
       token: BORROWER_TOKEN,
       body: { amount: emiTotal.toFixed(2), paymentType: "both" },
@@ -497,6 +523,13 @@ async function main() {
     const done = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
     check("...and the loan closes", done.loan.status, "closed");
 
+    const settledFeed = await call("GET", "/api/notifications", { token: LENDER_TOKEN });
+    check(
+      "an answered claim is no longer offered as a payment to act on",
+      (settledFeed.json.notifications ?? []).some((n) => n.paymentId === pendingId),
+      false
+    );
+
     check(
       "a withdrawn claim cannot be confirmed afterwards",
       (
@@ -566,6 +599,36 @@ async function main() {
     check("deleting is refused while a loan is open", refused.status, 409);
     check("...and says what to do instead", String(refused.json.action ?? "").includes("write-off"), true);
     check("nothing was deleted", (await call("GET", "/api/loans", { token: LENDER_TOKEN })).status, 200);
+  }
+
+  console.log("\nA malformed id names nothing, so it is a 404 and not a 500");
+  {
+    /*
+     * A link with a mangled id used to reach Postgres as-is, which rejected it
+     * with 22P02 - "something went wrong on the server", a 500, for a request
+     * that names nothing at all (and a database error in the logs that looks
+     * like an outage). Every id-taking route now checks first.
+     */
+    const malformed = "not-a-uuid";
+    for (const [label, method, path] of [
+      ["a payment to answer", "PATCH", `/api/payments/${malformed}/confirm`],
+      ["a payment's proof", "GET", `/api/payments/${malformed}/proof`],
+      ["an installment to pay", "POST", `/api/installments/${malformed}/pay`],
+      ["an installment to remind", "POST", `/api/installments/${malformed}/remind`],
+      ["a loan to read", "GET", `/api/loans/${malformed}`],
+      ["a loan to close", "POST", `/api/loans/${malformed}/close`],
+      ["a loan to settle", "POST", `/api/loans/${malformed}/payoff`],
+    ]) {
+      // A GET may not carry a body (fetch refuses), and these routes only need
+      // the id in the path to prove the point.
+      const res = await call(method, path, method === "GET" ? { token: LENDER_TOKEN } : { token: LENDER_TOKEN, body: {} });
+      check(`${label}: ${method} ${path.replace(malformed, "<bad>")} answers 404`, res.status, 404);
+    }
+    check(
+      "...and never leaks that the database refused it",
+      (await call("GET", `/api/loans/${malformed}`, { token: LENDER_TOKEN })).json.error,
+      "Loan not found"
+    );
   }
 
   console.log("\nWho may do what");

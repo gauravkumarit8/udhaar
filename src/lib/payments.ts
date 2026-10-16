@@ -164,6 +164,38 @@ export function awaitingConfirmation<T extends { markedByUserId: string; status:
   );
 }
 
+/**
+ * Which notification carries a payment this viewer has to answer.
+ *
+ * A "payment_marked" notification is the moment someone learns that money has
+ * been claimed against their loan and that it is their turn. The notification
+ * row itself has no payment id (the reminders table records *what was said*,
+ * not what it was about), so the API finds the pending payment on the same
+ * installment and attaches it - but only when answering is actually this
+ * viewer's job, because offering Confirm on a payment you made yourself gets a
+ * 403 from the API and would read as a bug.
+ *
+ * Pure, and tested, because "whose turn is it" is the same question
+ * awaitingConfirmation() answers on the loan screen; the two must agree.
+ */
+export interface PendingPaymentRef {
+  installmentId: string | null;
+  markedByUserId: string;
+}
+
+export function pendingPaymentByInstallment<T extends PendingPaymentRef>(
+  pending: T[],
+  viewerId: string | null | undefined
+): Map<string, T> {
+  const byInstallment = new Map<string, T>();
+  for (const payment of pending) {
+    // Someone else's claim on this installment: it is waiting for this viewer.
+    if (!payment.installmentId || payment.markedByUserId === viewerId) continue;
+    byInstallment.set(payment.installmentId, payment);
+  }
+  return byInstallment;
+}
+
 export function remainingFor(inst: {
   principalAmount: string;
   interestAmount: string;

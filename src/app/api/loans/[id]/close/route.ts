@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 import { isLoanLender, isUnclaimedBorrowerLoan, waiverRefusal } from "@/lib/loan-access";
 import { loanClosedNotice, notifyCounterparty } from "@/lib/notify";
+import { isUuid } from "@/lib/validation";
 
 /**
  * Closes a loan. Two ways, because real loans end two ways:
@@ -32,6 +33,12 @@ async function handlePOST(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Loan not found" }, { status: 404 });
+  }
+
 
   // Body is optional: `POST /close` with nothing at all still means "settled".
   let payload: Record<string, unknown> = {};

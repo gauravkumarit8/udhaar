@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   allocatePayment,
   awaitingConfirmation,
+  pendingPaymentByInstallment,
   planPayoff,
   remainingFor,
   summarizeSettlement,
@@ -407,5 +408,49 @@ describe("awaitingConfirmation", () => {
   it("copes with a viewer id that is null (a loan with one side)", () => {
     expect(awaitingConfirmation([pending("anyone")], null, true)).toHaveLength(1);
     expect(awaitingConfirmation([pending("anyone")], null, false)).toHaveLength(1);
+  });
+});
+
+/**
+ * The bridge between a notification and the payment it is about.
+ *
+ * The reminders table has no payment id, so the API matches on the installment
+ * - and the only thing that must never happen is offering somebody the Confirm
+ * button for their own claim, which the API answers with 403. That rule lives
+ * here, in one place, next to the loan screen's version of the same question.
+ */
+describe("pendingPaymentByInstallment", () => {
+  const claim = (installmentId: string | null, markedByUserId: string) => ({
+    installmentId,
+    markedByUserId,
+  });
+  const ME = "user-me";
+  const THEM = "user-them";
+
+  it("matches a claim waiting on this viewer", () => {
+    const map = pendingPaymentByInstallment([claim("emi-1", THEM)], ME);
+    expect(map.get("emi-1")).toEqual(claim("emi-1", THEM));
+  });
+
+  it("leaves out the viewer's own claim, which is not theirs to confirm", () => {
+    const map = pendingPaymentByInstallment([claim("emi-1", ME)], ME);
+    expect(map.size).toBe(0);
+  });
+
+  it("ignores a payment with no installment to match on", () => {
+    expect(pendingPaymentByInstallment([claim(null, THEM)], ME).size).toBe(0);
+  });
+
+  it("keeps one claim per installment, so two emis do not collide", () => {
+    const map = pendingPaymentByInstallment(
+      [claim("emi-1", THEM), claim("emi-2", THEM), claim("emi-2", ME)],
+      ME
+    );
+    expect([...map.keys()].sort()).toEqual(["emi-1", "emi-2"]);
+    expect(map.get("emi-2")).toEqual(claim("emi-2", THEM));
+  });
+
+  it("does nothing at all when there are no pending payments", () => {
+    expect(pendingPaymentByInstallment([], ME).size).toBe(0);
   });
 });

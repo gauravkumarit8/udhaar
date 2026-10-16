@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { reminders, loans, users } from "@/db/schema";
+import { reminders, loans, payments, users } from "@/db/schema";
 import { getSession } from "@/lib/auth";
 import { countUnreadNotifications } from "@/lib/unread-count";
-import { and, eq, isNull, or, desc, sql } from "drizzle-orm";
+import { pendingPaymentByInstallment } from "@/lib/payments";
+import { and, eq, inArray, isNull, or, desc, sql } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
 
 async function handleGET(req: NextRequest) {
@@ -73,17 +74,52 @@ async function handleGET(req: NextRequest) {
    */
   const unreadCount = await countUnreadNotifications(session.id);
 
-  const notifications = rows.map((r) => ({
-    id: r.id,
-    installmentId: r.installmentId,
-    loanId: r.loanId,
-    channel: r.channel,
-    message: r.message,
-    sentAt: r.sentAt,
-    status: r.status,
-    type: r.type,
-    viewerRole: r.lenderId === session.id ? ("lender" as const) : ("borrower" as const),
-  }));
+  /*
+   * Does any of this need an answer? A "payment_marked" notification is how
+   * somebody finds out that money has been claimed against their loan and that
+   * it is their turn to confirm or reject it. The row has no payment id - the
+   * reminders table records what was said, not what it was about - so the
+   * pending payment is looked up by the installment it belongs to, in one
+   * query for the whole page rather than one per row.
+   *
+   * Only claims marked by *someone else* are attached: offering Confirm on your
+   * own payment gets a 403 from the API, which reads as a bug. That rule lives
+   * in pendingPaymentByInstallment(), next to the loan screen's version of it.
+   */
+  const installmentIds = [...new Set(rows.map((r) => r.installmentId).filter(Boolean))];
+  const pending = installmentIds.length
+    ? await db
+        .select({
+          id: payments.id,
+          installmentId: payments.installmentId,
+          amount: payments.amount,
+          paymentType: payments.paymentType,
+          markedByUserId: payments.markedByUserId,
+        })
+        .from(payments)
+        .where(and(inArray(payments.installmentId, installmentIds), eq(payments.status, "pending")))
+    : [];
+  const waiting = pendingPaymentByInstallment(pending, session.id);
+
+  const notifications = rows.map((r) => {
+    const claim = r.installmentId ? waiting.get(r.installmentId) : undefined;
+    return {
+      id: r.id,
+      installmentId: r.installmentId,
+      loanId: r.loanId,
+      channel: r.channel,
+      message: r.message,
+      sentAt: r.sentAt,
+      status: r.status,
+      type: r.type,
+      viewerRole: r.lenderId === session.id ? ("lender" as const) : ("borrower" as const),
+      // Additive and optional: the payment this notification is waiting on, if
+      // it is waiting on one, so the feed can answer it without opening the loan.
+      paymentId: claim?.id ?? null,
+      paymentAmount: claim ? Number(claim.amount) : null,
+      paymentType: claim?.paymentType ?? null,
+    };
+  });
 
   return NextResponse.json(
     { notifications, unread: unreadCount },

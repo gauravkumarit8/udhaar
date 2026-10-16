@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import {
+  isUuid,
   parseLoanInput,
   validateProofUrl,
   validateProofId,
@@ -366,5 +367,40 @@ describe("parseLoanInput, the borrower's side", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.lenderName).toBe("Aunty Kamla");
+  });
+});
+
+/**
+ * Guarding the route boundaries.
+ *
+ * Every route that takes an id in its path used to hand the raw string to
+ * Postgres, which rejects a non-uuid with 22P02 - so /api/payments/abc/confirm
+ * answered 500 "something went wrong on the server" for a request that names
+ * nothing. isUuid is the check that turns that into a 404.
+ */
+describe("isUuid", () => {
+  it("accepts the ids this app actually uses", () => {
+    expect(isUuid("2ef444f9-d28c-46e9-a120-5d3b7c0ca986")).toBe(true);
+    expect(isUuid("D0D0D0D0-0000-4000-8000-00000000D0D0")).toBe(true);
+  });
+
+  it("rejects anything that is not an id, before the database sees it", () => {
+    for (const value of ["abc", "", "123", "null", "undefined", "1; drop table users;--", "-1"]) {
+      expect(isUuid(value), value).toBe(false);
+    }
+  });
+
+  it("rejects a uuid with the wrong number of digits or a stray character", () => {
+    expect(isUuid("2ef444f9-d28c-46e9-a120-5d3b7c0ca98")).toBe(false); // 11 in the last group
+    expect(isUuid("2ef444f9d28c46e9a1205d3b7c0ca986")).toBe(false); // no dashes
+    expect(isUuid("2ef444f9-d28c-46e9-a120-5d3b7c0ca98g")).toBe(false); // g is not hex
+    expect(isUuid(" 2ef444f9-d28c-46e9-a120-5d3b7c0ca986 ")).toBe(false);
+  });
+
+  it("rejects values that are not strings at all", () => {
+    expect(isUuid(undefined)).toBe(false);
+    expect(isUuid(null)).toBe(false);
+    expect(isUuid(42)).toBe(false);
+    expect(isUuid({ id: "2ef444f9-d28c-46e9-a120-5d3b7c0ca986" })).toBe(false);
   });
 });

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { BellRing, Check, Clock, HandCoins, Receipt, RotateCw } from "lucide-react";
+import { BellRing, Check, Clock, HandCoins, Receipt, RotateCw, X } from "lucide-react";
 import MobileShell, { ListSkeleton } from "@/components/MobileShell";
 import { PaySheet, RemindSheet, type PayTarget, type RemindTarget } from "@/components/ActionSheets";
 import {
@@ -27,7 +27,16 @@ interface Reminder {
   message: string;
   sentAt: string;
   status: string;
+  type?: string | null;
   viewerRole: "lender" | "borrower";
+  /**
+   * The payment this notification is waiting on, if it is waiting on one.
+   * Attached by the API only when answering is this viewer's job - see
+   * pendingPaymentByInstallment() in src/lib/payments.ts.
+   */
+  paymentId?: string | null;
+  paymentAmount?: number | null;
+  paymentType?: string | null;
 }
 
 interface DueItem {
@@ -66,6 +75,10 @@ export default function ActivityPage() {
 
   const [payFor, setPayFor] = useState<DueItem | null>(null);
   const [remindFor, setRemindFor] = useState<DueItem | null>(null);
+  /** The payment whose Confirm/Reject from this feed is in flight. */
+  const [busyPaymentId, setBusyPaymentId] = useState<string | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [settledMessage, setSettledMessage] = useState<string | null>(null);
 
   // Marks the feed read, which is what the tab badge counts. Fire-and-forget:
   // the badge is a convenience, and the screen must render whether or not this
@@ -83,6 +96,51 @@ export default function ActivityPage() {
   // passing, is exactly when something new is likely to have happened on the
   // other side of the loan.
   const [refreshKey, setRefreshKey] = useState(0);
+
+  /**
+   * Answer a claim from the feed itself.
+   *
+   * The notification that tells somebody money has been claimed against their
+   * loan used to be a signpost: tap it, land on the loan screen, find the card,
+   * answer. This is the screen the news arrives on, so it is where the answer
+   * belongs - the same PATCH the loan screen sends, and the feed reloads so the
+   * row and the numbers behind it agree.
+   */
+  const answerClaim = useCallback(
+    async (paymentId: string, action: "confirm" | "reject") => {
+      setBusyPaymentId(paymentId);
+      setPaymentError(null);
+      try {
+        const res = await fetch(`/api/payments/${paymentId}/confirm`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          // Meaningful: "you can't confirm your own payment", "this EMI already
+          // moved on". Swallowing it would look like a tap that did nothing.
+          setPaymentError(body.error ?? "Couldn't update that payment.");
+          setTimeout(() => setPaymentError(null), 6000);
+        } else {
+          setSettledMessage(
+            action === "confirm"
+              ? "Payment confirmed - it is on the schedule now."
+              : "Payment rejected - the EMI stays open."
+          );
+          setTimeout(() => setSettledMessage(null), 4000);
+          setRefreshKey((key) => key + 1);
+        }
+      } catch {
+        setPaymentError("Network error - the payment wasn't updated.");
+        setTimeout(() => setPaymentError(null), 6000);
+      } finally {
+        setBusyPaymentId(null);
+      }
+    },
+    []
+  );
+
 
   useEffect(() => {
     async function load() {
@@ -240,6 +298,23 @@ export default function ActivityPage() {
   return (
     <MobileShell title="Activity">
       <div className="px-4 pb-8 pt-3">
+        {settledMessage && (
+          <Notice
+            tone="good"
+            icon={<Check className="size-4" />}
+            onDismiss={() => setSettledMessage(null)}
+            className="mb-4"
+          >
+            {settledMessage}
+          </Notice>
+        )}
+
+        {paymentError && (
+          <Notice tone="bad" onDismiss={() => setPaymentError(null)} className="mb-4">
+            {paymentError}
+          </Notice>
+        )}
+
         {loadError && (
           <Notice
             tone="warn"
@@ -311,7 +386,7 @@ export default function ActivityPage() {
             ) : (
               <ul className="stagger space-y-2.5">
                 {notifications.map((n) => (
-                  <Card as="li" key={n.id} className="p-0">
+                  <Card as="li" key={n.id} className="overflow-hidden p-0">
                     <Link
                       href={`/loans/${n.loanId}`}
                       className="tap block px-4 py-3.5 hover:bg-surface-2"
@@ -328,6 +403,40 @@ export default function ActivityPage() {
                         {n.status && n.status !== "sent" ? ` · ${n.status}` : ""}
                       </p>
                     </Link>
+
+                    {/*
+                      * The claim this notification is about, answered here.
+                      * It used to be a signpost: tap, land on the loan, find the
+                      * card, decide. This is where the news arrives.
+                      */}
+                    {n.paymentId && (
+                      <div className="flex items-center gap-2 border-t border-line bg-warn-soft/60 px-3 py-2">
+                        {typeof n.paymentAmount === "number" && (
+                          <span className="mr-auto text-[12px] font-bold tabular-nums text-ink">
+                            {formatMoney(n.paymentAmount)}
+                            <span className="ml-1.5 font-medium text-ink-3">
+                              {n.paymentType === "payoff" ? "full settlement" : n.paymentType}
+                            </span>
+                          </span>
+                        )}
+                        <Button
+                          size="sm"
+                          loading={busyPaymentId === n.paymentId}
+                          onClick={() => void answerClaim(n.paymentId!, "confirm")}
+                        >
+                          <Check className="size-3.5" />
+                          Confirm
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => void answerClaim(n.paymentId!, "reject")}
+                        >
+                          <X className="size-3.5" />
+                          Reject
+                        </Button>
+                      </div>
+                    )}
                   </Card>
                 ))}
               </ul>
