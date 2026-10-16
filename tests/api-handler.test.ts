@@ -113,3 +113,42 @@ describe("withErrors", () => {
     await expect(res.json()).resolves.toEqual({ id: "123" });
   });
 });
+
+/**
+ * The net under a route that forgets to check its id.
+ *
+ * The seven routes that take an id in their path check it themselves and answer
+ * 404 (see isUuid). This is what happens if a later one does not: Postgres
+ * raises 22P02 and the client gets a 400 it can act on, not a 500 that reads
+ * like an outage and fills the logs with database errors.
+ */
+describe("a malformed id reaching the database", () => {
+  let logged: unknown[];
+
+  beforeEach(() => {
+    logged = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args);
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("answers 400, not 500", async () => {
+    const handler = withErrors(async () => {
+      throw drizzleWrapped("22P02", 'invalid input syntax for type uuid: "abc"');
+    });
+
+    const res = await handler(req(), {});
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; reference?: string };
+    expect(body.error).toMatch(/id/i);
+    expect(body.error).not.toMatch(/went wrong/i);
+    // Still logged, with the reference, so the cause stays findable.
+    expect(body.reference).toBeTruthy();
+    expect(logged.length).toBe(1);
+  });
+});

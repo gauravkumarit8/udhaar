@@ -9,6 +9,7 @@ import { applyPayoff, PAYMENT_CONFLICT } from "@/lib/settle";
 import { withErrors } from "@/lib/api-handler";
 import { isLoanLender, isUnclaimedBorrowerLoan, waiverRefusal } from "@/lib/loan-access";
 import { notifyCounterparty, paymentNotice, payoffNotice } from "@/lib/notify";
+import { isUuid } from "@/lib/validation";
 
 async function handlePATCH(
   req: NextRequest,
@@ -20,6 +21,12 @@ async function handlePATCH(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Payment not found" }, { status: 404 });
+  }
+
   const { action } = await req.json(); // "confirm" | "reject" | "withdraw"
 
   if (!action || !["confirm", "reject", "withdraw"].includes(action)) {

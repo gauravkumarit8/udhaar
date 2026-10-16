@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight, Check, HandCoins, ShieldCheck } from "lucide-rea
 import { Button, Field, Input, Notice, cx } from "@/components/ui";
 import { requestJson } from "@/lib/http";
 import { clearClientCaches } from "@/lib/client-cache";
+import { OTP_LENGTH, applyOtpInput, nextOtpFocus, otpValue } from "@/lib/otp-input";
 
 /**
  * Signing in: name and number, then six digits.
@@ -57,21 +58,35 @@ export default function LoginPage() {
     setLoading(false);
   };
 
+  /**
+   * One place for a digit, a pasted code, or the phone autofilling the SMS code.
+   *
+   * `applyOtpInput` (src/lib/otp-input.ts, tested) decides what the six boxes
+   * should hold; this only moves focus and fires the verification. It used to
+   * keep `value.slice(-1)`, so a paste or an autofill filled one box and threw
+   * the other five digits away.
+   */
   const handleOtpChange = (index: number, value: string) => {
-    if (!/^\d*$/.test(value)) return;
-    const newOtp = otp.map((digit, i) => (i === index ? value.slice(-1) : digit));
+    const newOtp = applyOtpInput(otp, index, value);
     setOtp(newOtp);
 
-    // Auto-focus next input
-    if (value && index < 5) {
-      const nextInput = document.getElementById(`otp-${index + 1}`);
-      nextInput?.focus();
-    }
+    document.getElementById(`otp-${nextOtpFocus(newOtp)}`)?.focus();
 
-    // Auto-verify when all digits entered
-    if (newOtp.every((d) => d !== "") && newOtp.join("").length === 6) {
-      verifyOtp(newOtp.join(""));
-    }
+    // Verify as soon as the code is complete, however it got there.
+    const code = otpValue(newOtp);
+    if (code) verifyOtp(code);
+  };
+
+  /**
+   * Pasting is the common way to enter a code that is sitting in a
+   * notification. The paste lands in whichever box has focus, so hand the whole
+   * string to the same helper rather than letting the input keep one character.
+   */
+  const handleOtpPaste = (index: number, e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData?.getData("text") ?? "";
+    if (!/\d/.test(text)) return;
+    e.preventDefault();
+    handleOtpChange(index, text);
   };
 
   const handleOtpKeyDown = (index: number, e: React.KeyboardEvent) => {
@@ -201,11 +216,20 @@ export default function LoginPage() {
                   id={`otp-${idx}`}
                   type="tel"
                   inputMode="numeric"
+                  // The first box carries the hint a phone needs to offer the
+                  // code from the SMS above the keyboard. Repeating it on all
+                  // six would offer the suggestion six times.
+                  autoComplete={idx === 0 ? "one-time-code" : "off"}
                   value={digit}
                   onChange={(e) => handleOtpChange(idx, e.target.value)}
+                  onPaste={(e) => handleOtpPaste(idx, e)}
                   onKeyDown={(e) => handleOtpKeyDown(idx, e)}
                   aria-label={`Digit ${idx + 1}`}
-                  maxLength={1}
+                  // Not 1: an autofill arrives as one string of six digits in
+                  // the focused box, and a length of 1 would truncate it before
+                  // handleOtpChange could spread it. The helper keeps one digit
+                  // per box regardless.
+                  maxLength={OTP_LENGTH}
                   autoFocus={idx === 0}
                   className={cx(
                     "size-12 rounded-control border bg-surface text-center text-[20px] font-bold tabular-nums text-ink",

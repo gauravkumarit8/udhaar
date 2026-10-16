@@ -7,6 +7,7 @@ import {
   BadgeIndianRupee,
   BellRing,
   CalendarDays,
+  Clock,
   Check,
   ChevronRight,
   FileText,
@@ -14,6 +15,7 @@ import {
   Pencil,
   PenLine,
   Receipt,
+  RotateCw,
   Share2,
   Trash2,
   Wallet,
@@ -41,8 +43,9 @@ import {
 } from "@/components/ui";
 import { useShare, useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
+import { answerClaim } from "@/lib/claims";
 import { UNREAD_EVENT } from "@/lib/client-cache";
-import { awaitingConfirmation, summarizeSettlement } from "@/lib/payments";
+import { awaitingConfirmation, ownClaimOn, summarizeSettlement } from "@/lib/payments";
 import { paymentReceiptText, statementText } from "@/lib/loan-statement";
 
 interface Loan {
@@ -434,30 +437,20 @@ export default function LoanDetailPage() {
     action: "confirm" | "reject" | "withdraw"
   ) => {
     setBusyPaymentId(paymentId);
-    try {
-      const result = await requestJson(`/api/payments/${paymentId}/confirm`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-
-      if (!result.ok) {
-        // Errors here are meaningful ("you can't confirm your own payment",
-        // "this EMI already moved on") and used to be swallowed silently.
-        haptics.notification("error");
-        setPaymentError(result.error ?? "Couldn't update that payment.");
-        setTimeout(() => setPaymentError(null), 6000);
-      } else {
-        haptics.notification("success");
-      }
-
-      await loadData();
-    } catch {
-      setPaymentError("Network error - the payment wasn't updated.");
+    setPaymentError(null);
+    // One implementation of the request, shared with Activity and home
+    // (src/lib/claims.ts). Errors here are meaningful - "you can't confirm your
+    // own payment", "this EMI already moved on" - and used to be swallowed.
+    const result = await answerClaim(paymentId, action);
+    if (!result.ok) {
+      haptics.notification("error");
+      setPaymentError(result.error ?? "Couldn't update that payment.");
       setTimeout(() => setPaymentError(null), 6000);
-    } finally {
-      setBusyPaymentId(null);
+    } else {
+      haptics.notification("success");
     }
+    await loadData();
+    setBusyPaymentId(null);
   };
 
   if (loading) {
@@ -483,9 +476,22 @@ export default function LoanDetailPage() {
               title={loadError ?? "Loan not found"}
               body="It may have been deleted, or the link may belong to another account."
               action={
-                <Link href="/loans" className={buttonClasses("primary", "md")}>
-                  Back to loans
-                </Link>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {/* A loan that could not be *fetched* is worth another try; one
+                      that does not exist is not, so the retry only appears when
+                      there was a failure to retry. */}
+                  {loadError && (
+                    <Button onClick={() => void loadData()} icon={<RotateCw className="size-4" />}>
+                      Try again
+                    </Button>
+                  )}
+                  <Link
+                    href="/loans"
+                    className={buttonClasses(loadError ? "secondary" : "primary", "md")}
+                  >
+                    Back to loans
+                  </Link>
+                </div>
               }
             />
           </Card>
@@ -519,6 +525,21 @@ export default function LoanDetailPage() {
   const canWaiveOnSettle = isLender || Boolean(loan.lenderId);
 
   const views = installments.map(viewOf);
+
+  /**
+   * What this viewer can still pay on a row, after their own unanswered claims.
+   *
+   * In 2-side mode the ledger does not move until the other side confirms, so
+   * an EMI this viewer has already marked still looks unpaid - and the row
+   * offered to mark it again, which the API refuses with "This EMI is already
+   * fully paid". `payable === 0` means the row has nothing left to pay and
+   * should show the wait (plus the way out) instead of a Pay button.
+   */
+  const claimOn = (view: (typeof views)[number]) =>
+    ownClaimOn(payments, view.inst.id, currentUserId, {
+      principalRemaining: view.principalRemaining,
+      interestRemaining: view.interestRemaining,
+    });
   const paidInstallments = views.filter((v) => v.isPaid).length;
   const progressPercent =
     installments.length > 0 ? Math.round((paidInstallments / installments.length) * 100) : 0;
@@ -586,6 +607,18 @@ export default function LoanDetailPage() {
           daysUntil(a.inst.dueDate) - daysUntil(b.inst.dueDate) ||
           a.inst.installmentNumber - b.inst.installmentNumber
       )[0] ?? null;
+
+  /** Whether the next EMI is already marked by this viewer and unanswered. */
+  const topClaim = nextDue
+    ? claimOn(nextDue)
+    : { claimed: 0, paymentId: null, payable: 0, payablePrincipal: 0, payableInterest: 0 };
+
+  /*
+   * The sheet fills itself in from the remaining money, so it has to be the
+   * money that is still *payable* - a part-payment claim this viewer already
+   * made is reserved by the server and would be refused on submit.
+   */
+  const paySheetClaim = payFor ? claimOn(payFor.view) : null;
 
   const statusTone: Record<string, "neutral" | "good" | "warn" | "bad" | "brand"> = {
     paid: "good",
@@ -794,22 +827,50 @@ export default function LoanDetailPage() {
          * from here is already filled in with the amount, has the UPI shortcut
          * inside it, and lets the amount be changed if it is a part payment.
          */}
-        {nextDue && loan.status === "active" && (
-          <div className="mt-3 flex items-center gap-2">
-            <Button
-              block
-              size="lg"
-              onClick={() => {
-                haptics.tap();
-                setPayFor({ view: nextDue, type: "both" });
-              }}
-              className={cx(daysUntil(nextDue.inst.dueDate) < 0 && "bg-bad hover:bg-bad/90")}
-            >
-              <Receipt className="size-4" />
-              {isLender ? "Record" : "Pay"} EMI #{nextDue.inst.installmentNumber} ·{" "}
-              {formatMoney(nextDue.totalRemaining)}
-            </Button>
+        {nextDue && loan.status === "active" && topClaim.payable <= 0.01 ? (
+          /*
+           * The next EMI is already marked by this viewer and nobody has
+           * confirmed it yet. A big red "Pay EMI #2 · ₹2,000" button here was
+           * the worst version of the dead end: the most prominent thing on the
+           * screen, and it could only produce "This EMI is already fully paid".
+           */
+          <div className="mt-3 flex items-center gap-2 rounded-card border border-warn/30 bg-warn-soft px-4 py-3">
+            <Clock className="size-4 shrink-0 text-warn" />
+            <p className="min-w-0 flex-1 text-[13px] font-medium text-ink-2">
+              You marked{" "}
+              <span className="font-bold tabular-nums">{formatMoney(topClaim.claimed)}</span> on
+              EMI #{nextDue.inst.installmentNumber} · waiting for {counterpartyName} to confirm
+            </p>
+            {topClaim.paymentId && (
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={busyPaymentId === topClaim.paymentId}
+                onClick={() => void handleConfirmPayment(topClaim.paymentId!, "withdraw")}
+              >
+                Withdraw
+              </Button>
+            )}
           </div>
+        ) : (
+          nextDue &&
+          loan.status === "active" && (
+            <div className="mt-3 flex items-center gap-2">
+              <Button
+                block
+                size="lg"
+                onClick={() => {
+                  haptics.tap();
+                  setPayFor({ view: nextDue, type: "both" });
+                }}
+                className={cx(daysUntil(nextDue.inst.dueDate) < 0 && "bg-bad hover:bg-bad/90")}
+              >
+                <Receipt className="size-4" />
+                {isLender ? "Record" : "Pay"} EMI #{nextDue.inst.installmentNumber} ·{" "}
+                {formatMoney(nextDue.totalRemaining)}
+              </Button>
+            </div>
+          )
         )}
         {nextDue && loan.status === "active" && (
           <p className="mt-1.5 px-1 text-[11px] text-ink-3">
@@ -906,6 +967,7 @@ export default function LoanDetailPage() {
           <div className="stagger mt-3 space-y-2.5">
             {views.map((view) => {
               const { inst } = view;
+              const rowClaim = claimOn(view);
               const days = daysUntil(inst.dueDate);
               const paid = parseFloat(inst.principalPaid) + parseFloat(inst.interestPaid);
               const label =
@@ -1000,28 +1062,59 @@ export default function LoanDetailPage() {
 
                   {!view.isPaid && loan.status === "active" && (
                     <div className="mt-3 flex items-center gap-2 border-t border-line px-4 py-2.5">
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          haptics.tap();
-                          setPayFor({ view, type: "both" });
-                        }}
-                      >
-                        {isLender ? "Record payment" : "Pay this EMI"}
-                      </Button>
-                      {view.interestRemaining > 0 && view.principalRemaining > 0 && (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => {
-                            haptics.tap();
-                            setPayFor({ view, type: "interest" });
-                          }}
-                        >
-                          Interest only
-                        </Button>
+                      {rowClaim.payable <= 0.01 ? (
+                        /*
+                         * Everything still owed here is already marked by this
+                         * viewer and waiting on the other side. Offering the
+                         * button again only produced "This EMI is already fully
+                         * paid", so the row states the wait and keeps the one
+                         * action that still means something.
+                         */
+                        <>
+                          <p className="min-w-0 flex-1 text-[12px] font-medium text-warn">
+                            You marked{" "}
+                            <span className="tabular-nums">{formatMoney(rowClaim.claimed)}</span> ·
+                            waiting for {counterpartyName} to confirm
+                          </p>
+                          {rowClaim.paymentId && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              loading={busyPaymentId === rowClaim.paymentId}
+                              onClick={() =>
+                                void handleConfirmPayment(rowClaim.paymentId!, "withdraw")
+                              }
+                            >
+                              Withdraw
+                            </Button>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              haptics.tap();
+                              setPayFor({ view, type: "both" });
+                            }}
+                          >
+                            {isLender ? "Record payment" : "Pay this EMI"}
+                          </Button>
+                          {rowClaim.payableInterest > 0 && rowClaim.payablePrincipal > 0 && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                haptics.tap();
+                                setPayFor({ view, type: "interest" });
+                              }}
+                            >
+                              Interest only
+                            </Button>
+                          )}
+                        </>
                       )}
-                      {isLender && (
+                      {isLender && rowClaim.payable > 0.01 && (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -1213,8 +1306,8 @@ export default function LoanDetailPage() {
               installmentId: payFor.view.inst.id,
               installmentNumber: payFor.view.inst.installmentNumber,
               dueDate: payFor.view.inst.dueDate,
-              principalRemaining: payFor.view.principalRemaining,
-              interestRemaining: payFor.view.interestRemaining,
+              principalRemaining: paySheetClaim?.payablePrincipal ?? payFor.view.principalRemaining,
+              interestRemaining: paySheetClaim?.payableInterest ?? payFor.view.interestRemaining,
               counterparty: counterpartyName,
               viewerRole: loan.viewerRole,
               upiId: isLender ? null : loan.upiId,

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   allocatePayment,
   awaitingConfirmation,
+  ownClaimOn,
+  pendingPaymentByInstallment,
   planPayoff,
   remainingFor,
   summarizeSettlement,
@@ -407,5 +409,142 @@ describe("awaitingConfirmation", () => {
   it("copes with a viewer id that is null (a loan with one side)", () => {
     expect(awaitingConfirmation([pending("anyone")], null, true)).toHaveLength(1);
     expect(awaitingConfirmation([pending("anyone")], null, false)).toHaveLength(1);
+  });
+});
+
+/**
+ * The bridge between a notification and the payment it is about.
+ *
+ * The reminders table has no payment id, so the API matches on the installment
+ * - and the only thing that must never happen is offering somebody the Confirm
+ * button for their own claim, which the API answers with 403. That rule lives
+ * here, in one place, next to the loan screen's version of the same question.
+ */
+describe("pendingPaymentByInstallment", () => {
+  const claim = (installmentId: string | null, markedByUserId: string) => ({
+    installmentId,
+    markedByUserId,
+  });
+  const ME = "user-me";
+  const THEM = "user-them";
+
+  it("matches a claim waiting on this viewer", () => {
+    const map = pendingPaymentByInstallment([claim("emi-1", THEM)], ME);
+    expect(map.get("emi-1")).toEqual(claim("emi-1", THEM));
+  });
+
+  it("leaves out the viewer's own claim, which is not theirs to confirm", () => {
+    const map = pendingPaymentByInstallment([claim("emi-1", ME)], ME);
+    expect(map.size).toBe(0);
+  });
+
+  it("ignores a payment with no installment to match on", () => {
+    expect(pendingPaymentByInstallment([claim(null, THEM)], ME).size).toBe(0);
+  });
+
+  it("keeps one claim per installment, so two emis do not collide", () => {
+    const map = pendingPaymentByInstallment(
+      [claim("emi-1", THEM), claim("emi-2", THEM), claim("emi-2", ME)],
+      ME
+    );
+    expect([...map.keys()].sort()).toEqual(["emi-1", "emi-2"]);
+    expect(map.get("emi-2")).toEqual(claim("emi-2", THEM));
+  });
+
+  it("does nothing at all when there are no pending payments", () => {
+    expect(pendingPaymentByInstallment([], ME).size).toBe(0);
+  });
+});
+
+/**
+ * The mirror of the block above, and the reason the due card and the schedule
+ * row stopped offering "Pay" on money that was already claimed.
+ *
+ * The rule has to reserve interest-first exactly like the payment route does,
+ * or the amount the sheet fills in is not the amount the server accepts - which
+ * is how a tap turned into "This EMI is already fully paid."
+ */
+describe("ownClaimOn", () => {
+  const ME = "user-me";
+  const THEM = "user-them";
+  const emi = { principalRemaining: 1000, interestRemaining: 100 };
+
+  const claim = (
+    overrides: Partial<{ id: string; installmentId: string | null; markedByUserId: string; status: string; amount: string | number; paymentType: string | null; createdAt: string | null }> = {}
+  ) => ({
+    id: "pay-1",
+    installmentId: "emi-1",
+    markedByUserId: ME,
+    status: "pending",
+    amount: "1100",
+    paymentType: "both",
+    createdAt: "2026-10-16T10:00:00Z",
+    ...overrides,
+  });
+
+  it("counts the EMI as nothing left to pay when this viewer claimed all of it", () => {
+    const result = ownClaimOn([claim()], "emi-1", ME, emi);
+    expect(result.claimed).toBe(1100);
+    expect(result.payable).toBe(0);
+    expect(result.paymentId).toBe("pay-1");
+  });
+
+  it("leaves the rest payable, split the way the sheet needs it", () => {
+    // ₹100 of interest claimed, on an EMI of ₹1,000 principal + ₹100 interest.
+    const result = ownClaimOn([claim({ amount: "100", paymentType: "interest" })], "emi-1", ME, emi);
+    expect(result.payableInterest).toBe(0);
+    expect(result.payablePrincipal).toBe(1000);
+    expect(result.payable).toBe(1000);
+  });
+
+  it("reserves interest first for a 'both' claim, like the payment route", () => {
+    const result = ownClaimOn([claim({ amount: "600" })], "emi-1", ME, emi);
+    expect(result.payableInterest).toBe(0);
+    expect(result.payablePrincipal).toBe(500);
+  });
+
+  it("ignores the other side's claim, which is theirs to answer, not to pay around", () => {
+    const theirs = claim({ markedByUserId: THEM, id: "pay-them" });
+    const result = ownClaimOn([theirs], "emi-1", ME, emi);
+    expect(result.claimed).toBe(0);
+    expect(result.paymentId).toBeNull();
+    expect(result.payable).toBe(1100);
+  });
+
+  it("ignores an answered payment: a confirmed one moved the ledger already", () => {
+    const done = claim({ status: "confirmed" });
+    expect(ownClaimOn([done], "emi-1", ME, emi).payable).toBe(1100);
+  });
+
+  it("ignores claims on other installments", () => {
+    const other = claim({ installmentId: "emi-2" });
+    expect(ownClaimOn([other], "emi-1", ME, emi).claimed).toBe(0);
+  });
+
+  it("adds up two claims and offers the oldest one to withdraw", () => {
+    const older = claim({ id: "pay-old", amount: "100", paymentType: "interest", createdAt: "2026-10-16T09:00:00Z" });
+    const newer = claim({ id: "pay-new", amount: "500", createdAt: "2026-10-16T11:00:00Z" });
+    const result = ownClaimOn([newer, older], "emi-1", ME, emi);
+    expect(result.claimed).toBe(600);
+    expect(result.paymentId).toBe("pay-old");
+    expect(result.payable).toBe(500);
+  });
+
+  it("never reports a negative payable when a claim exceeds the EMI", () => {
+    const result = ownClaimOn([claim({ amount: "5000" })], "emi-1", ME, emi);
+    expect(result.payable).toBe(0);
+    expect(result.payablePrincipal).toBe(0);
+    expect(result.payableInterest).toBe(0);
+  });
+
+  it("does nothing for a signed-out viewer, and nothing when there are no payments", () => {
+    expect(ownClaimOn([claim()], "emi-1", null, emi).payable).toBe(1100);
+    expect(ownClaimOn([], "emi-1", ME, emi)).toEqual({
+      claimed: 0,
+      paymentId: null,
+      payable: 1100,
+      payablePrincipal: 1000,
+      payableInterest: 100,
+    });
   });
 });

@@ -5,7 +5,7 @@ import { getSession } from "@/lib/auth";
 import { allocatePayment, remainingFor, type PaymentType } from "@/lib/payments";
 import { getOutstanding, closeLoanIfSettled } from "@/lib/loans";
 import { eq, sql, and, lte } from "drizzle-orm";
-import { toNumber, validateProofId, validateProofUrl, LIMITS } from "@/lib/validation";
+import { LIMITS, isUuid, toNumber, validateProofId, validateProofUrl } from "@/lib/validation";
 import { withErrors } from "@/lib/api-handler";
 import { notifyCounterparty, paymentNotice } from "@/lib/notify";
 
@@ -19,6 +19,12 @@ async function handlePOST(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Installment not found" }, { status: 404 });
+  }
+
 
   let body: unknown;
   try {

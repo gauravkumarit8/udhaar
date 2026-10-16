@@ -42,6 +42,21 @@ export interface DueCandidate {
   /** What is still owed on this installment, split the way a payment is applied. */
   principalRemaining?: number;
   interestRemaining?: number;
+  /**
+   * This viewer's own unanswered claim on the installment, and what is still
+   * payable after it (`payable` + its split).
+   *
+   * In 2-side mode the ledger does not move until the other side agrees, so an
+   * EMI this viewer has already claimed still reads as unpaid here. Without
+   * these the due card offered "Pay now" on money that was already claimed, and
+   * the API answered "This EMI is already fully paid" - a dead end the row
+   * itself could have avoided. `payable === 0` means nothing is left to pay.
+   */
+  claimedByYou?: number;
+  claimedPaymentId?: string | null;
+  payable?: number;
+  payablePrincipal?: number;
+  payableInterest?: number;
 }
 
 export interface DueItem extends DueCandidate {

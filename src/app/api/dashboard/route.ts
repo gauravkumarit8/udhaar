@@ -5,6 +5,7 @@ import { getSession } from "@/lib/auth";
 import { countUnreadNotifications } from "@/lib/unread-count";
 import { computeInstallmentStatus, daysUntil, localToday } from "@/lib/calculations";
 import { pickNextDuePerLoan, type DueCandidate, type DueItem } from "@/lib/due-items";
+import { ownClaimOn, type OwnClaimRef } from "@/lib/payments";
 import { parsePaging } from "@/lib/paging";
 import { activeLoansFirst } from "@/lib/loan-order";
 import { or, eq, sql } from "drizzle-orm";
@@ -34,6 +35,20 @@ interface TotalsRow {
   due_loan_count: string;
 }
 
+/** A pending payment somebody else marked, waiting on this viewer's answer. */
+interface ClaimRow {
+  payment_id: string;
+  loan_id: string;
+  installment_id: string;
+  amount: string;
+  payment_type: string;
+  borrower_name: string;
+  lender_name: string | null;
+  viewer_is_lender: boolean;
+  total_count: string;
+  total_amount: string;
+}
+
 /** One unpaid installment, joined to the loan it belongs to. */
 interface DueRow {
   loan_id: string;
@@ -49,6 +64,16 @@ interface DueRow {
   interest_paid: string;
   /** The lender's UPI id, so the borrower can pay from the due row directly. */
   lender_upi_id: string | null;
+  /**
+   * This viewer's own unanswered payments on the installment, as JSON.
+   *
+   * In 2-side mode a marked payment does not move the ledger until the other
+   * side agrees, so an EMI this viewer has already claimed still reads as
+   * unpaid - and every screen that offered "Pay" on it walked them into a
+   * sheet, a submit, and "This EMI is already fully paid". `ownClaimOn` turns
+   * this into what is honestly still payable.
+   */
+  my_pending: OwnClaimRef[] | null;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -102,7 +127,7 @@ async function handleGET(req: NextRequest) {
    * on it. `null = $1` is null, which would silently drop those loans from all
    * three totals.
    */
-  const [totalsRows, dueRows, loanRows, unread] = await Promise.all([
+  const [totalsRows, dueRows, loanRows, claimRows, unread] = await Promise.all([
     // 1. The numbers, added up where the rows live.
     //
     //    One aggregate over the join answers the three money totals, and the
@@ -165,6 +190,29 @@ async function handleGET(req: NextRequest) {
           -- The lender's UPI id travels with the due row so a borrower can pay
           -- from the home screen in one tap, without opening the loan first.
           l.upi_id as lender_upi_id,
+          -- What this viewer has already marked on this very installment and
+          -- is still waiting on, so the row can stop offering to pay it again.
+          (
+            select coalesce(
+              json_agg(
+                json_build_object(
+                  'id', p.id,
+                  'installmentId', p.installment_id,
+                  'markedByUserId', p.marked_by_user_id,
+                  'status', p.status,
+                  'amount', p.amount,
+                  'paymentType', p.payment_type,
+                  'createdAt', p.created_at
+                )
+                order by p.created_at
+              ),
+              '[]'::json
+            )
+            from payments p
+            where p.installment_id = i.id
+              and p.status = 'pending'
+              and p.marked_by_user_id = ${me}
+          ) as my_pending,
           row_number() over (
             partition by l.id order by i.due_date, i.installment_number
           ) as rn
@@ -179,7 +227,8 @@ async function handleGET(req: NextRequest) {
         loan_id, borrower_name, lender_name, viewer_is_lender,
         installment_id, installment_number,
         to_char(due_date, 'YYYY-MM-DD') as due_date,
-        principal_amount, interest_amount, principal_paid, interest_paid, lender_upi_id
+        principal_amount, interest_amount, principal_paid, interest_paid, lender_upi_id,
+        my_pending
       from unpaid
       where rn = 1 or due_date < ${today}::date
       order by due_date, installment_number
@@ -195,7 +244,41 @@ async function handleGET(req: NextRequest) {
       .orderBy(...activeLoansFirst())
       .limit(limit),
 
-    // 4. The badge, in passing - the tab bar asks for nothing of its own.
+    // 4. Claims waiting on this viewer's answer.
+    //
+    //    A payment marked by the *other* side in 2-side mode is a claim: the
+    //    money is spent, the EMI is still open, and somebody is waiting. On the
+    //    loan screen it is the first card and in Activity it is answerable in the
+    //    notification, but the home screen - where people actually land - said
+    //    nothing about it at all, so a claim could sit unconfirmed while the app
+    //    kept showing the same overdue number.
+    //
+    //    `count(*) over ()` gives the totals across every waiting claim while
+    //    the rows themselves stay a short strip, so the count is honest even
+    //    when only the first few are sent.
+    rawRows<ClaimRow>(sql`
+      select
+        p.id as payment_id,
+        p.loan_id,
+        p.installment_id,
+        p.amount,
+        p.payment_type,
+        l.borrower_name,
+        coalesce(nullif(l.lender_name, ''), u.name) as lender_name,
+        (l.lender_id is not distinct from ${me}) as viewer_is_lender,
+        count(*) over () as total_count,
+        sum(p.amount) over () as total_amount
+      from payments p
+      join loans l on l.id = p.loan_id
+      left join users u on u.id = l.lender_id
+      where p.status = 'pending'
+        and p.marked_by_user_id is distinct from ${me}
+        and (l.lender_id = ${me} or l.borrower_id = ${me})
+      order by p.created_at
+      limit 3
+    `),
+
+    // 5. The badge, in passing - the tab bar asks for nothing of its own.
     countUnreadNotifications(me),
   ]);
 
@@ -221,6 +304,16 @@ async function handleGET(req: NextRequest) {
     );
     if (computedStatus === "paid" || amount <= 0) continue;
 
+    /*
+     * What is left to pay after this viewer's own unanswered claims. Computed
+     * by the same tested rule the loan screen uses, so the home screen and the
+     * loan screen cannot disagree about who still owes a tap here.
+     */
+    const mine = ownClaimOn(row.my_pending ?? [], row.installment_id, me, {
+      principalRemaining,
+      interestRemaining,
+    });
+
     candidates.push({
       loanId: row.loan_id,
       borrowerName: row.borrower_name,
@@ -236,6 +329,13 @@ async function handleGET(req: NextRequest) {
       lenderUpiId: row.lender_upi_id ?? null,
       principalRemaining,
       interestRemaining,
+      // "You already marked this, and nobody has answered yet" - so the due
+      // card shows the wait instead of a Pay button that cannot succeed.
+      claimedByYou: mine.claimed,
+      claimedPaymentId: mine.paymentId,
+      payable: mine.payable,
+      payablePrincipal: mine.payablePrincipal,
+      payableInterest: mine.payableInterest,
     });
   }
 
@@ -248,6 +348,27 @@ async function handleGET(req: NextRequest) {
   }));
 
   const totalLoans = parseInt(totals?.total_loans ?? "0", 10);
+
+  /*
+   * The claims, as the strip will print them: who marked it, for how much, and
+   * the loan to answer it on. Additive and optional, like the due rows' UPI id -
+   * an older client simply ignores the field.
+   */
+  const awaitingYou = {
+    count: parseInt(claimRows[0]?.total_count ?? "0", 10),
+    amount: round2(num(claimRows[0]?.total_amount)),
+    items: claimRows.map((row) => ({
+      paymentId: row.payment_id,
+      loanId: row.loan_id,
+      installmentId: row.installment_id,
+      amount: round2(num(row.amount)),
+      paymentType: row.payment_type,
+      // Who is waiting on the answer, from this viewer's side of the loan.
+      counterpartyName: row.viewer_is_lender
+        ? row.borrower_name
+        : row.lender_name || "The lender",
+    })),
+  };
 
   return NextResponse.json({
     unread,
@@ -265,6 +386,11 @@ async function handleGET(req: NextRequest) {
       totalLoans,
     },
     dueItems,
+    /**
+     * Payments the other side has marked and are waiting on this viewer to
+     * confirm or reject. Additive and optional.
+     */
+    awaitingYou,
     /** How many loans have a payment outstanding - `dueItems` is one page of them. */
     dueItemCount,
     loans: taggedLoans,

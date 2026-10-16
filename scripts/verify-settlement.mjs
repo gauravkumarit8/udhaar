@@ -421,6 +421,103 @@ async function main() {
     check("the borrower marks a payment", marked.status, 200);
     check("...which waits for the lender", marked.json.payment?.status, "pending");
 
+    /*
+     * The feed is where that news arrives, so the feed is where it can be
+     * answered: the notification carries the payment it is waiting on (additive
+     * and optional - the reminders table has no payment id, so it is matched on
+     * the installment) and the amount, so the buttons need no second request.
+     */
+    const claimId = marked.json.payment.id;
+    const lenderFeed = await call("GET", "/api/notifications", { token: LENDER_TOKEN });
+    const waitingOn = (lenderFeed.json.notifications ?? []).find((n) => n.paymentId === claimId);
+    check("the claim reaches the lender's feed as a payable row", Boolean(waitingOn), true);
+    check("...naming the payment", waitingOn?.paymentId, claimId);
+    check("...and what it is for", Number(waitingOn?.paymentAmount ?? 0), 1000);
+    check("...on the installment the claim is against", waitingOn?.installmentId, emi.id);
+
+    /*
+     * Home is where people land, and it used to say nothing about a claim: the
+     * same screen that prints an overdue number would show it unchanged while
+     * money sat waiting to be confirmed.
+     */
+    const lenderDash = await call("GET", "/api/dashboard", { token: LENDER_TOKEN });
+    check("the lender's home screen counts the claim", lenderDash.json.awaitingYou?.count, 1);
+    check("...and what it is worth", Number(lenderDash.json.awaitingYou?.amount ?? 0), 1000);
+    check("...naming the payment to answer", lenderDash.json.awaitingYou?.items?.[0]?.paymentId, claimId);
+    check("...and who is waiting on it", lenderDash.json.awaitingYou?.items?.[0]?.counterpartyName, "Settlement Test Borrower");
+
+    const borrowerDash = await call("GET", "/api/dashboard", { token: BORROWER_TOKEN });
+    check("the marker's own home screen does not ask them to confirm it", borrowerDash.json.awaitingYou?.count, 0);
+
+    /*
+     * The other half of the same situation, from the marker's side. In 2-side
+     * mode the ledger has not moved, so the EMI still reads as unpaid - and
+     * every screen that offered "Pay" on it walked the person into a sheet, a
+     * submit, and "This EMI is already fully paid" (the 400 checked below).
+     *
+     * So the due row now carries what the marker has already claimed on it and
+     * what is honestly still payable: ownClaimOn() does the arithmetic, and
+     * this is where the two surfaces are held to the same answer.
+     */
+    /*
+     * Read with an explicit page size: these accounts accumulate loans every
+     * time the harness runs (21 due rows on the day this was written), and the
+     * default page is five - so the row under test can sit past the page even
+     * though the API is behaving perfectly. The limit is what "see all" uses.
+     */
+    const markerAll = await call("GET", "/api/dashboard?limit=200", { token: BORROWER_TOKEN });
+    const markerDue = (markerAll.json.dueItems ?? []).find((i) => i.installmentId === emi.id);
+    check("the marker's own due row knows about their claim", Boolean(markerDue), true);
+    check("...reporting what they have claimed on it", Number(markerDue?.claimedByYou ?? 0), 1000);
+    check("...naming the claim to withdraw", markerDue?.claimedPaymentId, claimId);
+    check(
+      "...and only the remainder as payable",
+      Number(markerDue?.payable ?? -1),
+      money(emiTotal - 1000)
+    );
+    check(
+      "...split into buckets the pay sheet can fill in from",
+      money(Number(markerDue?.payablePrincipal ?? 0) + Number(markerDue?.payableInterest ?? 0)),
+      money(emiTotal - 1000)
+    );
+
+    /*
+     * The loan screen asks the same question of its own payload - "has this
+     * viewer already claimed this EMI?" - so the fields it needs to answer it
+     * (who marked each payment, and whether it is still pending) are held here.
+     * A rename there would silently stop hiding the button, and nothing else
+     * would notice.
+     */
+    const detailForRow = await call("GET", `/api/loans/${id}`, { token: BORROWER_TOKEN });
+    check(
+      "the loan screen's own payload carries the claim its rows check",
+      (detailForRow.json.payments ?? []).some(
+        (p) => p.id === claimId && p.status === "pending" && p.markedByUserId === BORROWER_ID
+      ),
+      true
+    );
+
+    /*
+     * And the lender's row for the same EMI must NOT carry it: paying around
+     * someone else's claim is not this side's job - answering it is, which is
+     * what awaitingYou (checked above) is for.
+     */
+    const lenderAll = await call("GET", "/api/dashboard?limit=200", { token: LENDER_TOKEN });
+    const lenderDue = (lenderAll.json.dueItems ?? []).find((i) => i.installmentId === emi.id);
+    check("the other side's due row carries no claim of its own", Number(lenderDue?.claimedByYou ?? 0), 0);
+
+    /*
+     * The rule that must never bend: the marker is not offered their own claim,
+     * because confirming it is a 403 - offered anyway it reads as a broken
+     * button. pendingPaymentByInstallment() is where that lives.
+     */
+    const markerFeed = await call("GET", "/api/notifications", { token: BORROWER_TOKEN });
+    check(
+      "the marker's own feed is not offered the claim",
+      (markerFeed.json.notifications ?? []).some((n) => n.paymentId === claimId),
+      false
+    );
+
     const blocked = await call("POST", `/api/installments/${emi.id}/pay`, {
       token: BORROWER_TOKEN,
       body: { amount: emiTotal.toFixed(2), paymentType: "both" },
@@ -497,6 +594,16 @@ async function main() {
     const done = (await call("GET", `/api/loans/${id}`, { token: LENDER_TOKEN })).json;
     check("...and the loan closes", done.loan.status, "closed");
 
+    const settledFeed = await call("GET", "/api/notifications", { token: LENDER_TOKEN });
+    check(
+      "an answered claim is no longer offered as a payment to act on",
+      (settledFeed.json.notifications ?? []).some((n) => n.paymentId === pendingId),
+      false
+    );
+
+    const settledDash = await call("GET", "/api/dashboard", { token: LENDER_TOKEN });
+    check("...and the home screen stops counting it", settledDash.json.awaitingYou?.count, 0);
+
     check(
       "a withdrawn claim cannot be confirmed afterwards",
       (
@@ -566,6 +673,36 @@ async function main() {
     check("deleting is refused while a loan is open", refused.status, 409);
     check("...and says what to do instead", String(refused.json.action ?? "").includes("write-off"), true);
     check("nothing was deleted", (await call("GET", "/api/loans", { token: LENDER_TOKEN })).status, 200);
+  }
+
+  console.log("\nA malformed id names nothing, so it is a 404 and not a 500");
+  {
+    /*
+     * A link with a mangled id used to reach Postgres as-is, which rejected it
+     * with 22P02 - "something went wrong on the server", a 500, for a request
+     * that names nothing at all (and a database error in the logs that looks
+     * like an outage). Every id-taking route now checks first.
+     */
+    const malformed = "not-a-uuid";
+    for (const [label, method, path] of [
+      ["a payment to answer", "PATCH", `/api/payments/${malformed}/confirm`],
+      ["a payment's proof", "GET", `/api/payments/${malformed}/proof`],
+      ["an installment to pay", "POST", `/api/installments/${malformed}/pay`],
+      ["an installment to remind", "POST", `/api/installments/${malformed}/remind`],
+      ["a loan to read", "GET", `/api/loans/${malformed}`],
+      ["a loan to close", "POST", `/api/loans/${malformed}/close`],
+      ["a loan to settle", "POST", `/api/loans/${malformed}/payoff`],
+    ]) {
+      // A GET may not carry a body (fetch refuses), and these routes only need
+      // the id in the path to prove the point.
+      const res = await call(method, path, method === "GET" ? { token: LENDER_TOKEN } : { token: LENDER_TOKEN, body: {} });
+      check(`${label}: ${method} ${path.replace(malformed, "<bad>")} answers 404`, res.status, 404);
+    }
+    check(
+      "...and never leaks that the database refused it",
+      (await call("GET", `/api/loans/${malformed}`, { token: LENDER_TOKEN })).json.error,
+      "Loan not found"
+    );
   }
 
   console.log("\nWho may do what");

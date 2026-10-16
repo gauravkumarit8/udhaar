@@ -5,7 +5,7 @@ import { getSession } from "@/lib/auth";
 import { remainingFor, planPayoff, type PayoffInstallment } from "@/lib/payments";
 import { notifyCounterparty, payoffNotice } from "@/lib/notify";
 import { applyPayoff, PAYMENT_CONFLICT } from "@/lib/settle";
-import { toNumber, validateProofId, validateProofUrl, LIMITS } from "@/lib/validation";
+import { LIMITS, isUuid, toNumber, validateProofId, validateProofUrl } from "@/lib/validation";
 import { withErrors } from "@/lib/api-handler";
 import { isLoanLender, isUnclaimedBorrowerLoan, loanRole, waiverRefusal } from "@/lib/loan-access";
 import { and, eq } from "drizzle-orm";
@@ -40,6 +40,12 @@ async function handlePOST(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Loan not found" }, { status: 404 });
+  }
+
 
   let body: unknown;
   try {

@@ -108,6 +108,20 @@ function classify(error: unknown): { status: number; payload: ErrorPayload } {
     };
   }
 
+  /*
+   * 22P02: something in the request was not a uuid. The routes that take an id
+   * in their path check it themselves (isUuid in src/lib/validation.ts) and
+   * answer 404, because an id that cannot exist names nothing - this is the net
+   * under a route added later that forgets, so the answer is a 400 the client
+   * can act on rather than "something went wrong on the server".
+   */
+  if (code === "22P02" || /invalid input syntax for type uuid/.test(message)) {
+    return {
+      status: 400,
+      payload: { error: "One of the ids in this request could not be read." },
+    };
+  }
+
   if (code === "23505") {
     return { status: 409, payload: { error: "That record already exists." } };
   }

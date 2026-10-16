@@ -8,6 +8,7 @@ import { remainingFor } from "@/lib/payments";
 import { buildReminderShare } from "@/lib/share-reminder";
 import { eq } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
+import { isUuid } from "@/lib/validation";
 
 const VALID_CHANNELS = ["push", "sms", "whatsapp"] as const;
 type ReminderChannel = (typeof VALID_CHANNELS)[number];
@@ -30,6 +31,12 @@ async function handlePOST(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Installment not found" }, { status: 404 });
+  }
+
   const body = await req.json().catch(() => ({}));
   const channel: ReminderChannel = (VALID_CHANNELS as readonly string[]).includes(body?.channel)
     ? (body.channel as ReminderChannel)

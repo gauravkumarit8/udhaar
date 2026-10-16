@@ -9,6 +9,7 @@ import {
 } from "@/lib/proof-content-type";
 import { eq } from "drizzle-orm";
 import { withErrors } from "@/lib/api-handler";
+import { isUuid } from "@/lib/validation";
 
 /**
  * Serves the payment proof screenshot to the two people on the loan.
@@ -37,6 +38,12 @@ async function handleGET(
   }
 
   const { id } = await params;
+
+  // A malformed id is not a server fault: it names nothing, so it is a 404.
+  if (!isUuid(id)) {
+    return NextResponse.json({ error: "Payment not found" }, { status: 404 });
+  }
+
 
   const [payment] = await db
     .select({

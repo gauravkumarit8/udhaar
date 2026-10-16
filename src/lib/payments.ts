@@ -164,6 +164,156 @@ export function awaitingConfirmation<T extends { markedByUserId: string; status:
   );
 }
 
+/**
+ * Which notification carries a payment this viewer has to answer.
+ *
+ * A "payment_marked" notification is the moment someone learns that money has
+ * been claimed against their loan and that it is their turn. The notification
+ * row itself has no payment id (the reminders table records *what was said*,
+ * not what it was about), so the API finds the pending payment on the same
+ * installment and attaches it - but only when answering is actually this
+ * viewer's job, because offering Confirm on a payment you made yourself gets a
+ * 403 from the API and would read as a bug.
+ *
+ * Pure, and tested, because "whose turn is it" is the same question
+ * awaitingConfirmation() answers on the loan screen; the two must agree.
+ */
+export interface PendingPaymentRef {
+  installmentId: string | null;
+  markedByUserId: string;
+}
+
+export function pendingPaymentByInstallment<T extends PendingPaymentRef>(
+  pending: T[],
+  viewerId: string | null | undefined
+): Map<string, T> {
+  const byInstallment = new Map<string, T>();
+  for (const payment of pending) {
+    // Someone else's claim on this installment: it is waiting for this viewer.
+    if (!payment.installmentId || payment.markedByUserId === viewerId) continue;
+    byInstallment.set(payment.installmentId, payment);
+  }
+  return byInstallment;
+}
+
+/**
+ * What *this viewer* has marked on an installment and is still waiting for.
+ *
+ * The mirror image of `pendingPaymentByInstallment`. That one finds the claim
+ * waiting on this viewer; this one finds the claim this viewer is waiting on.
+ * Same installment, the two opposite sides of a 2-side loan - and the
+ * difference matters, because in 2-side mode the ledger does not move until
+ * the other side agrees, so an EMI someone has already claimed still looks
+ * unpaid. Every screen that offered "Pay" on that EMI walked the person into
+ * a sheet, a submit, and an error saying *"This EMI is already fully paid"* -
+ * which reads as a bug when the button that opened it said otherwise.
+ *
+ * `payable` is the honest answer to "so what can I still pay?": the
+ * installment's remaining money minus this viewer's unanswered claims,
+ * reserved interest-first exactly the way the payment route reserves it (see
+ * the loop in `installments/[id]/pay`). The two buckets come back separately
+ * because the pay sheet fills itself in from them.
+ *
+ * One asymmetry to keep in mind: the route reserves against *every* pending
+ * claim on the installment, while this can only know the ones it was handed.
+ * Treat `payable` as an upper bound - when someone else has also claimed the
+ * same EMI, the server is still the one that decides, and it says so.
+ */
+export interface OwnClaimRef {
+  id: string;
+  installmentId: string | null;
+  markedByUserId: string;
+  status: string;
+  amount: string | number;
+  paymentType?: string | null;
+  createdAt?: string | Date | null;
+}
+
+export interface OwnClaim {
+  /** This viewer's own unanswered claims on the installment, added up. */
+  claimed: number;
+  /** The earliest of them - what a Withdraw would act on. Null when none. */
+  paymentId: string | null;
+  /** What is still payable. 0 means there is nothing left to pay. */
+  payable: number;
+  /** `payable` split the way the pay sheet needs it. */
+  payablePrincipal: number;
+  payableInterest: number;
+}
+
+export function ownClaimOn<T extends OwnClaimRef>(
+  payments: T[],
+  installmentId: string,
+  viewerId: string | null | undefined,
+  remaining: { principalRemaining: number; interestRemaining: number }
+): OwnClaim {
+  const empty: OwnClaim = {
+    claimed: 0,
+    paymentId: null,
+    payable: Math.max(0, round2(remaining.principalRemaining + remaining.interestRemaining)),
+    payablePrincipal: Math.max(0, round2(remaining.principalRemaining)),
+    payableInterest: Math.max(0, round2(remaining.interestRemaining)),
+  };
+  if (!viewerId) return empty;
+
+  /*
+   * Oldest first, because the reservation depends on the order they are
+   * applied in - a "both" claim eats whatever interest is left when it lands -
+   * and the same two payments must always produce the same payable amount,
+   * whatever order they arrive in.
+   */
+  const mine = payments
+    .filter(
+      (p) =>
+        p.status === "pending" &&
+        p.installmentId === installmentId &&
+        p.markedByUserId === viewerId
+    )
+    .sort((a, b) => timeOf(a) - timeOf(b));
+  if (mine.length === 0) return empty;
+
+  let claimed = 0;
+  let reservedInterest = 0;
+  let reservedPrincipal = 0;
+  let earliest: T | null = null;
+
+  for (const payment of mine) {
+    const amount = Math.max(0, round2(parseFloat(String(payment.amount)) || 0));
+    claimed += amount;
+    if (payment.paymentType === "interest") reservedInterest += amount;
+    else if (payment.paymentType === "principal") reservedPrincipal += amount;
+    else {
+      // "both" settles interest first, same as allocatePayment and as the
+      // payment route's own reservation loop.
+      const toInterest = Math.min(
+        amount,
+        Math.max(0, remaining.interestRemaining - reservedInterest)
+      );
+      reservedInterest += toInterest;
+      reservedPrincipal += amount - toInterest;
+    }
+    if (!earliest) earliest = payment;
+  }
+
+  const payableInterest = Math.max(0, round2(remaining.interestRemaining - reservedInterest));
+  const payablePrincipal = Math.max(0, round2(remaining.principalRemaining - reservedPrincipal));
+
+  return {
+    claimed: round2(claimed),
+    paymentId: earliest ? earliest.id : null,
+    payable: round2(payableInterest + payablePrincipal),
+    payablePrincipal,
+    payableInterest,
+  };
+}
+
+/** When a claim was made, for ordering. Unknown times sort as "already there". */
+function timeOf(claim: OwnClaimRef): number {
+  if (!claim.createdAt) return 0;
+  const t = new Date(claim.createdAt).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
 export function remainingFor(inst: {
   principalAmount: string;
   interestAmount: string;
