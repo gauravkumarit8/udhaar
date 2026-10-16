@@ -154,7 +154,10 @@ const PAGES = [
     path: "/profile",
     name: "You",
     nav: 1,
-    marks: [/Push notifications/, /Download my data/],
+    marks: [/Push notifications/, /Download my data/, /Share Udhaar/],
+    // Read "Rate Udhaar" and did nothing - there is no published listing to
+    // rate. It is a share row now, and this keeps the dead one from returning.
+    absent: [/Rate Udhaar/],
   },
   { path: "/login", name: "Login", nav: 0, marks: [/Udhaar/, /Mobile number/] },
 ];
@@ -225,6 +228,11 @@ const run = async () => {
       navCount === page.nav,
       `found ${navCount}`
     );
+
+    for (const pattern of page.absent ?? []) {
+      const found = res.body.match(pattern);
+      check(`no longer says ${pattern}`, !found, found ? `found "${found[0]}"` : undefined);
+    }
 
     for (const [label, pattern] of LEGACY) {
       const found = res.body.match(pattern);

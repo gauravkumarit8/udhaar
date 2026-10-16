@@ -12,6 +12,7 @@ import {
   FileText,
   Info,
   Pencil,
+  PenLine,
   Receipt,
   Share2,
   Trash2,
@@ -41,7 +42,8 @@ import {
 import { useShare, useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
 import { UNREAD_EVENT } from "@/lib/client-cache";
-import { summarizeSettlement } from "@/lib/payments";
+import { awaitingConfirmation, summarizeSettlement } from "@/lib/payments";
+import { paymentReceiptText, statementText } from "@/lib/loan-statement";
 
 interface Loan {
   id: string;
@@ -153,6 +155,12 @@ export default function LoanDetailPage() {
   const [loan, setLoan] = useState<Loan | null>(null);
   const [installments, setInstallments] = useState<Installment[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  /** The payment whose receipt was just shared, so the row can say so. */
+  const [sharedReceiptId, setSharedReceiptId] = useState<string | null>(null);
+  /** True for a few seconds after the statement was shared from here. */
+  const [sharedStatement, setSharedStatement] = useState(false);
+  /** The pending payment whose Confirm/Reject is in flight. */
+  const [busyPaymentId, setBusyPaymentId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   /** Which EMI the payment sheet is open for, and what it starts out applying. */
   const [payFor, setPayFor] = useState<{
@@ -425,6 +433,7 @@ export default function LoanDetailPage() {
     paymentId: string,
     action: "confirm" | "reject" | "withdraw"
   ) => {
+    setBusyPaymentId(paymentId);
     try {
       const result = await requestJson(`/api/payments/${paymentId}/confirm`, {
         method: "PATCH",
@@ -446,6 +455,8 @@ export default function LoanDetailPage() {
     } catch {
       setPaymentError("Network error - the payment wasn't updated.");
       setTimeout(() => setPaymentError(null), 6000);
+    } finally {
+      setBusyPaymentId(null);
     }
   };
 
@@ -531,6 +542,39 @@ export default function LoanDetailPage() {
     : null;
 
   /**
+   * Payments sitting on this viewer's yes.
+   *
+   * In 2-side mode a marked payment only reaches the schedule once the other
+   * side confirms it, which makes this the most time-sensitive thing on the
+   * screen: the money is claimed, the EMI is still open, and whoever paid is
+   * waiting. It used to be four taps from the notification that said so -
+   * open the loan, switch to Payments, scroll, tap - so it is now the first
+   * card on the page, and the buttons say what each outcome does.
+   */
+  const awaitingMe = awaitingConfirmation(payments, currentUserId, noCounterparty);
+
+  /** The same summary the statement screen sends, without opening it first. */
+  const shareStatement = async () => {
+    haptics.tap();
+    const text = statementText(loan, installments, payments, loan.viewerRole);
+    await share({ title: `Loan statement — ${counterpartyName}`, text });
+    setSharedStatement(true);
+    setTimeout(() => setSharedStatement(false), 4000);
+  };
+
+  /** The receipt for one confirmed payment, sent from the row that shows it. */
+  const sendReceipt = async (payment: Payment) => {
+    haptics.tap();
+    const text = paymentReceiptText(loan, payment, loan.viewerRole);
+    await share({ title: `Payment receipt — ${counterpartyName}`, text });
+    setSharedReceiptId(payment.id);
+    setTimeout(
+      () => setSharedReceiptId((current) => (current === payment.id ? null : current)),
+      4000
+    );
+  };
+
+  /**
    * The next thing to pay, so the screen's main button never makes anybody
    * scan a list to find out what it should say. Overdue first, then soonest.
    */
@@ -597,6 +641,60 @@ export default function LoanDetailPage() {
             This loan was added by the lender. You can record your payments and they confirm them -
             only the lender can edit or close the loan.
           </Notice>
+        )}
+
+        {awaitingMe.length > 0 && (
+          <Card padded={false} className="mb-3 overflow-hidden border-warn bg-warn-soft">
+            <div className="flex items-center gap-2 px-4 pb-1 pt-3.5">
+              <PenLine className="size-4 text-warn" />
+              <h2 className="text-[13px] font-bold text-ink">
+                {awaitingMe.length === 1
+                  ? "One payment is waiting for your yes"
+                  : `${awaitingMe.length} payments are waiting for your yes`}
+              </h2>
+            </div>
+
+            <div className="divide-y divide-line">
+              {awaitingMe.map((payment) => (
+                <div key={payment.id} className="px-4 py-3.5">
+                  <p className="text-[18px] font-bold leading-none tabular-nums text-ink">
+                    {formatMoney(parseFloat(payment.amount))}
+                    <span className="ml-2 text-[12px] font-medium text-ink-3">
+                      {payment.paymentType === "payoff" ? "full settlement" : payment.paymentType}
+                      {payment.markedByUserId === currentUserId
+                        ? " · recorded by you"
+                        : ` · marked by ${counterpartyName}`}
+                    </span>
+                  </p>
+                  <p className="mt-2 text-[12px] leading-snug text-ink-2">
+                    {payment.markedByUserId === currentUserId
+                      ? "Nobody else has an account on this loan, so your word is what records it against the schedule."
+                      : `Confirming records it against the schedule and tells ${counterpartyName} it went through. Rejecting leaves the EMI open.`}
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      size="sm"
+                      className="flex-1"
+                      loading={busyPaymentId === payment.id}
+                      onClick={() => handleConfirmPayment(payment.id, "confirm")}
+                    >
+                      <Check className="size-3.5" />
+                      Confirm
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="flex-1"
+                      onClick={() => handleConfirmPayment(payment.id, "reject")}
+                    >
+                      <X className="size-3.5" />
+                      Reject
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
         )}
 
         {/*
@@ -737,21 +835,36 @@ export default function LoanDetailPage() {
         )}
 
         {/* The whole record on one sheet: printable, and sendable as a summary. */}
-        <Link
-          href={`/loans/${loan.id}/statement`}
-          className="tap mt-4 flex items-center gap-3 rounded-card border border-line bg-surface px-4 py-3.5 shadow-card hover:bg-surface-2"
-        >
-          <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
-            <FileText className="size-5" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[14px] font-semibold text-ink">Statement &amp; receipts</span>
-            <span className="block text-[11px] text-ink-3">
-              Every EMI, payment and waiver - printable, and shareable
+        <div className="mt-4 flex items-stretch gap-2">
+          <Link
+            href={`/loans/${loan.id}/statement`}
+            className="tap flex min-w-0 flex-1 items-center gap-3 rounded-card border border-line bg-surface px-4 py-3.5 shadow-card hover:bg-surface-2"
+          >
+            <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
+              <FileText className="size-5" />
             </span>
-          </span>
-          <ChevronRight className="size-4 text-ink-3" />
-        </Link>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-ink">
+                Statement &amp; receipts
+              </span>
+              <span className="block text-[11px] text-ink-3">
+                Every EMI, payment and waiver - printable and sendable
+              </span>
+            </span>
+            <ChevronRight className="size-4 text-ink-3" />
+          </Link>
+
+          {/* Sending the summary is the common job; reading it is the rare one. */}
+          <Button
+            variant="secondary"
+            className="shrink-0"
+            aria-label="Share this loan statement"
+            onClick={shareStatement}
+            icon={<Share2 className="size-4" />}
+          >
+            {sharedStatement ? "Sent" : "Share"}
+          </Button>
+        </div>
 
         {isLender && (
           <Button
@@ -985,23 +1098,36 @@ export default function LoanDetailPage() {
                       </p>
                     )}
 
-                    {(payment.proofPublicId || payment.proofUrl) && (
-                      <a
-                        href={`/api/payments/${payment.id}/proof`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-3 inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-strong"
-                      >
-                        <Receipt className="size-3.5" />
-                        View proof
-                      </a>
-                    )}
+                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                      {(payment.proofPublicId || payment.proofUrl) && (
+                        <a
+                          href={`/api/payments/${payment.id}/proof`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-strong"
+                        >
+                          <Receipt className="size-3.5" />
+                          View proof
+                        </a>
+                      )}
+                      {confirmed && (
+                        <button
+                          type="button"
+                          onClick={() => sendReceipt(payment)}
+                          className="tap inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-strong"
+                        >
+                          <Share2 className="size-3.5" />
+                          {sharedReceiptId === payment.id ? "Receipt shared" : "Send receipt"}
+                        </button>
+                      )}
+                    </div>
 
                     {payment.status === "pending" && (!mine || noCounterparty) && (
                       <div className="mt-3 flex gap-2">
                         <Button
                           size="sm"
                           className="flex-1"
+                          loading={busyPaymentId === payment.id}
                           onClick={() => handleConfirmPayment(payment.id, "confirm")}
                         >
                           <Check className="size-3.5" />

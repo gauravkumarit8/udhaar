@@ -9,8 +9,9 @@ import {
   HandCoins,
   LogOut,
   MessageSquare,
+  MonitorSmartphone,
+  Share2,
   Smartphone,
-  Star,
   Trash2,
 } from "lucide-react";
 import MobileShell from "@/components/MobileShell";
@@ -23,6 +24,8 @@ import {
   SectionHeader,
   cx,
 } from "@/components/ui";
+import { useInstallPrompt } from "@/hooks/useInstallPrompt";
+import { useShare } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
 import { clearClientCaches } from "@/lib/client-cache";
 import {
@@ -80,6 +83,35 @@ export default function ProfilePage() {
   // Whether *this* browser can receive notifications right now.
   const [browserPush, setBrowserPush] = useState<BrowserPushState | null>(null);
   const [pushNote, setPushNote] = useState<string | null>(null);
+  const [installNote, setInstallNote] = useState<string | null>(null);
+
+  const { share } = useShare();
+  const { canInstall, install } = useInstallPrompt();
+
+  /**
+   * The row here used to read "Rate Udhaar" and did nothing at all - there is
+   * no published listing to rate (the Android app has not been released and
+   * the iOS build is blocked on Apple credentials), so the honest version of
+   * that impulse is sending the app to someone who needs it.
+   */
+  const shareApp = () => {
+    void share({
+      title: "Udhaar",
+      text:
+        "Udhaar keeps track of who owes what - loans, EMIs, reminders and UPI payments, " +
+        "with both sides seeing the same numbers.\n\n" +
+        "We use it for ours:",
+      url: typeof window === "undefined" ? undefined : window.location.origin,
+    });
+  };
+
+  const handleInstall = async () => {
+    const outcome = await install();
+    if (outcome === "dismissed") {
+      setInstallNote("Install dismissed - the button will be here when you want it.");
+      setTimeout(() => setInstallNote(null), 6000);
+    }
+  };
 
   useEffect(() => {
     void browserPushState().then(setBrowserPush);
@@ -250,6 +282,22 @@ export default function ProfilePage() {
             </div>
           )}
 
+          {/*
+            * Once a browser has been told "no", the switch cannot ask again -
+            * nothing happens when it is tapped, and the hint underneath used
+            * to be the only clue. Say where the fix actually is.
+            */}
+          {browserPush === "denied" && (
+            <div className="px-4 py-3.5">
+              <Notice tone="warn">
+                Notifications are blocked for this site, so this switch cannot turn them back on.
+                Tap the padlock (or the site settings icon) in the address bar, set Notifications
+                to Allow, then reload. In the installed app: Settings &rarr; Apps &rarr; Udhaar
+                &rarr; Notifications.
+              </Notice>
+            </div>
+          )}
+
           <div className="flex items-center gap-3 px-4 py-3.5">
             <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
               <BellRing className="size-5" />
@@ -343,13 +391,46 @@ export default function ProfilePage() {
               <span className="block text-[11px] font-mono text-ink-3">1.0.0 MVP</span>
             </span>
           </div>
-          <div className="flex items-center gap-3 px-4 py-3.5">
+          {canInstall && (
+            <button
+              type="button"
+              onClick={handleInstall}
+              className="tap flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-surface-2"
+            >
+              <span className="flex size-10 items-center justify-center rounded-control bg-brand-soft text-brand-strong">
+                <MonitorSmartphone className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[14px] font-semibold text-ink">Install the app</span>
+                <span className="block text-[11px] text-ink-3">
+                  One tap - then Udhaar opens from your home screen like anything else
+                </span>
+              </span>
+            </button>
+          )}
+
+          {installNote && (
+            <div className="px-4 py-3.5">
+              <Notice tone="neutral">{installNote}</Notice>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={shareApp}
+            className="tap flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-surface-2"
+          >
             <span className="flex size-10 items-center justify-center rounded-control bg-surface-2 text-ink-2">
-              <Star className="size-5" />
+              <Share2 className="size-5" />
             </span>
-            <span className="min-w-0 flex-1 text-[14px] font-semibold text-ink">Rate Udhaar</span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[14px] font-semibold text-ink">Share Udhaar</span>
+              <span className="block text-[11px] text-ink-3">
+                For whoever you lend to, or borrow from
+              </span>
+            </span>
             <ChevronRight className="size-4 text-ink-3" />
-          </div>
+          </button>
         </Card>
 
         <Button
