@@ -17,6 +17,7 @@ import {
   formatMoney,
 } from "@/components/ui";
 import { readApi } from "@/lib/http";
+import { answerClaim } from "@/lib/claims";
 import { UNREAD_EVENT } from "@/lib/client-cache";
 
 interface Reminder {
@@ -106,37 +107,27 @@ export default function ActivityPage() {
    * belongs - the same PATCH the loan screen sends, and the feed reloads so the
    * row and the numbers behind it agree.
    */
-  const answerClaim = useCallback(
+  const respondToClaim = useCallback(
     async (paymentId: string, action: "confirm" | "reject") => {
       setBusyPaymentId(paymentId);
       setPaymentError(null);
-      try {
-        const res = await fetch(`/api/payments/${paymentId}/confirm`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action }),
-        });
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        if (!res.ok) {
-          // Meaningful: "you can't confirm your own payment", "this EMI already
-          // moved on". Swallowing it would look like a tap that did nothing.
-          setPaymentError(body.error ?? "Couldn't update that payment.");
-          setTimeout(() => setPaymentError(null), 6000);
-        } else {
-          setSettledMessage(
-            action === "confirm"
-              ? "Payment confirmed - it is on the schedule now."
-              : "Payment rejected - the EMI stays open."
-          );
-          setTimeout(() => setSettledMessage(null), 4000);
-          setRefreshKey((key) => key + 1);
-        }
-      } catch {
-        setPaymentError("Network error - the payment wasn't updated.");
+      // One implementation of the request, shared with the loan screen and home
+      // (src/lib/claims.ts): the API's refusal is meaningful - "you can't
+      // confirm your own payment", "this EMI already moved on" - so it is shown.
+      const result = await answerClaim(paymentId, action);
+      if (!result.ok) {
+        setPaymentError(result.error ?? "Couldn't update that payment.");
         setTimeout(() => setPaymentError(null), 6000);
-      } finally {
-        setBusyPaymentId(null);
+      } else {
+        setSettledMessage(
+          action === "confirm"
+            ? "Payment confirmed - it is on the schedule now."
+            : "Payment rejected - the EMI stays open."
+        );
+        setTimeout(() => setSettledMessage(null), 4000);
+        setRefreshKey((key) => key + 1);
       }
+      setBusyPaymentId(null);
     },
     []
   );
@@ -422,7 +413,7 @@ export default function ActivityPage() {
                         <Button
                           size="sm"
                           loading={busyPaymentId === n.paymentId}
-                          onClick={() => void answerClaim(n.paymentId!, "confirm")}
+                          onClick={() => void respondToClaim(n.paymentId!, "confirm")}
                         >
                           <Check className="size-3.5" />
                           Confirm
@@ -430,7 +421,7 @@ export default function ActivityPage() {
                         <Button
                           size="sm"
                           variant="secondary"
-                          onClick={() => void answerClaim(n.paymentId!, "reject")}
+                          onClick={() => void respondToClaim(n.paymentId!, "reject")}
                         >
                           <X className="size-3.5" />
                           Reject

@@ -42,6 +42,7 @@ import {
 } from "@/components/ui";
 import { useShare, useHaptics, useReminders, useAppResume } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
+import { answerClaim } from "@/lib/claims";
 import { UNREAD_EVENT } from "@/lib/client-cache";
 import { awaitingConfirmation, summarizeSettlement } from "@/lib/payments";
 import { paymentReceiptText, statementText } from "@/lib/loan-statement";
@@ -435,30 +436,20 @@ export default function LoanDetailPage() {
     action: "confirm" | "reject" | "withdraw"
   ) => {
     setBusyPaymentId(paymentId);
-    try {
-      const result = await requestJson(`/api/payments/${paymentId}/confirm`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-
-      if (!result.ok) {
-        // Errors here are meaningful ("you can't confirm your own payment",
-        // "this EMI already moved on") and used to be swallowed silently.
-        haptics.notification("error");
-        setPaymentError(result.error ?? "Couldn't update that payment.");
-        setTimeout(() => setPaymentError(null), 6000);
-      } else {
-        haptics.notification("success");
-      }
-
-      await loadData();
-    } catch {
-      setPaymentError("Network error - the payment wasn't updated.");
+    setPaymentError(null);
+    // One implementation of the request, shared with Activity and home
+    // (src/lib/claims.ts). Errors here are meaningful - "you can't confirm your
+    // own payment", "this EMI already moved on" - and used to be swallowed.
+    const result = await answerClaim(paymentId, action);
+    if (!result.ok) {
+      haptics.notification("error");
+      setPaymentError(result.error ?? "Couldn't update that payment.");
       setTimeout(() => setPaymentError(null), 6000);
-    } finally {
-      setBusyPaymentId(null);
+    } else {
+      haptics.notification("success");
     }
+    await loadData();
+    setBusyPaymentId(null);
   };
 
   if (loading) {

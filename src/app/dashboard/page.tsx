@@ -5,12 +5,15 @@ import Link from "next/link";
 import {
   ArrowUpRight,
   BellRing,
+  Check,
   ChevronRight,
   HandCoins,
+  PenLine,
   Plus,
   RotateCw,
   ShieldCheck,
   Wallet,
+  X,
 } from "lucide-react";
 import MobileShell from "@/components/MobileShell";
 import EnableNotifications from "@/components/EnableNotifications";
@@ -30,6 +33,7 @@ import {
 } from "@/components/ui";
 import { useAppResume, useHaptics, usePushRegistration } from "@/hooks/useNative";
 import { requestJson } from "@/lib/http";
+import { answerClaim } from "@/lib/claims";
 import { DASHBOARD_CACHE_KEY, UNREAD_EVENT } from "@/lib/client-cache";
 
 interface DueItem {
@@ -87,6 +91,22 @@ interface DashboardData {
   };
   /** One page of the due list; `dueItemCount` is how many there are in total. */
   dueItems: DueItem[];
+  /**
+   * Payments the other side has marked that are waiting on this viewer to
+   * confirm or reject. Additive and optional: absent on an older server.
+   */
+  awaitingYou?: {
+    count: number;
+    amount: number;
+    items: {
+      paymentId: string;
+      loanId: string;
+      installmentId: string;
+      amount: number;
+      paymentType: string;
+      counterpartyName: string;
+    }[];
+  };
   dueItemCount?: number;
   loans: Loan[];
   /** True when the loan list is a page and the rest is behind "see all". */
@@ -188,6 +208,10 @@ export default function DashboardPage() {
    */
   const [payTarget, setPayTarget] = useState<PayTarget | null>(null);
   const [remindTarget, setRemindTarget] = useState<RemindTarget | null>(null);
+  /** The claim whose Confirm/Reject from this screen is in flight. */
+  const [answeringId, setAnsweringId] = useState<string | null>(null);
+  const [claimError, setClaimError] = useState<string | null>(null);
+  const [claimMessage, setClaimMessage] = useState<string | null>(null);
   const haptics = useHaptics();
   usePushRegistration();
   /*
@@ -307,6 +331,8 @@ export default function DashboardPage() {
   }
 
   const { summary, dueItems, loans } = data;
+  // Absent on an older server, so every read of it is optional.
+  const awaitingYou = data.awaitingYou ?? { count: 0, amount: 0, items: [] };
   // Both lists arrive as one page. The counts say whether there is more
   // behind them, so the headers can offer somewhere to go.
   const dueItemCount = data.dueItemCount ?? dueItems.length;
@@ -314,6 +340,35 @@ export default function DashboardPage() {
   const hasMoreLoans = data.hasMoreLoans ?? summary.totalLoans > loans.length;
   const net = summary.youWillReceive - summary.youWillPay;
   const settled = summary.youWillReceive <= 0 && summary.youWillPay <= 0;
+
+  /**
+   * Answer a claim from the home screen.
+   *
+   * Home is where people land, and a marked payment used to be invisible here:
+   * the same screen that shows an overdue number said nothing about money the
+   * other side had already claimed to have sent, so a claim sat unanswered while
+   * the EMI stayed open.
+   */
+  const answer = async (paymentId: string, action: "confirm" | "reject") => {
+    setAnsweringId(paymentId);
+    setClaimError(null);
+    const result = await answerClaim(paymentId, action);
+    if (!result.ok) {
+      haptics.notification("error");
+      setClaimError(result.error ?? "Couldn't update that payment.");
+      setTimeout(() => setClaimError(null), 6000);
+    } else {
+      haptics.notification("success");
+      setClaimMessage(
+        action === "confirm"
+          ? "Payment confirmed - it is on the schedule now."
+          : "Payment rejected - the EMI stays open."
+      );
+      setTimeout(() => setClaimMessage(null), 4000);
+      await loadData();
+    }
+    setAnsweringId(null);
+  };
 
   const openPay = (item: DueItem) => {
     haptics.tap();
@@ -360,6 +415,85 @@ export default function DashboardPage() {
             }
           >
             {loadError}
+          </Notice>
+        )}
+
+        {/*
+         * Something the other side is waiting on. Deliberately above the balance
+         * card: a claim is the only thing on this screen that is both
+         * time-sensitive and somebody else's problem until it is answered.
+         */}
+        {awaitingYou.count > 0 && (
+          <Card padded={false} className="overflow-hidden border-warn bg-warn-soft">
+            <div className="flex items-center gap-2 px-4 pb-1 pt-3.5">
+              <PenLine className="size-4 text-warn" />
+              <h2 className="text-[13px] font-bold text-ink">
+                {awaitingYou.count === 1
+                  ? `${formatMoney(awaitingYou.amount)} is waiting for your yes`
+                  : `${awaitingYou.count} payments waiting for your yes - ${formatMoney(awaitingYou.amount)}`}
+              </h2>
+            </div>
+
+            <div className="divide-y divide-line">
+              {awaitingYou.items.map((claim) => (
+                <div key={claim.paymentId} className="px-4 py-3">
+                  <p className="text-[14px] font-bold tabular-nums text-ink">
+                    {formatMoney(claim.amount)}
+                    <span className="ml-2 text-[12px] font-medium text-ink-3">
+                      {claim.paymentType === "payoff" ? "full settlement" : claim.paymentType} ·
+                      marked by {claim.counterpartyName}
+                    </span>
+                  </p>
+                  <div className="mt-2.5 flex gap-2">
+                    <Button
+                      size="sm"
+                      className="flex-1"
+                      loading={answeringId === claim.paymentId}
+                      onClick={() => void answer(claim.paymentId, "confirm")}
+                    >
+                      <Check className="size-3.5" />
+                      Confirm
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="flex-1"
+                      onClick={() => void answer(claim.paymentId, "reject")}
+                    >
+                      <X className="size-3.5" />
+                      Reject
+                    </Button>
+                    <Link
+                      href={`/loans/${claim.loanId}`}
+                      className="tap flex items-center px-2 text-[12px] font-semibold text-ink-3"
+                    >
+                      Loan
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {awaitingYou.count > awaitingYou.items.length && (
+              <Link
+                href="/activity"
+                className="tap block border-t border-line px-4 py-2.5 text-[12px] font-semibold text-brand-strong"
+              >
+                {awaitingYou.count - awaitingYou.items.length} more waiting - see all
+              </Link>
+            )}
+          </Card>
+        )}
+
+        {claimMessage && (
+          <Notice tone="good" icon={<Check className="size-4" />} onDismiss={() => setClaimMessage(null)}>
+            {claimMessage}
+          </Notice>
+        )}
+
+        {claimError && (
+          <Notice tone="bad" onDismiss={() => setClaimError(null)}>
+            {claimError}
           </Notice>
         )}
 

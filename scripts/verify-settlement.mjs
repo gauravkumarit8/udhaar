@@ -436,6 +436,20 @@ async function main() {
     check("...on the installment the claim is against", waitingOn?.installmentId, emi.id);
 
     /*
+     * Home is where people land, and it used to say nothing about a claim: the
+     * same screen that prints an overdue number would show it unchanged while
+     * money sat waiting to be confirmed.
+     */
+    const lenderDash = await call("GET", "/api/dashboard", { token: LENDER_TOKEN });
+    check("the lender's home screen counts the claim", lenderDash.json.awaitingYou?.count, 1);
+    check("...and what it is worth", Number(lenderDash.json.awaitingYou?.amount ?? 0), 1000);
+    check("...naming the payment to answer", lenderDash.json.awaitingYou?.items?.[0]?.paymentId, claimId);
+    check("...and who is waiting on it", lenderDash.json.awaitingYou?.items?.[0]?.counterpartyName, "Settlement Test Borrower");
+
+    const borrowerDash = await call("GET", "/api/dashboard", { token: BORROWER_TOKEN });
+    check("the marker's own home screen does not ask them to confirm it", borrowerDash.json.awaitingYou?.count, 0);
+
+    /*
      * The rule that must never bend: the marker is not offered their own claim,
      * because confirming it is a 403 - offered anyway it reads as a broken
      * button. pendingPaymentByInstallment() is where that lives.
@@ -529,6 +543,9 @@ async function main() {
       (settledFeed.json.notifications ?? []).some((n) => n.paymentId === pendingId),
       false
     );
+
+    const settledDash = await call("GET", "/api/dashboard", { token: LENDER_TOKEN });
+    check("...and the home screen stops counting it", settledDash.json.awaitingYou?.count, 0);
 
     check(
       "a withdrawn claim cannot be confirmed afterwards",
