@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { allocatePayment, planPayoff, remainingFor, summarizeSettlement } from "@/lib/payments";
+import {
+  allocatePayment,
+  awaitingConfirmation,
+  planPayoff,
+  remainingFor,
+  summarizeSettlement,
+} from "@/lib/payments";
 
 /**
  * These are the exact scenarios that used to silently lose money: the API
@@ -359,5 +365,47 @@ describe("summarizeSettlement", () => {
     expect(s.principalOutstanding).toBe(2000);
     expect(s.interestOutstanding).toBe(0);
     expect(s.totalWaived).toBe(0);
+  });
+});
+
+/**
+ * What is waiting on someone's yes. Worth its own tests because getting it
+ * wrong is invisible in the worst way: too strict and a claim sits pending
+ * forever against a counterparty who will never answer; too loose and a person
+ * is offered a Confirm button for their own payment, which the API refuses.
+ */
+describe("awaitingConfirmation", () => {
+  const pending = (markedBy: string) => ({ markedByUserId: markedBy, status: "pending" });
+  const confirmed = (markedBy: string) => ({ markedByUserId: markedBy, status: "confirmed" });
+  const LENDER = "user-lender";
+  const BORROWER = "user-borrower";
+
+  it("waits on the other side, not on whoever marked it", () => {
+    const rows = [pending(BORROWER)];
+    expect(awaitingConfirmation(rows, LENDER, false)).toEqual(rows);
+    expect(awaitingConfirmation(rows, BORROWER, false)).toEqual([]);
+  });
+
+  it("waits on the marker when there is nobody else to ask", () => {
+    const rows = [pending(BORROWER)];
+    expect(awaitingConfirmation(rows, BORROWER, true)).toEqual(rows);
+  });
+
+  it("says nothing about payments that are already settled or rejected", () => {
+    const rows = [confirmed(BORROWER), { markedByUserId: BORROWER, status: "rejected" }];
+    expect(awaitingConfirmation(rows, LENDER, false)).toEqual([]);
+  });
+
+  it("ignores a payment marked by someone who is no longer a party", () => {
+    // A session id that has since changed hands, or a viewer whose loan record
+    // no longer names them: it is not theirs to confirm either way, but the
+    // filter must not fall over deciding.
+    expect(awaitingConfirmation([pending("someone-else")], LENDER, false)).toHaveLength(1);
+    expect(awaitingConfirmation([pending("someone-else")], "someone-else", false)).toEqual([]);
+  });
+
+  it("copes with a viewer id that is null (a loan with one side)", () => {
+    expect(awaitingConfirmation([pending("anyone")], null, true)).toHaveLength(1);
+    expect(awaitingConfirmation([pending("anyone")], null, false)).toHaveLength(1);
   });
 });
