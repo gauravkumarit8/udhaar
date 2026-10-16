@@ -5,6 +5,7 @@ import { getSession } from "@/lib/auth";
 import { countUnreadNotifications } from "@/lib/unread-count";
 import { computeInstallmentStatus, daysUntil, localToday } from "@/lib/calculations";
 import { pickNextDuePerLoan, type DueCandidate, type DueItem } from "@/lib/due-items";
+import { ownClaimOn, type OwnClaimRef } from "@/lib/payments";
 import { parsePaging } from "@/lib/paging";
 import { activeLoansFirst } from "@/lib/loan-order";
 import { or, eq, sql } from "drizzle-orm";
@@ -63,6 +64,16 @@ interface DueRow {
   interest_paid: string;
   /** The lender's UPI id, so the borrower can pay from the due row directly. */
   lender_upi_id: string | null;
+  /**
+   * This viewer's own unanswered payments on the installment, as JSON.
+   *
+   * In 2-side mode a marked payment does not move the ledger until the other
+   * side agrees, so an EMI this viewer has already claimed still reads as
+   * unpaid - and every screen that offered "Pay" on it walked them into a
+   * sheet, a submit, and "This EMI is already fully paid". `ownClaimOn` turns
+   * this into what is honestly still payable.
+   */
+  my_pending: OwnClaimRef[] | null;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -179,6 +190,29 @@ async function handleGET(req: NextRequest) {
           -- The lender's UPI id travels with the due row so a borrower can pay
           -- from the home screen in one tap, without opening the loan first.
           l.upi_id as lender_upi_id,
+          -- What this viewer has already marked on this very installment and
+          -- is still waiting on, so the row can stop offering to pay it again.
+          (
+            select coalesce(
+              json_agg(
+                json_build_object(
+                  'id', p.id,
+                  'installmentId', p.installment_id,
+                  'markedByUserId', p.marked_by_user_id,
+                  'status', p.status,
+                  'amount', p.amount,
+                  'paymentType', p.payment_type,
+                  'createdAt', p.created_at
+                )
+                order by p.created_at
+              ),
+              '[]'::json
+            )
+            from payments p
+            where p.installment_id = i.id
+              and p.status = 'pending'
+              and p.marked_by_user_id = ${me}
+          ) as my_pending,
           row_number() over (
             partition by l.id order by i.due_date, i.installment_number
           ) as rn
@@ -193,7 +227,8 @@ async function handleGET(req: NextRequest) {
         loan_id, borrower_name, lender_name, viewer_is_lender,
         installment_id, installment_number,
         to_char(due_date, 'YYYY-MM-DD') as due_date,
-        principal_amount, interest_amount, principal_paid, interest_paid, lender_upi_id
+        principal_amount, interest_amount, principal_paid, interest_paid, lender_upi_id,
+        my_pending
       from unpaid
       where rn = 1 or due_date < ${today}::date
       order by due_date, installment_number
@@ -269,6 +304,16 @@ async function handleGET(req: NextRequest) {
     );
     if (computedStatus === "paid" || amount <= 0) continue;
 
+    /*
+     * What is left to pay after this viewer's own unanswered claims. Computed
+     * by the same tested rule the loan screen uses, so the home screen and the
+     * loan screen cannot disagree about who still owes a tap here.
+     */
+    const mine = ownClaimOn(row.my_pending ?? [], row.installment_id, me, {
+      principalRemaining,
+      interestRemaining,
+    });
+
     candidates.push({
       loanId: row.loan_id,
       borrowerName: row.borrower_name,
@@ -284,6 +329,13 @@ async function handleGET(req: NextRequest) {
       lenderUpiId: row.lender_upi_id ?? null,
       principalRemaining,
       interestRemaining,
+      // "You already marked this, and nobody has answered yet" - so the due
+      // card shows the wait instead of a Pay button that cannot succeed.
+      claimedByYou: mine.claimed,
+      claimedPaymentId: mine.paymentId,
+      payable: mine.payable,
+      payablePrincipal: mine.payablePrincipal,
+      payableInterest: mine.payableInterest,
     });
   }
 

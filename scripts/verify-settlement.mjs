@@ -450,6 +450,63 @@ async function main() {
     check("the marker's own home screen does not ask them to confirm it", borrowerDash.json.awaitingYou?.count, 0);
 
     /*
+     * The other half of the same situation, from the marker's side. In 2-side
+     * mode the ledger has not moved, so the EMI still reads as unpaid - and
+     * every screen that offered "Pay" on it walked the person into a sheet, a
+     * submit, and "This EMI is already fully paid" (the 400 checked below).
+     *
+     * So the due row now carries what the marker has already claimed on it and
+     * what is honestly still payable: ownClaimOn() does the arithmetic, and
+     * this is where the two surfaces are held to the same answer.
+     */
+    /*
+     * Read with an explicit page size: these accounts accumulate loans every
+     * time the harness runs (21 due rows on the day this was written), and the
+     * default page is five - so the row under test can sit past the page even
+     * though the API is behaving perfectly. The limit is what "see all" uses.
+     */
+    const markerAll = await call("GET", "/api/dashboard?limit=200", { token: BORROWER_TOKEN });
+    const markerDue = (markerAll.json.dueItems ?? []).find((i) => i.installmentId === emi.id);
+    check("the marker's own due row knows about their claim", Boolean(markerDue), true);
+    check("...reporting what they have claimed on it", Number(markerDue?.claimedByYou ?? 0), 1000);
+    check("...naming the claim to withdraw", markerDue?.claimedPaymentId, claimId);
+    check(
+      "...and only the remainder as payable",
+      Number(markerDue?.payable ?? -1),
+      money(emiTotal - 1000)
+    );
+    check(
+      "...split into buckets the pay sheet can fill in from",
+      money(Number(markerDue?.payablePrincipal ?? 0) + Number(markerDue?.payableInterest ?? 0)),
+      money(emiTotal - 1000)
+    );
+
+    /*
+     * The loan screen asks the same question of its own payload - "has this
+     * viewer already claimed this EMI?" - so the fields it needs to answer it
+     * (who marked each payment, and whether it is still pending) are held here.
+     * A rename there would silently stop hiding the button, and nothing else
+     * would notice.
+     */
+    const detailForRow = await call("GET", `/api/loans/${id}`, { token: BORROWER_TOKEN });
+    check(
+      "the loan screen's own payload carries the claim its rows check",
+      (detailForRow.json.payments ?? []).some(
+        (p) => p.id === claimId && p.status === "pending" && p.markedByUserId === BORROWER_ID
+      ),
+      true
+    );
+
+    /*
+     * And the lender's row for the same EMI must NOT carry it: paying around
+     * someone else's claim is not this side's job - answering it is, which is
+     * what awaitingYou (checked above) is for.
+     */
+    const lenderAll = await call("GET", "/api/dashboard?limit=200", { token: LENDER_TOKEN });
+    const lenderDue = (lenderAll.json.dueItems ?? []).find((i) => i.installmentId === emi.id);
+    check("the other side's due row carries no claim of its own", Number(lenderDue?.claimedByYou ?? 0), 0);
+
+    /*
      * The rule that must never bend: the marker is not offered their own claim,
      * because confirming it is a 403 - offered anyway it reads as a broken
      * button. pendingPaymentByInstallment() is where that lives.
