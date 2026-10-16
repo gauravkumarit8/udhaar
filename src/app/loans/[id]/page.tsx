@@ -14,6 +14,7 @@ import {
   Pencil,
   PenLine,
   Receipt,
+  RotateCw,
   Share2,
   Trash2,
   Wallet,
@@ -483,9 +484,22 @@ export default function LoanDetailPage() {
               title={loadError ?? "Loan not found"}
               body="It may have been deleted, or the link may belong to another account."
               action={
-                <Link href="/loans" className={buttonClasses("primary", "md")}>
-                  Back to loans
-                </Link>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  {/* A loan that could not be *fetched* is worth another try; one
+                      that does not exist is not, so the retry only appears when
+                      there was a failure to retry. */}
+                  {loadError && (
+                    <Button onClick={() => void loadData()} icon={<RotateCw className="size-4" />}>
+                      Try again
+                    </Button>
+                  )}
+                  <Link
+                    href="/loans"
+                    className={buttonClasses(loadError ? "secondary" : "primary", "md")}
+                  >
+                    Back to loans
+                  </Link>
+                </div>
               }
             />
           </Card>

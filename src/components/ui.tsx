@@ -475,19 +475,27 @@ export function EmptyState({
   );
 }
 
-/** An inline, non-blocking message: an error to fix, or a thing that worked. */
+/**
+ * An inline, non-blocking message: an error to fix, or a thing that worked.
+ *
+ * `action` is for the message that is also a dead end - "couldn't load your
+ * loans" with nothing to do about it but change screens and come back. A notice
+ * that reports a failure should carry the way out of it when there is one.
+ */
 export function Notice({
   tone = "warn",
   icon,
   children,
   className,
   onDismiss,
+  action,
 }: {
   tone?: "warn" | "bad" | "good" | "brand" | "neutral";
   icon?: ReactNode;
   children: ReactNode;
   className?: string;
   onDismiss?: () => void;
+  action?: ReactNode;
 }) {
   const tones = {
     neutral: "bg-surface-2 text-ink-2",
@@ -507,7 +515,10 @@ export function Notice({
       )}
     >
       {icon && <span className="mt-px shrink-0">{icon}</span>}
-      <div className="flex-1 leading-snug">{children}</div>
+      <div className="flex-1 leading-snug">
+        {children}
+        {action && <div className="mt-2.5">{action}</div>}
+      </div>
       {onDismiss && (
         <button
           onClick={onDismiss}

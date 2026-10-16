@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { BellRing, Check, Clock, HandCoins, Receipt } from "lucide-react";
+import { BellRing, Check, Clock, HandCoins, Receipt, RotateCw } from "lucide-react";
 import MobileShell, { ListSkeleton } from "@/components/MobileShell";
 import { PaySheet, RemindSheet, type PayTarget, type RemindTarget } from "@/components/ActionSheets";
 import {
@@ -241,7 +241,17 @@ export default function ActivityPage() {
     <MobileShell title="Activity">
       <div className="px-4 pb-8 pt-3">
         {loadError && (
-          <Notice tone="warn" className="mb-4" onDismiss={() => setLoadError(null)}>
+          <Notice
+            tone="warn"
+            className="mb-4"
+            onDismiss={() => setLoadError(null)}
+            action={
+              <Button size="sm" variant="secondary" onClick={() => setRefreshKey((key) => key + 1)}>
+                <RotateCw className="size-3.5" />
+                Try again
+              </Button>
+            }
+          >
             {loadError}
           </Notice>
         )}

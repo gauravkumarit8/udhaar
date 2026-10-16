@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ChevronRight, HandCoins, Plus, Search, X } from "lucide-react";
+import { ChevronRight, HandCoins, Plus, RotateCw, Search, X } from "lucide-react";
 import MobileShell, { ListSkeleton } from "@/components/MobileShell";
 import {
   Avatar,
@@ -251,7 +251,21 @@ function LoansScreen() {
           ))}
         </div>
 
-        {loadError && <Notice tone="bad">{loadError}</Notice>}
+        {loadError && (
+          <Notice
+            tone="bad"
+            className="mb-4"
+            onDismiss={() => setLoadError(null)}
+            action={
+              <Button size="sm" variant="secondary" onClick={() => void loadPage(0)}>
+                <RotateCw className="size-3.5" />
+                Try again
+              </Button>
+            }
+          >
+            {loadError}
+          </Notice>
+        )}
 
         {loading && loans.length === 0 && !loadError && <ListSkeleton rows={5} />}
 

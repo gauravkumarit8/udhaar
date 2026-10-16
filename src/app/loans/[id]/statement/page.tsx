@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ChevronLeft, FileText, Printer, Share2 } from "lucide-react";
+import { ChevronLeft, FileText, Printer, RotateCw, Share2 } from "lucide-react";
 import BottomNav from "@/components/BottomNav";
 import { Badge, Button, Card, EmptyState, Notice, Skeleton, cx } from "@/components/ui";
 import { requestJson } from "@/lib/http";
@@ -157,9 +157,16 @@ export default function LoanStatementPage() {
             title="Couldn't open the statement"
             body={loadError ?? "This loan could not be loaded."}
             action={
-              <Link href={loanId ? `/loans/${loanId}` : "/dashboard"} className="tap">
-                <Button variant="secondary">Back to the loan</Button>
-              </Link>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {loadError && (
+                  <Button onClick={() => void load()} icon={<RotateCw className="size-4" />}>
+                    Try again
+                  </Button>
+                )}
+                <Link href={loanId ? `/loans/${loanId}` : "/dashboard"} className="tap">
+                  <Button variant="secondary">Back to the loan</Button>
+                </Link>
+              </div>
             }
           />
         </Card>

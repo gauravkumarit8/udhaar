@@ -8,6 +8,7 @@ import {
   ChevronRight,
   HandCoins,
   Plus,
+  RotateCw,
   ShieldCheck,
   Wallet,
 } from "lucide-react";
@@ -346,7 +347,18 @@ export default function DashboardPage() {
 
       <div className="space-y-6 px-4 pb-8 pt-3">
         {loadError && (
-          <Notice tone="warn" onDismiss={() => setLoadError(null)}>
+          <Notice
+            tone="warn"
+            onDismiss={() => setLoadError(null)}
+            action={
+              /* Offline, a flaky connection, or a deploy in flight: the way out
+                 is one tap, not a trip to another tab and back. */
+              <Button size="sm" variant="secondary" onClick={() => void loadData()}>
+                <RotateCw className="size-3.5" />
+                Try again
+              </Button>
+            }
+          >
             {loadError}
           </Notice>
         )}
