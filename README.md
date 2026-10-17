@@ -340,6 +340,15 @@ and update the moment it does. A rebuild changes the shell only:
   server (so it can send) *and* `ANDROID_GOOGLE_SERVICES_JSON` in the APK (so
   the device can receive). The workflow warns when the second is missing.
 
+  The app cannot ask the server whether *this device* has Firebase - the server
+  only knows about itself - so the build says so directly: when the APK is built
+  with `google-services.json`, the workflow sets `android.appendUserAgent` to
+  `UdhaarPush/1`, and `src/lib/push-capability.ts` refuses to register unless the
+  WebView's user agent carries that marker. A build without the file has no
+  marker, so it never reaches the plugin. That is why an already-installed APK
+  stops crashing as soon as the web app deploys - no rebuild needed. Bump the
+  marker version in both places if the contract ever changes.
+
 So: rebuild when the shell changed or when push was newly configured, not to ship
 a feature.
 

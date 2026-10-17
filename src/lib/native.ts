@@ -12,6 +12,7 @@ import { StatusBar, Style } from "@capacitor/status-bar";
 import { SplashScreen } from "@capacitor/splash-screen";
 import { Network } from "@capacitor/network";
 import { App } from "@capacitor/app";
+import { userAgentAdvertisesPush } from "@/lib/push-capability";
 
 /**
  * Check if running as a native app (Capacitor)
@@ -159,6 +160,20 @@ export async function cancelInstallmentReminders(installmentId: string): Promise
  */
 export async function registerForPushNotifications(): Promise<boolean> {
   if (!isNative()) return false;
+
+  /*
+   * The guard that matters most: never touch the plugin unless this build can
+   * survive it.
+   *
+   * In an APK built without google-services.json, PushNotifications.register()
+   * throws IllegalStateException inside FirebaseMessaging.getInstance(), and
+   * Capacitor rethrows plugin failures on the main thread - the process dies,
+   * with nothing here able to catch it. `native` alone is not enough to know
+   * that: the build has to advertise that it shipped Firebase, which it does
+   * by appending a marker to the WebView user agent (see push-capability.ts).
+   */
+  const userAgent = typeof navigator === "undefined" ? null : navigator.userAgent;
+  if (!userAgentAdvertisesPush(userAgent)) return false;
 
   try {
     // Listeners first, then register(): the native plugin can fire the

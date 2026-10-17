@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { shouldRegisterForPush } from "@/lib/push-capability";
 import {
   isNative,
   scheduleInstallmentReminders,
@@ -50,6 +51,12 @@ export function useIsNative() {
 export function usePushRegistration(enabled: boolean) {
   useEffect(() => {
     if (!enabled) return;
+    // Two separate facts have to agree, and they come from different places:
+    // the server knows whether it can send (`enabled`), the build knows whether
+    // it shipped Firebase (the user-agent marker). The second one is the one
+    // that kills the process - see src/lib/push-capability.ts.
+    const userAgent = typeof navigator === "undefined" ? null : navigator.userAgent;
+    if (!shouldRegisterForPush({ native: isNative(), userAgent, serverCanSend: enabled })) return;
     registerForPushNotifications();
   }, [enabled]);
 }
