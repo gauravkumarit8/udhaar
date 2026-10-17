@@ -329,7 +329,16 @@ and update the moment it does. A rebuild changes the shell only:
 - **push notifications** - the Firebase `google-services.json` has to be in the
   project for FCM registration to work, and it is added from the
   `ANDROID_GOOGLE_SERVICES_JSON` secret. Without that secret the build succeeds
-  and push silently does nothing.
+  and the APK cannot receive app pushes. It is also why the app asks the
+  server before registering: with no `google-services.json` there is no
+  `FirebaseApp`, `FirebaseMessaging.getInstance()` throws, and Capacitor
+  rethrows plugin failures on the main thread - which killed the app on the
+  first screen after login (this happened). `GET /api/dashboard` now answers
+  `pushAvailable`, and the client only reaches for the plugin when it is true.
+
+  **Configure the two halves together.** `FIREBASE_SERVICE_ACCOUNT_KEY` on the
+  server (so it can send) *and* `ANDROID_GOOGLE_SERVICES_JSON` in the APK (so
+  the device can receive). The workflow warns when the second is missing.
 
 So: rebuild when the shell changed or when push was newly configured, not to ship
 a feature.

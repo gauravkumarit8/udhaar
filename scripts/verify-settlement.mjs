@@ -450,6 +450,26 @@ async function main() {
     check("the marker's own home screen does not ask them to confirm it", borrowerDash.json.awaitingYou?.count, 0);
 
     /*
+     * The flag that stopped the app crashing on the screen after login.
+     *
+     * The client may only call the native PushNotifications plugin when the
+     * server can actually deliver a push. Without this gate the app asked for a
+     * token unconditionally, and in an APK built without google-services.json
+     * that native call throws and Capacitor rethrows it on the main thread -
+     * killing the process, which no amount of try/catch in the page can stop.
+     */
+    check(
+      "the home screen says whether push can be delivered",
+      typeof lenderDash.json.pushAvailable,
+      "boolean"
+    );
+    check(
+      "...and it is false when the server has no Firebase key",
+      lenderDash.json.pushAvailable,
+      Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY)
+    );
+
+    /*
      * The other half of the same situation, from the marker's side. In 2-side
      * mode the ledger has not moved, so the EMI still reads as unpaid - and
      * every screen that offered "Pay" on it walked the person into a sheet, a

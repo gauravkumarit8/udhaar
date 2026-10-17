@@ -126,6 +126,20 @@ jobs:
           echo "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json
           echo "::notice::google-services.json added - this build can receive push notifications"
 
+      # Without this file the google-services plugin is not applied, FirebaseApp
+      # is never initialized, and the native PushNotifications.register() call
+      # throws - which Capacitor rethrows on the main thread, killing the app.
+      # The web app now asks the server before calling it, so a build without
+      # this file is safe; it simply cannot receive app pushes. Say so loudly,
+      # because the two halves have to be configured together: FCM on the server
+      # (FIREBASE_SERVICE_ACCOUNT_KEY) and this file in the APK.
+      - name: 🔥 Warn when the APK cannot receive app pushes
+        if: env.GOOGLE_SERVICES_JSON == ''
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          echo "::warning::ANDROID_GOOGLE_SERVICES_JSON is not set - this APK cannot receive app push notifications. Add the base64-encoded google-services.json, and only enable FIREBASE_SERVICE_ACCOUNT_KEY on the server once it is set here too."
+
       - name: 🔑 Decode keystore (release only)
         if: env.BUILD_TYPE == 'release'
         run: |

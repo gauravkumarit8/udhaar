@@ -370,8 +370,26 @@ async function handleGET(req: NextRequest) {
     })),
   };
 
+  /*
+   * Can this deployment send a push at all?
+   *
+   * The app used to call PushNotifications.register() on every dashboard load,
+   * assuming it could. When the APK is built without google-services.json -
+   * which is how builds work unless the ANDROID_GOOGLE_SERVICES_JSON secret is
+   * set - FirebaseApp is never initialized, FirebaseMessaging.getInstance()
+   * throws IllegalStateException, and Capacitor rethrows plugin failures on the
+   * main thread. That is not a rejected promise the page can catch: the process
+   * dies. It crashed the app on the first screen after login.
+   *
+   * With no service account key the server cannot deliver a push, so asking a
+   * device for a token is pointless as well as fatal. Additive and optional,
+   * like the other fields here - an older client ignores it.
+   */
+  const pushAvailable = Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+
   return NextResponse.json({
     unread,
+    pushAvailable,
     // The dashboard already knows who is asking (its session was the first
     // query), so the page no longer needs a second request to /api/auth/me
     // just to print a name in the greeting.
