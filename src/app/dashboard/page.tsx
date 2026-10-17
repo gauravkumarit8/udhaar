@@ -90,6 +90,11 @@ interface Loan {
 
 interface DashboardData {
   user?: { name: string; mobile: string };
+  /**
+   * Can the server deliver a push? Only then may the app ask the native
+   * plugin for a token - see usePushRegistration.
+   */
+  pushAvailable?: boolean;
   /** Notifications not opened yet - the tab bar's badge, answered in passing. */
   unread?: number;
   summary: {
@@ -225,7 +230,12 @@ export default function DashboardPage() {
   const [claimError, setClaimError] = useState<string | null>(null);
   const [claimMessage, setClaimMessage] = useState<string | null>(null);
   const haptics = useHaptics();
-  usePushRegistration();
+  /*
+   * Deliberately driven by the server's answer rather than fired on mount:
+   * the native register() call kills the process when the APK was built
+   * without google-services.json, and that is not catchable from here.
+   */
+  usePushRegistration(Boolean(data?.pushAvailable));
   /*
    * A note on loans whose lender has no account: they appear in the list like
    * any other, tagged "NOT ON UDHAAR" (see the badge below). Before this they

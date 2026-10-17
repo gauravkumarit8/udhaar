@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The design system's brand green (the brand token in globals.css),
+         kept in step with assets/logo.png. -->
+    <color name="ic_launcher_background">#00855b</color>
+</resources>

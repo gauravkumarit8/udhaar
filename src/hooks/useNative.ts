@@ -34,14 +34,24 @@ export function useIsNative() {
 }
 
 /**
- * Registers the device for real push notifications once, on mount.
- * Call this from a top-level authenticated page (e.g. dashboard) after
- * login so the backend can push to this device even when the app is closed.
+ * Registers the device for real push notifications, once, when `enabled`.
+ *
+ * `enabled` is not a nicety - it is what keeps the app alive. The native
+ * register() call reaches FirebaseMessaging.getInstance(), which throws
+ * IllegalStateException in a build that shipped without google-services.json
+ * (no FirebaseApp). Capacitor turns a plugin exception into
+ * `throw new RuntimeException(ex)` on the main thread, so the app is killed
+ * outright - no promise rejection, nothing the page can catch.
+ *
+ * The backend answers whether it can send at all (`pushAvailable` on the
+ * dashboard). Until it can, a token would be useless anyway, so there is no
+ * reason to reach for the plugin and every reason not to.
  */
-export function usePushRegistration() {
+export function usePushRegistration(enabled: boolean) {
   useEffect(() => {
+    if (!enabled) return;
     registerForPushNotifications();
-  }, []);
+  }, [enabled]);
 }
 
 /** Network connectivity state */

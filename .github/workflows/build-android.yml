@@ -13,9 +13,16 @@ on:
         required: false
         type: string
         default: "https://udhaar-y94f.onrender.com"
-  # Not on every push to main - a full Android build per commit is noise.
+  # Every merge to main produces an installable APK artifact, so the app can be
+  # tried on a real phone without waiting for a release. The build takes about
+  # ten minutes and uploads one artifact for 30 days.
+  #
+  # Deliberately NOT on a tag: release.yml calls this workflow on a tag, and
+  # also ran it directly before - two builds, two jobs uploading an artifact of
+  # the same name, and two attempts to create the same GitHub Release. One
+  # trigger, one path.
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
     inputs:
       build_type:
@@ -71,6 +78,20 @@ jobs:
       - name: 📱 Add Android platform
         run: npx cap add android
 
+      # `cap add` draws Capacitor's stock icon and splash. The real artwork is
+      # committed under native/android/res/ (regenerate with
+      # ./scripts/generate-android-icons.sh) and mirrored over the generated
+      # project here - the android/ directory itself is generated and ignored,
+      # so anything committed inside it would vanish on the next `cap add`.
+      - name: 🎨 Apply Udhaar icon, splash and notification icon
+        run: |
+          if [ ! -d native/android/res ]; then
+            echo "::warning::native/android/res is missing - the APK will ship Capacitor's stock artwork"
+            exit 0
+          fi
+          cp -R native/android/res/. android/app/src/main/res/
+          echo "::notice::branded launcher, splash and notification icons applied"
+
       - name: 🔧 Update Capacitor config with production URL
         run: |
           cat > /tmp/update-config.js << 'SCRIPT'
@@ -105,6 +126,20 @@ jobs:
           echo "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json
           echo "::notice::google-services.json added - this build can receive push notifications"
 
+      # Without this file the google-services plugin is not applied, FirebaseApp
+      # is never initialized, and the native PushNotifications.register() call
+      # throws - which Capacitor rethrows on the main thread, killing the app.
+      # The web app now asks the server before calling it, so a build without
+      # this file is safe; it simply cannot receive app pushes. Say so loudly,
+      # because the two halves have to be configured together: FCM on the server
+      # (FIREBASE_SERVICE_ACCOUNT_KEY) and this file in the APK.
+      - name: 🔥 Warn when the APK cannot receive app pushes
+        if: env.GOOGLE_SERVICES_JSON == ''
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
+        run: |
+          echo "::warning::ANDROID_GOOGLE_SERVICES_JSON is not set - this APK cannot receive app push notifications. Add the base64-encoded google-services.json, and only enable FIREBASE_SERVICE_ACCOUNT_KEY on the server once it is set here too."
+
       - name: 🔑 Decode keystore (release only)
         if: env.BUILD_TYPE == 'release'
         run: |
@@ -114,10 +149,41 @@ jobs:
           echo "KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> android/gradle.properties
           echo "KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> android/gradle.properties
 
+      # Capacitor 8 generates a project that targets compileSdk 36; Gradle will
+      # try to download that platform on first use, and refuses when the licences
+      # have not been accepted on the runner.
+      - name: 🧰 Accept Android SDK licences
+        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+      - name: 🔎 Toolchain (printed so a failure explains itself)
+        run: |
+          echo "::notice::java $(java -version 2>&1 | head -1)"
+          echo "::notice::compileSdk $(grep compileSdkVersion android/variables.gradle | tr -d ' ')"
+          echo "::notice::platforms installed: $(ls "$ANDROID_HOME/platforms" 2>/dev/null | tr '\n' ' ')"
+          echo "::notice::build-tools installed: $(ls "$ANDROID_HOME/build-tools" 2>/dev/null | tr '\n' ' ')"
+
       - name: 🏗️ Build Android APK (debug)
         if: env.BUILD_TYPE == 'debug'
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: |
+          set +e
+          ./gradlew assembleDebug --stacktrace > /tmp/gradle.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            # A job log lives in storage a restricted client may not be able to
+            # open, so the reason is published as annotations too - the same
+            # reason verify-settlement.mjs prints ::error:: lines. The tail of a
+            # Gradle failure is a stack trace; the sentence that explains it is
+            # in the "What went wrong" block, so that is what gets lifted out.
+            {
+              sed -n '/What went wrong/,/^\* Try/p' /tmp/gradle.log | head -n 22
+              grep -E "^Execution failed for task|^Caused by:|^e: |error: " /tmp/gradle.log | head -n 6
+            } | while IFS= read -r line; do
+              echo "::error file=android/variables.gradle::$line"
+            done
+            exit "$status"
+          fi
 
       - name: 🏗️ Build Android AAB (release)
         if: env.BUILD_TYPE == 'release'
@@ -140,11 +206,6 @@ jobs:
           path: android/app/build/outputs/bundle/release/*.aab
           retention-days: 30
 
-      - name: 🎉 Create GitHub Release with APK
-        if: startsWith(github.ref, 'refs/tags/v') && env.BUILD_TYPE == 'debug'
-        uses: softprops/action-gh-release@v3
-        with:
-          files: android/app/build/outputs/apk/debug/*.apk
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # No release step here: release.yml calls this workflow on a tag and its
+      # create-release job downloads the artifact uploaded above. Both creating
+      # a release meant two releases racing for the same tag.
