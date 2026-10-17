@@ -20,7 +20,8 @@
     "verify:ui": "node scripts/verify-ui.mjs",
     "generate:vapid": "node scripts/generate-vapid-keys.mjs",
     "typecheck": "tsc --noEmit",
-    "verify:deployment": "node scripts/verify-deployment.mjs"
+    "verify:deployment": "node scripts/verify-deployment.mjs",
+    "icons:android": "bash scripts/generate-android-icons.sh"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
