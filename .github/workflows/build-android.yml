@@ -92,18 +92,40 @@ jobs:
           cp -R native/android/res/. android/app/src/main/res/
           echo "::notice::branded launcher, splash and notification icons applied"
 
+      # Two rewrites, both build-time:
+      #
+      # 1. point the WebView at the deployment (the app is a remote shell);
+      # 2. advertise, in the WebView's user agent, whether THIS build shipped
+      #    google-services.json.
+      #
+      # (2) is what keeps the app alive. Without Firebase, the native
+      # PushNotifications.register() call throws and Capacitor rethrows it on the
+      # main thread, killing the process - it crashed the app on the first screen
+      # after login. The web app only reaches for the plugin when the user agent
+      # carries the marker, and the installed APKs from before this change carry
+      # none, so they stop calling it the moment the fix deploys.
       - name: 🔧 Update Capacitor config with production URL
+        env:
+          PUSH_MARKER: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON != '' && 'UdhaarPush/1' || '' }}
         run: |
           cat > /tmp/update-config.js << 'SCRIPT'
           const fs = require('fs');
-          const config = fs.readFileSync('capacitor.config.ts', 'utf8');
-          const updated = config.replace(
+          let config = fs.readFileSync('capacitor.config.ts', 'utf8');
+
+          config = config.replace(
             /url:\s*['"][^'"]*['"]/g,
             `url: '${process.env.APP_URL}'`
           );
-          fs.writeFileSync('capacitor.config.ts', updated);
+
+          const marker = process.env.PUSH_MARKER || '';
+          if (marker && !config.includes('appendUserAgent')) {
+            config = config.replace(/android:\s*\{/, `android: {\n    appendUserAgent: '${marker}',`);
+          }
+          fs.writeFileSync('capacitor.config.ts', config);
           SCRIPT
           node /tmp/update-config.js
+          echo "::notice::user agent marker: ${PUSH_MARKER:-none (this APK will not ask for a push token)}"
+          grep -n "appendUserAgent" capacitor.config.ts || true
 
       - name: 📋 Copy web assets
         run: npx cap copy android
@@ -124,7 +146,20 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.ANDROID_GOOGLE_SERVICES_JSON }}
         run: |
           echo "$GOOGLE_SERVICES_JSON" | base64 -d > android/app/google-services.json
-          echo "::notice::google-services.json added - this build can receive push notifications"
+          # A config file for another package does not initialize Firebase in
+          # this one - the google-services plugin skips it - while the user-agent
+          # marker above would still promise the app it is safe to register.
+          # That is the crash again, so refuse to build such an APK.
+          if ! node -e '
+            const cfg = require("./android/app/google-services.json");
+            const ids = (cfg.client || []).map((c) => c.client_info?.android_client_info?.package_name);
+            const ok = ids.some((id) => id === "com.udhaar.app") && Boolean(cfg.project_info?.project_number);
+            process.exit(ok ? 0 : 1);
+          '; then
+            echo "::error::google-services.json does not describe com.udhaar.app (or has no project_number), so Firebase would not initialize in this APK. Fix the secret or remove it."
+            exit 1
+          fi
+          echo "::notice::google-services.json added for com.udhaar.app - this build can receive push notifications"
 
       # Without this file the google-services plugin is not applied, FirebaseApp
       # is never initialized, and the native PushNotifications.register() call
